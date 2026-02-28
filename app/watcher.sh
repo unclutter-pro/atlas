@@ -129,71 +129,74 @@ except: pass
 handle_review_wake() {
   local REVIEW_FILE="$1"
   [ -f "$REVIEW_FILE" ] || return 0
+  local FILENAME
+  FILENAME=$(basename "$REVIEW_FILE")
+  local TASK_ID="${FILENAME#.review-}"
 
-  echo "[$(date)] Review wake event: $REVIEW_FILE"
+  echo "[$(date)] Review wake event: task $TASK_ID (file=$FILENAME)"
 
   (
     exec </dev/null >>/atlas/logs/watcher.log 2>&1
+    flock -n 200 || { echo "[$(date)] Review for task $TASK_ID already running, skipping"; exit 0; }
 
     TEMP_REVIEW=$(mktemp /tmp/review-XXXXXX.json)
     mv "$REVIEW_FILE" "$TEMP_REVIEW" 2>/dev/null || { rm -f "$TEMP_REVIEW"; exit 0; }
-
-    REVIEW_TASK_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['task_id'])" "$TEMP_REVIEW" 2>/dev/null || echo "")
-    REVIEW_CONTENT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['task_content'])" "$TEMP_REVIEW" 2>/dev/null || echo "")
-    REVIEW_SUMMARY=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['response_summary'])" "$TEMP_REVIEW" 2>/dev/null || echo "")
     rm -f "$TEMP_REVIEW"
 
-    [ -z "$REVIEW_TASK_ID" ] && { echo "[$(date)] Review: missing task_id, skipping"; exit 0; }
-
     LOG="/atlas/logs/reviewer.log"
-
-    REVIEWER_PROMPT="You are a code reviewer. A worker has just completed task #${REVIEW_TASK_ID}.
-
-## Original Task
-${REVIEW_CONTENT}
-
-## Worker's Result
-${REVIEW_SUMMARY}
-
-## Your Job
-Review the worker's output against the original task requirements. Check:
-1. **Completeness** — Was everything in the task actually done? Are acceptance criteria met?
-2. **Code Quality** — Is the code clean, maintainable, following existing patterns?
-3. **Security** — Any OWASP vulnerabilities? Injection, XSS, hardcoded secrets, insecure dependencies, missing auth checks?
-
-Inspect the actual changed files if needed (read them, run build/lint if relevant).
-
-If everything looks good: call \`task_review_approve\` with task_id=${REVIEW_TASK_ID}.
-If issues found: call \`task_review_reject\` with task_id=${REVIEW_TASK_ID} and precise feedback on what to fix.
-
-Be pragmatic — minor style nits don't warrant rejection. Reject for: missing requirements, broken functionality, real security issues, or significant quality problems."
+    REVIEWER_PROMPT_FILE="$HOME/triggers/task-reviewer/prompt.md"
+    if [ ! -f "$REVIEWER_PROMPT_FILE" ]; then
+      REVIEWER_PROMPT="Task #${TASK_ID} has been completed by the worker. Use task_review_get() to see the original task and the worker's response. Review the work quality: check if the task requirements are fully met and the result is correct. If acceptable, call task_review_approve(). If there are issues, call task_review_reject(feedback) with specific actionable feedback."
+    else
+      REVIEWER_PROMPT=$(cat "$REVIEWER_PROMPT_FILE")
+      REVIEWER_PROMPT="${REVIEWER_PROMPT//\{\{task_id\}\}/$TASK_ID}"
+    fi
 
     REVIEWER_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     REVIEWER_OUT=$(mktemp /tmp/reviewer-out-XXXXXX.json)
 
-    set +e
-    claude-atlas --mode reviewer --output-format json \
+    echo "[$(date)] Launching reviewer for task $TASK_ID"
+    ATLAS_REVIEWER_TASK_ID="$TASK_ID" claude-atlas \
+      --mode worker \
+      --output-format json \
       --dangerously-skip-permissions \
       -p "$REVIEWER_PROMPT" \
       > "$REVIEWER_OUT" 2>>"$LOG"
     REVIEWER_EXIT=$?
-    set -e
 
     REVIEWER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     save_session_metrics "$REVIEWER_OUT" "reviewer" "" "$REVIEWER_START" "$REVIEWER_END" "$REVIEWER_EXIT"
     rm -f "$REVIEWER_OUT"
 
-    if [ "$REVIEWER_EXIT" -ne 0 ]; then
-      echo "[$(date)] Reviewer session failed (exit $REVIEWER_EXIT) — auto-approving task $REVIEW_TASK_ID to unblock" | tee -a "$LOG"
-      # Fallback: approve the task so the system doesn't get stuck
-      sqlite3 "$WORKSPACE/.index/atlas.db" \
-        "UPDATE tasks SET review_status='approved' WHERE id=$REVIEW_TASK_ID AND review_status='pending'" 2>/dev/null || true
-      # Re-run wakeTriggerIfAwaiting equivalent via Python
-      python3 /atlas/app/bin/reviewer-fallback-wake.py "$WORKSPACE/.index/atlas.db" "$REVIEW_TASK_ID" 2>>"$LOG" || true
+    if [ "$REVIEWER_EXIT" -eq 0 ]; then
+      echo "[$(date)] Reviewer for task $TASK_ID done"
+    else
+      echo "[$(date)] Reviewer for task $TASK_ID failed (exit $REVIEWER_EXIT) — auto-approving to unblock trigger"
+      # Safety fallback: if reviewer crashes, still wake the trigger
+      sqlite3 "$HOME/.index/atlas.db" \
+        "UPDATE tasks SET review_status='approved' WHERE id=$TASK_ID AND review_status='none'" 2>/dev/null || true
+      # Re-run wake via the original trigger path
+      python3 - "$TASK_ID" "$HOME/.index/atlas.db" << 'PYEOF2'
+import sys, json, sqlite3, os
+task_id = int(sys.argv[1])
+db_path = sys.argv[2]
+conn = sqlite3.connect(db_path)
+row = conn.execute(
+  "SELECT ta.trigger_name, ta.session_key, COALESCE(ts.session_id,'') as session_id, COALESCE(t.channel,'internal') as channel, COALESCE(tk.response_summary,'') as response_summary FROM task_awaits ta JOIN tasks tk ON tk.id=ta.task_id LEFT JOIN trigger_sessions ts ON ts.trigger_name=ta.trigger_name AND ts.session_key=ta.session_key LEFT JOIN triggers t ON t.name=ta.trigger_name WHERE ta.task_id=?",
+  (task_id,)
+).fetchone()
+if row:
+  wake = {"task_id": task_id, "trigger_name": row[0], "session_key": row[1], "session_id": row[2], "channel": row[3], "response_summary": row[4]}
+  index_dir = os.environ.get("HOME","") + "/.index"
+  os.makedirs(index_dir, exist_ok=True)
+  with open(f"{index_dir}/.wake-{row[0]}-{task_id}", "w") as f:
+    json.dump(wake, f)
+  conn.execute("DELETE FROM task_awaits WHERE task_id=?", (task_id,))
+  conn.commit()
+conn.close()
+PYEOF2
     fi
-
-    echo "[$(date)] Review complete for task $REVIEW_TASK_ID"
-  ) &
+  ) 200>"$WORKSPACE/.reviewer-${TASK_ID}.flock" &
 }
 
 startup_recovery() {

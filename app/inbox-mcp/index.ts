@@ -29,22 +29,6 @@ function isReviewEnabled(): boolean {
   }
 }
 
-function getReviewModel(): string {
-  try {
-    const raw = readFileSync(process.env.HOME + "/config.yml", "utf-8");
-    const reviewSection = raw.split(/^review:/m)[1];
-    if (!reviewSection) return "haiku";
-    const lines = reviewSection.split("\n");
-    for (const line of lines) {
-      if (/^\S/.test(line)) break;
-      const m = line.match(/^\s+model:\s*(\S+)/);
-      if (m) return m[1];
-    }
-    return "haiku";
-  } catch {
-    return "haiku";
-  }
-}
 
 /** Touch a file (create or update mtime) */
 function touchFile(path: string): void {
@@ -118,6 +102,43 @@ function wakeTriggerIfAwaiting(taskId: number, responseSummary: string): void {
   // Only delete AFTER wake file is confirmed on disk
   db.prepare("DELETE FROM task_awaits WHERE task_id = ?").run(taskId);
 }
+
+function writeReviewWakeFile(taskId: number): void {
+  const db = getDb();
+
+  const awaiter = db.prepare(
+    `SELECT ta.trigger_name, ta.session_key,
+            COALESCE(ts.session_id, '') AS session_id,
+            COALESCE(t.channel, 'internal') AS channel,
+            tk.content AS task_content,
+            tk.response_summary AS response_summary
+     FROM task_awaits ta
+     LEFT JOIN trigger_sessions ts ON ts.trigger_name = ta.trigger_name AND ts.session_key = ta.session_key
+     LEFT JOIN triggers t ON t.name = ta.trigger_name
+     LEFT JOIN tasks tk ON tk.id = ta.task_id
+     WHERE ta.task_id = ?`
+  ).get(taskId) as {
+    trigger_name: string; session_key: string; session_id: string;
+    channel: string; task_content: string; response_summary: string;
+  } | undefined;
+
+  if (!awaiter) return;
+
+  const reviewData = JSON.stringify({
+    task_id: taskId,
+    trigger_name: awaiter.trigger_name,
+    session_key: awaiter.session_key,
+    session_id: awaiter.session_id,
+    channel: awaiter.channel,
+    task_content: awaiter.task_content,
+    response_summary: awaiter.response_summary,
+  });
+
+  const indexDir = process.env.HOME + "/.index";
+  mkdirSync(indexDir, { recursive: true });
+  writeFileSync(`${indexDir}/.review-${taskId}`, reviewData);
+}
+
 
 const server = new McpServer({
   name: "inbox-mcp",
@@ -306,13 +327,11 @@ if (!IS_TRIGGER) {
         );
       }
 
+      // If review is enabled, write a review wake file instead of waking trigger directly
       if (isReviewEnabled()) {
-        // Set review_status to pending instead of waking trigger immediately
+        // Set review_status to pending and trigger reviewer instead of waking trigger directly
         db.prepare("UPDATE tasks SET review_status = 'pending' WHERE id = ?").run(task_id);
-
-        const indexDir = process.env.HOME + "/.index";
-        mkdirSync(indexDir, { recursive: true });
-        writeFileSync(`${indexDir}/.review-${task_id}`, JSON.stringify({ task_id }));
+        writeReviewWakeFile(task_id);
       } else {
         // Wake the trigger session that created this task
         wakeTriggerIfAwaiting(task_id, response_summary);
@@ -394,83 +413,72 @@ if (!IS_TRIGGER) {
 // =============================================================================
 // REVIEWER TOOLS — only registered when ATLAS_REVIEWER_TASK_ID is set
 // =============================================================================
-if (IS_REVIEWER) {
-  const reviewTaskId = parseInt(process.env.ATLAS_REVIEWER_TASK_ID!, 10);
-
-  // --- task_get_for_review: Get the task being reviewed ---
+if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
+  // task_review_approve: Approve the work and wake the trigger
   server.tool(
-    "task_get_for_review",
-    "Get the full task details (original request + worker response) for review",
+    "task_review_approve",
+    "Approve the task result. This wakes the trigger that created the task and delivers the worker's response.",
     {},
     async () => {
       const db = getDb();
-      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(reviewTaskId);
-      if (!task) return err(`Review task ${reviewTaskId} not found`);
-      return ok(task);
-    },
-  );
+      const task = db
+        .prepare("SELECT * FROM tasks WHERE id = ?")
+        .get(REVIEWER_TASK_ID) as any;
+      if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
 
-  // --- task_review_approve: Approve and wake the trigger ---
-  server.tool(
-    "task_review_approve",
-    "Approve the worker's result — wake the original trigger with the response",
-    {
-      notes: z.string().optional().describe("Optional reviewer notes (not sent to trigger)"),
-    },
-    async ({ notes }) => {
-      const db = getDb();
       db.prepare(
-        "UPDATE tasks SET review_status = 'approved' WHERE id = ? AND review_status = 'pending'"
-      ).run(reviewTaskId);
+        "UPDATE tasks SET review_status = 'approved' WHERE id = ?"
+      ).run(REVIEWER_TASK_ID);
 
-      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(reviewTaskId) as any;
-      if (!task) return err(`Task ${reviewTaskId} not found`);
-
-      wakeTriggerIfAwaiting(reviewTaskId, task.response_summary);
-      return ok({ approved: true, notes: notes || null, task });
-    },
+      wakeTriggerIfAwaiting(REVIEWER_TASK_ID, task.response_summary);
+      return ok({ approved: true, task_id: REVIEWER_TASK_ID });
+    }
   );
 
-  // --- task_review_reject: Reject and re-queue for worker ---
+  // task_review_reject: Reject and send back to worker with feedback
   server.tool(
     "task_review_reject",
-    "Reject the worker's result — re-queue the task with feedback for the worker to redo",
+    "Reject the task result and send it back to the worker with feedback. The worker will retry.",
     {
-      feedback: z.string().describe("Clear explanation of what was wrong and what needs to be fixed"),
+      feedback: z
+        .string()
+        .describe("Specific feedback for the worker on what needs to be fixed or improved"),
     },
     async ({ feedback }) => {
       const db = getDb();
+      const task = db
+        .prepare("SELECT * FROM tasks WHERE id = ?")
+        .get(REVIEWER_TASK_ID) as any;
+      if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
 
       // Append feedback to task content and reset to pending
-      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(reviewTaskId) as any;
-      if (!task) return err(`Task ${reviewTaskId} not found`);
-
-      const attemptNum = task.review_feedback ? (task.review_feedback.split("---").length) : 0;
-      const updatedContent = `${task.content}\n\n---\n**Reviewer feedback (attempt ${attemptNum + 1}):**\n${feedback}`;
-
+      const updatedContent = `${task.content}\n\n---\n**Reviewer Feedback (attempt ${(task.review_attempts ?? 0) + 1}):**\n${feedback}`;
       db.prepare(
-        `UPDATE tasks SET
-          status = 'pending',
-          review_status = 'none',
-          review_feedback = ?,
-          response_summary = NULL,
-          processed_at = NULL,
-          content = ?
-        WHERE id = ?`
-      ).run(feedback, updatedContent, reviewTaskId);
+        `UPDATE tasks SET status = 'pending', review_status = 'rejected',
+         review_feedback = ?, content = ?, processed_at = NULL, response_summary = NULL
+         WHERE id = ?`
+      ).run(feedback, updatedContent, REVIEWER_TASK_ID);
 
-      // Re-register the task_awaits entry so the trigger gets woken after next completion
-      db.prepare(
-        "INSERT OR REPLACE INTO task_awaits (task_id, trigger_name, session_key) VALUES (?, ?, ?)"
-      ).run(reviewTaskId, task.trigger_name, "_default");
-
-      // Wake the worker
+      // Wake the worker to retry
       const indexDir = process.env.HOME + "/.index";
       mkdirSync(indexDir, { recursive: true });
-      touchFile(`${indexDir}/.wake`);
+      writeFileSync(`${indexDir}/.wake`, "");
 
-      return ok({ rejected: true, feedback, task_id: reviewTaskId });
-    },
+      return ok({ rejected: true, task_id: REVIEWER_TASK_ID, feedback });
+    }
+  );
+
+  // task_get: Read the task to review
+  server.tool(
+    "task_review_get",
+    "Get the task details to review — original content and worker's response summary.",
+    {},
+    async () => {
+      const db = getDb();
+      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(REVIEWER_TASK_ID);
+      if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
+      return ok(task);
+    }
   );
 }
 
