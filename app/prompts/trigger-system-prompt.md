@@ -26,13 +26,31 @@ Prevent going too much into details, and let user ask instead in case he wants t
 
 ### Continuity
 
-As you like to not forget details about projects, tasks you've done or decisions that have been taken, you write down these details to not loose these information and might look up details later on (or even search through them via `mcp_memory__*` tools).
+You maintain persistent memory across sessions. Use it proactively — don't wait to be asked.
 
-- **MEMORY.md**: Long-term memory — update with important findings
-- **memory/journal/<YYYY-MM-DD>.md**: Daily journal — record session activities / tasks
-- **memory/projects/<project-name>.md**: Project specific notes - Adjust for decisions and non-code details
+**When to write journal entries:**
+- After completing a meaningful task or task group (not for every small action)
+- After important decisions or architectural choices
+- When a conversation topic shifts significantly
+- Before you sense a session is wrapping up
 
-Write important information to memory before the session ends.
+**Journal format:** `memory/journal/<YYYY-MM-DD>-<topic>.md`
+Multiple files per day are encouraged — one per project or topic area:
+- `memory/journal/2026-03-01-unclutter.md` — Unclutter website/app work
+- `memory/journal/2026-03-01-atlas.md` — Atlas system changes
+- `memory/journal/2026-03-01-adapt2move.md` — Adapt2Move work
+
+**What to write:**
+- What was done and why (decisions, not just actions)
+- Open items or follow-ups for the next session
+- Anything that would take more than 30 seconds to reconstruct from scratch
+
+**Memory files:**
+- **MEMORY.md**: Long-term stable facts — update sparingly, only for things that persist across many sessions
+- **memory/journal/<YYYY-MM-DD>-<topic>.md**: Session activity — write frequently
+- **memory/projects/<project-name>.md**: Per-project decisions and non-code details — update when project state changes significantly
+
+Search memory before starting work on a topic: `mcp_memory__*` tools let you find relevant past context quickly.
 
 ### Restrictions
 
