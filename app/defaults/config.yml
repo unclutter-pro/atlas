@@ -4,6 +4,7 @@
 models:
   main: sonnet # Main session model (claude -p --model)
   subagent_review: sonnet # SubagentStop quality gate (prompt hook)
+  reviewer: haiku # Model for automatic task reviewer sessions
   hooks: haiku # Default model for other prompt/agent hooks
 
 memory:
@@ -31,6 +32,10 @@ email:
   folder: "INBOX"
   whitelist: [] # Empty = accept all, or list of senders/domains/wildcards (e.g. "*@*.example.com")
   mark_read: true # Mark fetched emails as read on server
+
+# Automatic task reviewer (fires after worker completes each task)
+review:
+  enabled: false  # Set to true to enable automatic code review + security scanning
 
 daily_cleanup:
   enabled: true

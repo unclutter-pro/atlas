@@ -26,7 +26,9 @@ function createTables(database: Database): void {
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending','processing','done','cancelled')),
       response_summary TEXT,
       created_at TEXT DEFAULT (datetime('now')),
-      processed_at TEXT
+      processed_at TEXT,
+      review_status TEXT DEFAULT 'none',
+      review_feedback TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status_created ON tasks(status, created_at);
@@ -345,6 +347,16 @@ function migrateSchema(database: Database): void {
       database.exec("ROLLBACK");
       throw e;
     }
+  }
+
+  // Add review columns to tasks table if missing
+  const tasksInfo = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+  ).get() as { sql: string } | undefined;
+
+  if (tasksInfo && !tasksInfo.sql.includes('review_status')) {
+    database.exec(`ALTER TABLE tasks ADD COLUMN review_status TEXT DEFAULT 'none'`);
+    database.exec(`ALTER TABLE tasks ADD COLUMN review_feedback TEXT`);
   }
 }
 

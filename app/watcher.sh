@@ -9,6 +9,7 @@ WATCH_DIR=$WORKSPACE/.index
 LOCK_FILE=$WORKSPACE/.index/.session-running
 FLOCK_FILE=$WORKSPACE/.index/.session.flock
 CLAUDE_JSON="$HOME/.claude.json"
+DB=$WORKSPACE/.index/atlas.db
 
 source /atlas/app/hooks/failure-handler.sh
 
@@ -125,7 +126,84 @@ except: pass
   ) 200>"$WORKSPACE/.trigger-${TRIGGER_NAME}.flock" &
 }
 
+handle_review_wake() {
+  local REVIEW_FILE="$1"
+  [ -f "$REVIEW_FILE" ] || return 0
+
+  echo "[$(date)] Review wake event: $REVIEW_FILE"
+
+  (
+    exec </dev/null >>/atlas/logs/watcher.log 2>&1
+
+    TEMP_REVIEW=$(mktemp /tmp/review-XXXXXX.json)
+    mv "$REVIEW_FILE" "$TEMP_REVIEW" 2>/dev/null || { rm -f "$TEMP_REVIEW"; exit 0; }
+
+    REVIEW_TASK_ID=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['task_id'])" "$TEMP_REVIEW" 2>/dev/null || echo "")
+    REVIEW_CONTENT=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['task_content'])" "$TEMP_REVIEW" 2>/dev/null || echo "")
+    REVIEW_SUMMARY=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['response_summary'])" "$TEMP_REVIEW" 2>/dev/null || echo "")
+    rm -f "$TEMP_REVIEW"
+
+    [ -z "$REVIEW_TASK_ID" ] && { echo "[$(date)] Review: missing task_id, skipping"; exit 0; }
+
+    LOG="/atlas/logs/reviewer.log"
+
+    REVIEWER_PROMPT="You are a code reviewer. A worker has just completed task #${REVIEW_TASK_ID}.
+
+## Original Task
+${REVIEW_CONTENT}
+
+## Worker's Result
+${REVIEW_SUMMARY}
+
+## Your Job
+Review the worker's output against the original task requirements. Check:
+1. **Completeness** — Was everything in the task actually done? Are acceptance criteria met?
+2. **Code Quality** — Is the code clean, maintainable, following existing patterns?
+3. **Security** — Any OWASP vulnerabilities? Injection, XSS, hardcoded secrets, insecure dependencies, missing auth checks?
+
+Inspect the actual changed files if needed (read them, run build/lint if relevant).
+
+If everything looks good: call \`task_review_approve\` with task_id=${REVIEW_TASK_ID}.
+If issues found: call \`task_review_reject\` with task_id=${REVIEW_TASK_ID} and precise feedback on what to fix.
+
+Be pragmatic — minor style nits don't warrant rejection. Reject for: missing requirements, broken functionality, real security issues, or significant quality problems."
+
+    REVIEWER_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    REVIEWER_OUT=$(mktemp /tmp/reviewer-out-XXXXXX.json)
+
+    set +e
+    claude-atlas --mode reviewer --output-format json \
+      --dangerously-skip-permissions \
+      -p "$REVIEWER_PROMPT" \
+      > "$REVIEWER_OUT" 2>>"$LOG"
+    REVIEWER_EXIT=$?
+    set -e
+
+    REVIEWER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    save_session_metrics "$REVIEWER_OUT" "reviewer" "" "$REVIEWER_START" "$REVIEWER_END" "$REVIEWER_EXIT"
+    rm -f "$REVIEWER_OUT"
+
+    if [ "$REVIEWER_EXIT" -ne 0 ]; then
+      echo "[$(date)] Reviewer session failed (exit $REVIEWER_EXIT) — auto-approving task $REVIEW_TASK_ID to unblock" | tee -a "$LOG"
+      # Fallback: approve the task so the system doesn't get stuck
+      sqlite3 "$WORKSPACE/.index/atlas.db" \
+        "UPDATE tasks SET review_status='approved' WHERE id=$REVIEW_TASK_ID AND review_status='pending'" 2>/dev/null || true
+      # Re-run wakeTriggerIfAwaiting equivalent via Python
+      python3 /atlas/app/bin/reviewer-fallback-wake.py "$WORKSPACE/.index/atlas.db" "$REVIEW_TASK_ID" 2>>"$LOG" || true
+    fi
+
+    echo "[$(date)] Review complete for task $REVIEW_TASK_ID"
+  ) &
+}
+
 startup_recovery() {
+  # Pass 0: process any .review-* files left on disk
+  for f in "$WATCH_DIR"/.review-*; do
+    [ -f "$f" ] || continue
+    echo "[$(date)] Startup recovery: stale review file $(basename "$f")"
+    handle_review_wake "$f"
+  done
+
   # Pass 1: process any .wake-* files left on disk from a previous watcher run
   for f in "$WATCH_DIR"/.wake-*; do
     [ -f "$f" ] || continue
@@ -157,6 +235,7 @@ startup_recovery() {
       sqlite3 "$DB" "DELETE FROM task_awaits WHERE task_id = $task_id" 2>/dev/null || true
       handle_trigger_wake "$WAKE_FILE"
     done
+
 }
 
 # Ensure watch directory exists
@@ -234,6 +313,10 @@ except: print('')
   # --- Trigger session re-awakening (.wake-<trigger>-<task_id> file) ---
   elif [[ "$FILENAME" == .wake-* ]]; then
     handle_trigger_wake "$WATCH_DIR/$FILENAME"
+
+  # --- Reviewer wake (.review-<task_id> file) ---
+  elif [[ "$FILENAME" == .review-* ]]; then
+    handle_review_wake "$WATCH_DIR/$FILENAME"
   fi
 
 done

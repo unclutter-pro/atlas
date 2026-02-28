@@ -6,7 +6,7 @@ APP_DIR="/atlas/app"
 WORKSPACE="$HOME"
 
 # Parse arguments
-MODE=""  # "worker" or "trigger"
+MODE=""  # "worker", "trigger", or "reviewer"
 RESUME=""
 CLAUDE_ARGS=()
 
@@ -76,10 +76,47 @@ $(cat "$WORKSPACE/IDENTITY.md")"
 
 $(cat "$APP_DIR/prompts/trigger-channel-${CHANNEL}.md")"
     fi
+
+elif [ "$MODE" = "reviewer" ]; then
+    # Reviewer sessions: focused on code review, security, task validation
+    if [ -f "$APP_DIR/prompts/reviewer-system-prompt.md" ]; then
+        SYSTEM_PROMPT="$SYSTEM_PROMPT
+
+---
+
+$(cat "$APP_DIR/prompts/reviewer-system-prompt.md")"
+    fi
+fi
+
+# Resolve model from config (models.reviewer for reviewer, models.main otherwise)
+CONFIG="$WORKSPACE/config.yml"
+MODEL="sonnet"  # default fallback
+if [ -f "$CONFIG" ]; then
+    if [ "$MODE" = "reviewer" ]; then
+        PARSED_MODEL=$(python3 -c "
+import yaml, sys
+try:
+    c = yaml.safe_load(open('$CONFIG'))
+    m = c.get('models', {})
+    print(m.get('reviewer', m.get('main', 'sonnet')))
+except: print('sonnet')
+" 2>/dev/null) || true
+    else
+        PARSED_MODEL=$(python3 -c "
+import yaml, sys
+try:
+    c = yaml.safe_load(open('$CONFIG'))
+    print(c.get('models', {}).get('main', 'sonnet'))
+except: print('sonnet')
+" 2>/dev/null) || true
+    fi
+    if [ -n "$PARSED_MODEL" ]; then
+        MODEL="$PARSED_MODEL"
+    fi
 fi
 
 # Build final claude arguments
-FINAL_ARGS=()
+FINAL_ARGS=(--model "$MODEL")
 if [ -n "$SYSTEM_PROMPT" ]; then
     FINAL_ARGS+=(--append-system-prompt "$SYSTEM_PROMPT")
 fi
