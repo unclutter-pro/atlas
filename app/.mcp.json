@@ -5,7 +5,7 @@
       "args": ["run", "/atlas/app/inbox-mcp/index.ts"]
     },
     "memory": {
-      "url": "http://localhost:8181/sse"
+      "url": "http://localhost:8181/mcp"
     },
     "playwright": {
       "url": "http://localhost:8931/sse"

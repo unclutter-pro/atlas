@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdirSync, closeSync, openSync, writeFileSync } from "fs";
+import { mkdirSync, closeSync, openSync, writeFileSync, readFileSync } from "fs";
 import { getDb } from "./db";
 
 // --- Session context from environment ---
@@ -9,6 +9,27 @@ const ATLAS_TRIGGER = process.env.ATLAS_TRIGGER || "";
 const ATLAS_TRIGGER_SESSION_KEY =
   process.env.ATLAS_TRIGGER_SESSION_KEY || "_default";
 const IS_TRIGGER = !!ATLAS_TRIGGER;
+const IS_REVIEWER = !!process.env.ATLAS_REVIEWER_TASK_ID;
+const REVIEWER_TASK_ID = process.env.ATLAS_REVIEWER_TASK_ID
+  ? parseInt(process.env.ATLAS_REVIEWER_TASK_ID, 10)
+  : null;
+
+function isReviewEnabled(): boolean {
+  try {
+    const raw = readFileSync((process.env.HOME ?? "") + "/config.yml", "utf8");
+    const reviewSection = raw.split(/^review:/m)[1];
+    if (!reviewSection) return false;
+    // Get only lines until next top-level key
+    const lines = reviewSection.split("\n");
+    for (const line of lines) {
+      if (/^\S/.test(line.trim()) && line.trim() !== "") break;
+      if (/enabled:\s*true/.test(line)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 /** Touch a file (create or update mtime) */
 function touchFile(path: string): void {
@@ -270,8 +291,18 @@ if (!IS_TRIGGER) {
         );
       }
 
-      // Wake the trigger session that created this task
-      wakeTriggerIfAwaiting(task_id, response_summary);
+      // If review is enabled, write a review wake file instead of waking trigger directly
+      if (isReviewEnabled()) {
+        const indexDir = process.env.HOME + "/.index";
+        mkdirSync(indexDir, { recursive: true });
+        writeFileSync(
+          `${indexDir}/.review-${task_id}`,
+          JSON.stringify({ task_id, response_summary })
+        );
+      } else {
+        // Wake the trigger session that created this task
+        wakeTriggerIfAwaiting(task_id, response_summary);
+      }
 
       return ok(db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id));
     },
@@ -344,6 +375,78 @@ if (!IS_TRIGGER) {
       },
     });
   });
+}
+
+// =============================================================================
+// REVIEWER TOOLS — only registered when ATLAS_REVIEWER_TASK_ID is set
+// =============================================================================
+if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
+  // task_review_approve: Approve the work and wake the trigger
+  server.tool(
+    "task_review_approve",
+    "Approve the task result. This wakes the trigger that created the task and delivers the worker's response.",
+    {},
+    async () => {
+      const db = getDb();
+      const task = db
+        .prepare("SELECT * FROM tasks WHERE id = ?")
+        .get(REVIEWER_TASK_ID) as any;
+      if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
+
+      db.prepare(
+        "UPDATE tasks SET review_status = 'approved' WHERE id = ?"
+      ).run(REVIEWER_TASK_ID);
+
+      wakeTriggerIfAwaiting(REVIEWER_TASK_ID, task.response_summary);
+      return ok({ approved: true, task_id: REVIEWER_TASK_ID });
+    }
+  );
+
+  // task_review_reject: Reject and send back to worker with feedback
+  server.tool(
+    "task_review_reject",
+    "Reject the task result and send it back to the worker with feedback. The worker will retry.",
+    {
+      feedback: z
+        .string()
+        .describe("Specific feedback for the worker on what needs to be fixed or improved"),
+    },
+    async ({ feedback }) => {
+      const db = getDb();
+      const task = db
+        .prepare("SELECT * FROM tasks WHERE id = ?")
+        .get(REVIEWER_TASK_ID) as any;
+      if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
+
+      // Append feedback to task content and reset to pending
+      const updatedContent = `${task.content}\n\n---\n**Reviewer Feedback (attempt ${(task.review_attempts ?? 0) + 1}):**\n${feedback}`;
+      db.prepare(
+        `UPDATE tasks SET status = 'pending', review_status = 'rejected',
+         review_feedback = ?, content = ?, processed_at = NULL, response_summary = NULL
+         WHERE id = ?`
+      ).run(feedback, updatedContent, REVIEWER_TASK_ID);
+
+      // Wake the worker to retry
+      const indexDir = process.env.HOME + "/.index";
+      mkdirSync(indexDir, { recursive: true });
+      writeFileSync(`${indexDir}/.wake`, "");
+
+      return ok({ rejected: true, task_id: REVIEWER_TASK_ID, feedback });
+    }
+  );
+
+  // task_get: Read the task to review
+  server.tool(
+    "task_review_get",
+    "Get the task details to review — original content and worker's response summary.",
+    {},
+    async () => {
+      const db = getDb();
+      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(REVIEWER_TASK_ID);
+      if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
+      return ok(task);
+    }
+  );
 }
 
 // --- Start server ---
