@@ -78,7 +78,7 @@ $(cat "$APP_DIR/prompts/trigger-channel-${CHANNEL}.md")"
     fi
 
 elif [ "$MODE" = "reviewer" ]; then
-    # Reviewer sessions: focused on code review, security, task validation
+    # Reviewer sessions: focused on code review, security, quality — always Sonnet
     if [ -f "$APP_DIR/prompts/reviewer-system-prompt.md" ]; then
         SYSTEM_PROMPT="$SYSTEM_PROMPT
 
@@ -88,24 +88,27 @@ $(cat "$APP_DIR/prompts/reviewer-system-prompt.md")"
     fi
 fi
 
-# Resolve model
-# Reviewer always uses Sonnet; other modes read models.main from config
-if [ "$MODE" = "reviewer" ]; then
-    MODEL="sonnet"
-else
-    CONFIG="$WORKSPACE/config.yml"
-    MODEL="sonnet"  # default fallback
-    if [ -f "$CONFIG" ]; then
-        PARSED_MODEL=$(python3 -c "
+# Resolve model from config
+CONFIG="$WORKSPACE/config.yml"
+MODEL="sonnet"  # default fallback
+HAS_MODEL_FLAG=false
+
+# Reviewer always runs on Sonnet
+if [ "$MODE" = "reviewer" ] && [ "$HAS_MODEL_FLAG" = false ]; then
+  MODEL="sonnet"
+  HAS_MODEL_FLAG=true
+fi
+
+if [ "$HAS_MODEL_FLAG" = false ] && [ -f "$CONFIG" ]; then
+    PARSED_MODEL=$(python3 -c "
 import yaml, sys
 try:
     c = yaml.safe_load(open('$CONFIG'))
     print(c.get('models', {}).get('main', 'sonnet'))
 except: print('sonnet')
 " 2>/dev/null) || true
-        if [ -n "$PARSED_MODEL" ]; then
-            MODEL="$PARSED_MODEL"
-        fi
+    if [ -n "$PARSED_MODEL" ]; then
+        MODEL="$PARSED_MODEL"
     fi
 fi
 
