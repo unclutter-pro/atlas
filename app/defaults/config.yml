@@ -4,7 +4,6 @@
 models:
   main: sonnet # Main session model (claude -p --model)
   subagent_review: sonnet # SubagentStop quality gate (prompt hook)
-  reviewer: haiku # Model for automatic task reviewer sessions
   hooks: haiku # Default model for other prompt/agent hooks
 
 memory:

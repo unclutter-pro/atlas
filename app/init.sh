@@ -188,6 +188,20 @@ rm -f "$HOME/.claude/agents"
 ln -sfn "$HOME/agents" "$HOME/.claude/agents"
 echo "  Agents symlinked: $HOME/.claude/agents -> $HOME/agents"
 
+# Install built-in review agents (available to reviewer sessions)
+if [ -d "/atlas/app/defaults/agents" ]; then
+  mkdir -p "$HOME/agents"
+  for agent_file in "/atlas/app/defaults/agents"/*.md; do
+    [ -f "$agent_file" ] || continue
+    agent_name=$(basename "$agent_file")
+    # Only install if user hasn't overridden it
+    if [ ! -f "$HOME/agents/$agent_name" ]; then
+      cp "$agent_file" "$HOME/agents/$agent_name"
+      echo "  Agent installed: $agent_name"
+    fi
+  done
+fi
+
 # Disable remote MCP connectors (claudeai-mcp) that cause session hangs.
 if [ -f "$HOME/.claude.json" ] && command -v jq &>/dev/null; then
   jq '.cachedGrowthBookFeatures.tengu_claudeai_mcp_connectors = false' \

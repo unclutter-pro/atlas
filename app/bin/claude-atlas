@@ -88,20 +88,14 @@ $(cat "$APP_DIR/prompts/reviewer-system-prompt.md")"
     fi
 fi
 
-# Resolve model from config (models.reviewer for reviewer, models.main otherwise)
-CONFIG="$WORKSPACE/config.yml"
-MODEL="sonnet"  # default fallback
-if [ -f "$CONFIG" ]; then
-    if [ "$MODE" = "reviewer" ]; then
-        PARSED_MODEL=$(python3 -c "
-import yaml, sys
-try:
-    c = yaml.safe_load(open('$CONFIG'))
-    m = c.get('models', {})
-    print(m.get('reviewer', m.get('main', 'sonnet')))
-except: print('sonnet')
-" 2>/dev/null) || true
-    else
+# Resolve model
+# Reviewer always uses Sonnet; other modes read models.main from config
+if [ "$MODE" = "reviewer" ]; then
+    MODEL="sonnet"
+else
+    CONFIG="$WORKSPACE/config.yml"
+    MODEL="sonnet"  # default fallback
+    if [ -f "$CONFIG" ]; then
         PARSED_MODEL=$(python3 -c "
 import yaml, sys
 try:
@@ -109,9 +103,9 @@ try:
     print(c.get('models', {}).get('main', 'sonnet'))
 except: print('sonnet')
 " 2>/dev/null) || true
-    fi
-    if [ -n "$PARSED_MODEL" ]; then
-        MODEL="$PARSED_MODEL"
+        if [ -n "$PARSED_MODEL" ]; then
+            MODEL="$PARSED_MODEL"
+        fi
     fi
 fi
 
