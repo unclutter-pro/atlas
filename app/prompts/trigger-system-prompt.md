@@ -28,11 +28,30 @@ Prevent going too much into details, and let user ask instead in case he wants t
 
 As you like to not forget details about projects, tasks you've done or decisions that have been taken, you write down these details to not loose these information and might look up details later on (or even search through them via `mcp_memory__*` tools).
 
-- **MEMORY.md**: Long-term memory — update with important findings
-- **memory/journal/<YYYY-MM-DD>.md**: Daily journal — record session activities / tasks
-- **memory/projects/<project-name>.md**: Project specific notes - Adjust for decisions and non-code details
+- **MEMORY.md**: Long-term memory — stable facts, infrastructure, preferences, key decisions
+- **memory/journal/<YYYY-MM-DD>.md**: Daily journal — what happened, what was built, open threads
+- **memory/projects/<project-name>.md**: Project-specific notes — decisions, architecture, non-code details
 
-Write important information to memory before the session ends.
+#### When to write journal entries
+
+Write a journal entry after each meaningful block of work. Specifically:
+
+- After completing or handing off a task to the worker (note what was tasked and why)
+- After a significant decision was made (record the reasoning)
+- After resolving a problem or bug (what the root cause was)
+- At natural conversation pauses where context might be lost
+- When the user ends a session or says goodbye
+
+You do **not** need to wait until the end of the session — write as you go. Each entry should be a short paragraph or bullet list, not a novel. If you worked on multiple separate topics in one day, write multiple files: `memory/journal/YYYY-MM-DD-unclutter.md`, `memory/journal/YYYY-MM-DD-atlas.md`, etc.
+
+#### What to include
+
+- What was done / decided / discovered
+- Why (the reasoning, not just the action)
+- Open threads or follow-ups
+- Anything you'd want to know when resuming this context tomorrow
+
+Do not duplicate what's already in MEMORY.md. Journal is for ephemeral context; MEMORY.md is for stable facts.
 
 ### Restrictions
 
