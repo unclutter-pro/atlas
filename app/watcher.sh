@@ -199,6 +199,47 @@ PYEOF2
   ) 200>"$WORKSPACE/.reviewer-${TASK_ID}.flock" &
 }
 
+run_session_end_hook() {
+  local EXIT_CODE="$1"
+  local SESSION_ID="$2"
+
+  # Check if session-end hook prompt exists
+  local HOOK_PROMPT="/atlas/app/hooks/session-end.md"
+  [ -f "$HOOK_PROMPT" ] || return 0
+
+  echo "[$(date)] Running session-end hook (exit=$EXIT_CODE)"
+
+  (
+    exec </dev/null >>/atlas/logs/watcher.log 2>&1
+
+    HOOK_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    HOOK_OUT=$(mktemp /tmp/session-end-out-XXXXXX.json)
+
+    local PROMPT_CONTENT
+    PROMPT_CONTENT=$(cat "$HOOK_PROMPT")
+    PROMPT_CONTENT="${PROMPT_CONTENT//\{\{exit_code\}\}/$EXIT_CODE}"
+    PROMPT_CONTENT="${PROMPT_CONTENT//\{\{session_id\}\}/$SESSION_ID}"
+    PROMPT_CONTENT="${PROMPT_CONTENT//\{\{date\}\}/$(date -u +"%Y-%m-%d")}"
+
+    set +e
+    claude-atlas --mode worker --output-format json \
+      --dangerously-skip-permissions \
+      --max-turns 8 \
+      -p "$PROMPT_CONTENT" \
+      > "$HOOK_OUT" 2>>/atlas/logs/session-end.log
+    HOOK_EXIT=$?
+    set -e
+
+    HOOK_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    save_session_metrics "$HOOK_OUT" "session-end" "" "$HOOK_START" "$HOOK_END" "$HOOK_EXIT"
+    rm -f "$HOOK_OUT"
+
+    echo "[$(date)] Session-end hook complete (exit=$HOOK_EXIT)"
+  ) &
+  # Wait for hook to complete (with timeout)
+  wait $! 2>/dev/null || true
+}
+
 startup_recovery() {
   # Pass 0: process any .review-* files left on disk
   for f in "$WATCH_DIR"/.review-*; do
@@ -303,6 +344,8 @@ except: print('')
       rm -f "$WORKER_OUT"
 
       rm -f "$LOCK_FILE"
+
+      run_session_end_hook "$CLAUDE_EXIT" "${NEW_SESSION_ID:-}"
 
       if [ "$CLAUDE_EXIT" -eq 0 ]; then
         on_session_success
