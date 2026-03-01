@@ -143,21 +143,25 @@ handle_review_wake() {
     mv "$REVIEW_FILE" "$TEMP_REVIEW" 2>/dev/null || { rm -f "$TEMP_REVIEW"; exit 0; }
     rm -f "$TEMP_REVIEW"
 
+    # Extract task content and summary from DB
+    TASK_CONTENT=$(sqlite3 "$DB" "SELECT content FROM tasks WHERE id=$TASK_ID" 2>/dev/null || echo "")
+    TASK_SUMMARY=$(sqlite3 "$DB" "SELECT COALESCE(response_summary,'') FROM tasks WHERE id=$TASK_ID" 2>/dev/null || echo "")
+
     LOG="/atlas/logs/reviewer.log"
-    REVIEWER_PROMPT_FILE="$HOME/triggers/task-reviewer/prompt.md"
-    if [ ! -f "$REVIEWER_PROMPT_FILE" ]; then
-      REVIEWER_PROMPT="Task #${TASK_ID} has been completed by the worker. Use task_get_for_review() to see the original task and the worker's response. Review the work quality: check if the task requirements are fully met and the result is correct. If acceptable, call task_review_approve(). If there are issues, call task_review_reject(feedback) with specific actionable feedback."
-    else
-      REVIEWER_PROMPT=$(cat "$REVIEWER_PROMPT_FILE")
-      REVIEWER_PROMPT="${REVIEWER_PROMPT//\{\{task_id\}\}/$TASK_ID}"
-    fi
+    REVIEWER_PROMPT="Review task #${TASK_ID}.
+
+## Original Task
+${TASK_CONTENT}
+
+## Worker Result
+${TASK_SUMMARY}"
 
     REVIEWER_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     REVIEWER_OUT=$(mktemp /tmp/reviewer-out-XXXXXX.json)
 
     echo "[$(date)] Launching reviewer for task $TASK_ID"
     ATLAS_REVIEWER_TASK_ID="$TASK_ID" claude-atlas \
-      --mode worker \
+      --mode reviewer \
       --output-format json \
       --dangerously-skip-permissions \
       -p "$REVIEWER_PROMPT" \
