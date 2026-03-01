@@ -31,17 +31,34 @@ Task(subagent_type="security-code-reviewer", prompt="Review the following change
 
 Pass the relevant file contents or git diff in the prompt so the subagent has context.
 
+### JSON output validation
+
+Before anything else, check that the worker's `response_summary` is valid JSON matching this schema:
+```json
+{"status": "done|blocked", "summary": "...", "files_changed": [...], "blockers": [...]}
+```
+If the JSON is malformed or missing required fields, reject with feedback asking the worker to fix the output format.
+
+### Iteration awareness
+
+Check `iteration_count` in the task data. The system auto-approves at 5 iterations regardless of quality.
+- Iterations 1-3: Apply normal standards
+- Iteration 4+: Be more lenient — only reject for genuine blockers, not quality issues
+- Never reject for style, formatting, or minor issues at any iteration
+
 ### Decision
 
 **Approve** with `task_review_approve(task_id)` when:
 - All requirements from the task are met
 - No real security vulnerabilities
 - Code quality is acceptable
+- Response JSON is well-formed
 
 **Reject** with `task_review_reject(task_id, feedback)` when:
 - Requirements not met or functionality is broken
 - Real security issue found (not theoretical)
 - Significant quality problem that affects production
+- Response JSON is malformed (first occurrence only)
 
 Minor nitpicks → approve and include notes. Don't reject for style.
 

@@ -18,6 +18,16 @@ if [ -n "${ATLAS_TRIGGER:-}" ]; then
   exit 0
 fi
 
+# Reviewer session mode — just exit, watcher handles next step
+if [ -n "${ATLAS_REVIEWER_TASK_ID:-}" ]; then
+  exit 0
+fi
+
+# Worker session mode (ephemeral) — just exit, watcher handles next task
+if [ -n "${ATLAS_WORKER_TASK_ID:-}" ]; then
+  exit 0
+fi
+
 # === Main/worker session logic below ===
 
 # Save current session ID
@@ -72,11 +82,8 @@ if [ -f "$DB" ]; then
       echo "<pending-tasks>"
       echo "You have $PENDING pending task(s) in the queue."
       echo "</pending-tasks>"
-      echo "<task-instruction>"
-      echo "Use get_next_task() to pick up and process the next task."
-      echo "</task-instruction>"
     } >&2
-    exit 2
+    # Pending tasks are picked up by the watcher on next .wake event
   fi
 fi
 

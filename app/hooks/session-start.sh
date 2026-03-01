@@ -39,8 +39,8 @@ if [ -d "$MEMORY_DIR/journal" ]; then
   fi
 fi
 
-# Show pending inbox count
-if [ -f "$DB" ]; then
+# Show pending inbox count (for trigger sessions only — workers get tasks directly)
+if [ -f "$DB" ] && [ -z "${ATLAS_WORKER_TASK_ID:-}" ]; then
   PENDING=$(sqlite3 "$DB" "SELECT count(*) FROM tasks WHERE status='pending';" 2>/dev/null || echo "0")
   if [ "$PENDING" -gt 0 ]; then
     echo "<inbox-status>"

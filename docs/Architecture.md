@@ -58,19 +58,44 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 
 ## Session Types
 
-### Main Session (Worker)
-- **Spawned by**: watcher.sh on `.wake`
+### Worker Session (Ephemeral)
+- **Spawned by**: watcher.sh on `.wake` — one fresh session per task
 - **Access**: Read/write workspace
-- **Tools**: Worker tools (get_next_task, task_complete, etc.)
-- **Purpose**: Processes escalated tasks, writes memory
+- **Tools**: `mcp_inbox__task_complete` only (no task_create, no memory MCP)
+- **Working directory**: Task's `path` if set, otherwise `$HOME`
+- **Purpose**: Executes a single task; outputs JSON result via `task_complete`
+- **Lifecycle**: Exits after completing one task; never resumed between different tasks
+- **Review loop**: On rejection, previous session resumed with reviewer feedback (up to 5 iterations)
 
-### Trigger Session
+### Trigger Session (Project Manager)
 - **Spawned by**: trigger.sh per event
-- **Access**: Read-only workspace
-- **Tools**: Trigger tools (task_create, task_get, etc.)
-- **Purpose**: Filters events, escalates when needed
+- **Access**: Full workspace (read/write)
+- **Tools**: Trigger tools (task_create, task_get, memory MCP, etc.)
+- **Purpose**: Communicates with user, plans work, delegates tasks to workers
+- **Continuity**: Persistent sessions per trigger+key; manages memory and journal
 
 See [Triggers.md](Triggers.md) for details.
+
+## Task Types & Parallel Execution
+
+| Task Type | Path Required | Locking | Parallelism |
+|-----------|--------------|---------|-------------|
+| `normal` | Optional | Path-based (parent/child aware) | Parallel for non-overlapping paths |
+| `readonly` | None | None | Always parallel |
+
+Path locks are acquired at `task_create` and released at `task_review_approve` (or force-approve at iteration 5).
+
+## Review Loop
+
+Every completed task goes through a review cycle before the trigger is notified:
+
+```
+Worker → task_complete → review_status='pending' → .review-<id> file
+Watcher → spawns Reviewer session
+Reviewer → task_review_approve → trigger woken, path lock released
+         → task_review_reject  → iteration_count++, task reset to pending, worker re-spawned
+         → (at iteration 5)   → force-approve with [WARNING] prefix
+```
 
 ## Filesystem Layout
 

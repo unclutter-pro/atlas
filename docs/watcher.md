@@ -26,16 +26,49 @@ touch /home/atlas/.index/.wake
 
 When the watcher detects `.wake`:
 
-1. Acquires exclusive lock via `flock` (prevents concurrent sessions)
-2. Creates `.session-running` lock file (web-ui status indicator)
-3. Reads session ID from `.last-session-id`
-4. Disables remote MCP connectors (patches `~/.claude.json`)
-5. Resumes or starts Claude session:
-   ```bash
-   claude-atlas --mode worker --resume "$SESSION_ID" -p \
-     "You have new tasks. Use get_next_task() to process them."
+1. Acquires exclusive lock via `flock` (prevents concurrent normal task sessions)
+2. Atomically claims the next pending task from the DB:
+   ```sql
+   UPDATE tasks SET status='processing' WHERE id=(SELECT id FROM tasks WHERE status='pending' ORDER BY created_at ASC LIMIT 1) RETURNING *
    ```
-6. Removes `.session-running` when done
+3. If no pending tasks — exits (prevents spurious wake processing)
+4. Creates `.session-running` lock file (web-ui status indicator)
+5. Determines working directory from task's `path` field (falls back to `$HOME`)
+6. Spawns a **fresh ephemeral Claude session** with the task content as direct prompt:
+   ```bash
+   cd "$TASK_PATH" && claude-atlas --mode worker --output-format json \
+     --dangerously-skip-permissions -p "$TASK_CONTENT"
+   ```
+   For rejected tasks (iteration > 0): resumes the previous session with reviewer feedback
+7. Saves worker `session_id` to DB for potential resume on rejection
+8. Removes `.session-running` when done
+9. If more pending tasks remain, touches `.wake` again to process them
+
+## Ephemeral Workers
+
+Workers are **not** resumed between tasks. Each task gets a fresh Claude session with:
+- Task content injected directly as the `-p` prompt
+- Working directory set to the task's `path` (if provided)
+- No memory or continuity from previous sessions
+- `ATLAS_WORKER_TASK_ID` env var set for the session
+
+Workers complete their task by calling `mcp_inbox__task_complete` with a JSON result:
+```json
+{"status": "done", "summary": "...", "files_changed": [...], "blockers": []}
+```
+
+## Path-Based Locking
+
+Tasks can specify an optional `path` parameter (absolute directory path). This enables:
+
+- **Parallel execution**: Tasks with non-overlapping paths run concurrently
+- **Serialization**: Tasks targeting the same or parent/child paths are queued
+- **Read-only tasks**: `task_type="readonly"` tasks always run in parallel (no lock)
+
+Path locks are held from task creation through review approval. They are released on:
+- `task_review_approve` — normal completion
+- `task_review_reject` at iteration 5 — force-approve with warning
+- Startup recovery — orphaned locks are cleaned up automatically
 
 ## Concurrency Control
 
