@@ -356,6 +356,8 @@ function migrateSchema(database: Database): void {
 
   if (tasksInfo && !tasksInfo.sql.includes('review_status')) {
     database.exec(`ALTER TABLE tasks ADD COLUMN review_status TEXT DEFAULT 'none'`);
+  }
+  if (tasksInfo && !tasksInfo.sql.includes('review_feedback')) {
     database.exec(`ALTER TABLE tasks ADD COLUMN review_feedback TEXT`);
   }
 }

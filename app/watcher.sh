@@ -214,6 +214,13 @@ startup_recovery() {
     handle_trigger_wake "$f"
   done
 
+  # Pass 1b: process any .review-* files left on disk from a previous watcher run
+  for f in "$WATCH_DIR"/.review-*; do
+    [ -f "$f" ] || continue
+    echo "[$(date)] Startup recovery: stale review file $(basename \"$f\")"
+    handle_review_wake "$f"
+  done
+
   # Pass 2: re-create wake files for done tasks whose wake file was never written
   [ -f "$DB" ] || return 0
   sqlite3 -json "$DB" \
