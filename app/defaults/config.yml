@@ -32,11 +32,6 @@ email:
   whitelist: [] # Empty = accept all, or list of senders/domains/wildcards (e.g. "*@*.example.com")
   mark_read: true # Mark fetched emails as read on server
 
-# Automatic task reviewer (fires after worker completes each task)
-review:
-  enabled: false  # Set to true to enable automatic task review before trigger wakeup
-  model: haiku    # Model for the reviewer session
-
 daily_cleanup:
   enabled: true
   max_turns: 5
