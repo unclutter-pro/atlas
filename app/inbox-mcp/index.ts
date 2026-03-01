@@ -11,6 +11,9 @@ const ATLAS_TRIGGER_SESSION_KEY =
 const IS_TRIGGER = !!ATLAS_TRIGGER;
 
 const IS_REVIEWER = !!process.env.ATLAS_REVIEWER_TASK_ID;
+const REVIEWER_TASK_ID = process.env.ATLAS_REVIEWER_TASK_ID
+  ? parseInt(process.env.ATLAS_REVIEWER_TASK_ID, 10)
+  : null;
 
 /** Touch a file (create or update mtime) */
 function touchFile(path: string): void {
