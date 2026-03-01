@@ -204,6 +204,15 @@ PYEOF2
 }
 
 startup_recovery() {
+  # Pass 0a: release orphaned path_locks for tasks no longer active
+  if [ -f "$DB" ]; then
+    sqlite3 "$DB" "
+      DELETE FROM path_locks
+      WHERE task_id NOT IN (
+        SELECT id FROM tasks WHERE status IN ('pending','processing')
+      )" 2>/dev/null || true
+  fi
+
   # Pass 0: process any .review-* files left on disk
   for f in "$WATCH_DIR"/.review-*; do
     [ -f "$f" ] || continue
@@ -264,41 +273,103 @@ inotifywait -m "$WATCH_DIR" -e create,modify,attrib --exclude '\.(db|wal|shm)$' 
 
   # --- Main session wake (.wake file) ---
   if [ "$FILENAME" = ".wake" ]; then
-    echo "[$(date)] Main session wake event"
+    echo "[$(date)] Worker wake event"
 
     (
       exec </dev/null >>/atlas/logs/watcher.log 2>&1
       flock -n 9 || { echo "[$(date)] Session already running, skipping"; exit 0; }
 
+      # Atomically claim the next pending task
+      NEXT_TASK=$(sqlite3 -json "$DB" \
+        "UPDATE tasks SET status='processing', processed_at=datetime('now')
+         WHERE id=(SELECT id FROM tasks WHERE status='pending' ORDER BY created_at ASC LIMIT 1)
+         RETURNING id, content, path, task_type, worker_session_id, iteration_count, review_feedback" 2>/dev/null \
+        | python3 -c "
+import sys, json
+rows = json.load(sys.stdin)
+print(json.dumps(rows[0]) if rows else '')
+" 2>/dev/null || echo "")
+
+      if [ -z "$NEXT_TASK" ]; then
+        echo "[$(date)] No pending tasks, back to sleep"
+        exit 0
+      fi
+
+      TASK_ID=$(echo "$NEXT_TASK" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+      TASK_CONTENT=$(echo "$NEXT_TASK" | python3 -c "import sys,json; print(json.load(sys.stdin)['content'])")
+      TASK_PATH=$(echo "$NEXT_TASK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('path') or '')")
+      TASK_TYPE=$(echo "$NEXT_TASK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('task_type') or 'normal')")
+      WORKER_SESSION_ID=$(echo "$NEXT_TASK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('worker_session_id') or '')")
+      ITERATION=$(echo "$NEXT_TASK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('iteration_count') or 0)")
+      REVIEW_FEEDBACK=$(echo "$NEXT_TASK" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('review_feedback') or '')")
+
+      echo "[$(date)] Processing task $TASK_ID (type=$TASK_TYPE, iteration=$ITERATION)"
+
       touch "$LOCK_FILE"  # web-ui status indicator
 
-      SESSION_ID=$(cat "$SESSION_FILE" 2>/dev/null || echo "")
-
       disable_remote_mcp
+
+      # Determine working directory
+      WORK_DIR="$HOME"
+      if [ -n "$TASK_PATH" ] && [ -d "$TASK_PATH" ]; then
+        WORK_DIR="$TASK_PATH"
+      fi
+
+      # Build worker prompt
+      if [ -n "$WORKER_SESSION_ID" ] && [ "$ITERATION" -gt 0 ]; then
+        # Rejected task: resume session with reviewer feedback
+        WORKER_PROMPT="Your previous work on this task was reviewed and needs changes.
+
+## Reviewer Feedback (iteration $ITERATION)
+$REVIEW_FEEDBACK
+
+Please address the feedback above. When done, call mcp_inbox__task_complete with:
+- task_id: $TASK_ID
+- response_summary: JSON string with schema: {"status":"done","summary":"...","files_changed":[],"blockers":[]}"
+      else
+        # Fresh task
+        WORKER_PROMPT="You have one task to complete.
+
+## Your Task (ID: $TASK_ID)
+
+$TASK_CONTENT
+
+## Output Format
+
+When finished, call mcp_inbox__task_complete with:
+- task_id: $TASK_ID
+- response_summary: a JSON string with this exact schema:
+  {"status":"done","summary":"<what was accomplished>","files_changed":["path/to/file"],"blockers":[]}
+
+Use status "blocked" (not "done") if you cannot complete the task. Put blockers in the blockers array."
+      fi
+
+      export ATLAS_WORKER_TASK_ID="$TASK_ID"
 
       set +e
       WORKER_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       WORKER_OUT=$(mktemp /tmp/worker-out-XXXXXX.json)
 
-      if [ -n "$SESSION_ID" ]; then
-        echo "[$(date)] Resuming session: $SESSION_ID"
-        claude-atlas --mode worker --output-format json --resume "$SESSION_ID" \
+      if [ -n "$WORKER_SESSION_ID" ] && [ "$ITERATION" -gt 0 ]; then
+        echo "[$(date)] Resuming worker session $WORKER_SESSION_ID for task $TASK_ID (iteration $ITERATION)"
+        (cd "$WORK_DIR" && claude-atlas --mode worker --output-format json \
+          --resume "$WORKER_SESSION_ID" \
           --dangerously-skip-permissions \
-          -p "You have new tasks. Use get_next_task() to process them." \
-          > "$WORKER_OUT" 2>>/atlas/logs/session.log
+          -p "$WORKER_PROMPT" \
+          > "$WORKER_OUT" 2>>/atlas/logs/session.log)
       else
-        echo "[$(date)] Starting new session"
-        claude-atlas --mode worker --output-format json \
+        echo "[$(date)] Starting ephemeral worker for task $TASK_ID in $WORK_DIR"
+        (cd "$WORK_DIR" && claude-atlas --mode worker --output-format json \
           --dangerously-skip-permissions \
-          -p "You have new tasks. Use get_next_task() to process them." \
-          > "$WORKER_OUT" 2>>/atlas/logs/session.log
+          -p "$WORKER_PROMPT" \
+          > "$WORKER_OUT" 2>>/atlas/logs/session.log)
       fi
       CLAUDE_EXIT=$?
       set -e
 
       WORKER_END=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-      # Extract session_id from JSON output (supplements stop.sh which also saves it)
+      # Save worker session_id for potential resume on rejection
       NEW_SESSION_ID=$(python3 -c "
 import json, sys
 try:
@@ -307,7 +378,7 @@ try:
 except: print('')
 " "$WORKER_OUT" 2>/dev/null || echo "")
       if [ -n "$NEW_SESSION_ID" ]; then
-        echo "$NEW_SESSION_ID" > "$SESSION_FILE"
+        sqlite3 "$DB" "UPDATE tasks SET worker_session_id='${NEW_SESSION_ID}' WHERE id=$TASK_ID" 2>/dev/null || true
       fi
 
       save_session_metrics "$WORKER_OUT" "worker" "" "$WORKER_START" "$WORKER_END" "$CLAUDE_EXIT"
@@ -317,10 +388,17 @@ except: print('')
 
       if [ "$CLAUDE_EXIT" -eq 0 ]; then
         on_session_success
-        echo "[$(date)] Session ended, back to sleep"
+        echo "[$(date)] Worker done for task $TASK_ID"
       else
-        echo "[$(date)] Session failed with exit $CLAUDE_EXIT, entering backoff"
+        echo "[$(date)] Worker failed (exit $CLAUDE_EXIT) for task $TASK_ID, entering backoff"
         on_session_failure "$CLAUDE_EXIT"
+      fi
+
+      # Re-wake if more pending tasks remain
+      PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM tasks WHERE status='pending'" 2>/dev/null || echo 0)
+      if [ "$PENDING" -gt 0 ]; then
+        echo "[$(date)] $PENDING pending tasks remain, re-waking"
+        touch "$WATCH_DIR/.wake"
       fi
     ) 9>"$FLOCK_FILE" &
 
