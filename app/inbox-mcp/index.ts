@@ -266,6 +266,14 @@ if (!IS_TRIGGER) {
         });
       }
 
+      // Block worker if any task is currently under review
+      const pendingReview = db
+        .prepare("SELECT id FROM tasks WHERE review_status = 'pending' LIMIT 1")
+        .get();
+      if (pendingReview) {
+        return ok({ task: null, message: "Review in progress — worker paused until review completes." });
+      }
+
       // Atomically claim next pending in a single statement
       const next = db
         .prepare(
@@ -410,6 +418,12 @@ if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
       ).run(REVIEWER_TASK_ID);
 
       wakeTriggerIfAwaiting(REVIEWER_TASK_ID, task.response_summary);
+
+      // Wake worker to pick up next task (or retry this one if rejected)
+      const indexDir = process.env.HOME + "/.index";
+      mkdirSync(indexDir, { recursive: true });
+      touchFile(indexDir + "/.wake");
+
       return ok({ approved: true, task_id: REVIEWER_TASK_ID });
     }
   );
@@ -438,10 +452,10 @@ if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
          WHERE id = ?`
       ).run(feedback, updatedContent, REVIEWER_TASK_ID);
 
-      // Wake the worker to retry
+      // Wake worker to pick up next task (or retry this one if rejected)
       const indexDir = process.env.HOME + "/.index";
       mkdirSync(indexDir, { recursive: true });
-      writeFileSync(`${indexDir}/.wake`, "");
+      touchFile(indexDir + "/.wake");
 
       return ok({ rejected: true, task_id: REVIEWER_TASK_ID, feedback });
     }
