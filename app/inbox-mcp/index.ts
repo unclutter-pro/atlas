@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdirSync, closeSync, openSync, writeFileSync, readFileSync } from "fs";
+import { mkdirSync, closeSync, openSync, writeFileSync } from "fs";
 import { getDb } from "./db";
 
 // --- Session context from environment ---
@@ -11,24 +11,6 @@ const ATLAS_TRIGGER_SESSION_KEY =
 const IS_TRIGGER = !!ATLAS_TRIGGER;
 
 const IS_REVIEWER = !!process.env.ATLAS_REVIEWER_TASK_ID;
-
-function isReviewEnabled(): boolean {
-  try {
-    const raw = readFileSync(process.env.HOME + "/config.yml", "utf-8");
-    const reviewSection = raw.split(/^review:/m)[1];
-    if (!reviewSection) return false;
-    const lines = reviewSection.split("\n");
-    for (const line of lines) {
-      if (/^\S/.test(line)) break; // left into next section
-      const m = line.match(/^\s+enabled:\s*(true|false)/);
-      if (m) return m[1] === "true";
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
 
 /** Touch a file (create or update mtime) */
 function touchFile(path: string): void {
@@ -327,15 +309,9 @@ if (!IS_TRIGGER) {
         );
       }
 
-      // If review is enabled, write a review wake file instead of waking trigger directly
-      if (isReviewEnabled()) {
-        // Set review_status to pending and trigger reviewer instead of waking trigger directly
-        db.prepare("UPDATE tasks SET review_status = 'pending' WHERE id = ?").run(task_id);
-        writeReviewWakeFile(task_id);
-      } else {
-        // Wake the trigger session that created this task
-        wakeTriggerIfAwaiting(task_id, response_summary);
-      }
+      // Always route through reviewer before waking trigger
+      db.prepare("UPDATE tasks SET review_status = 'pending' WHERE id = ?").run(task_id);
+      writeReviewWakeFile(task_id);
 
       return ok(db.prepare("SELECT * FROM tasks WHERE id = ?").get(task_id));
     },

@@ -34,7 +34,8 @@ email:
 
 # Automatic task reviewer (fires after worker completes each task)
 review:
-  enabled: false  # Set to true to enable automatic code review + security scanning
+  enabled: false  # Set to true to enable automatic task review before trigger wakeup
+  model: haiku    # Model for the reviewer session
 
 daily_cleanup:
   enabled: true
