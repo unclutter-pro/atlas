@@ -50,6 +50,15 @@ function createTables(database: Database): void {
       updated_at TEXT DEFAULT (datetime('now')),
       UNIQUE(trigger_name, session_key)
     );
+
+    CREATE TABLE IF NOT EXISTS path_locks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      path TEXT NOT NULL,
+      task_id INTEGER NOT NULL UNIQUE,
+      locked_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (task_id) REFERENCES tasks(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_path_locks_path ON path_locks(path);
   `);
 
   // Triggers: plugin system for cron, webhook, manual triggers
@@ -359,6 +368,31 @@ function migrateSchema(database: Database): void {
   }
   if (tasksInfo && !tasksInfo.sql.includes('review_feedback')) {
     database.exec(`ALTER TABLE tasks ADD COLUMN review_feedback TEXT`);
+  }
+  if (tasksInfo && !tasksInfo.sql.includes('path TEXT')) {
+    database.exec(`ALTER TABLE tasks ADD COLUMN path TEXT`);
+  }
+  if (tasksInfo && !tasksInfo.sql.includes('task_type')) {
+    database.exec(`ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'normal'`);
+  }
+  if (tasksInfo && !tasksInfo.sql.includes('iteration_count')) {
+    database.exec(`ALTER TABLE tasks ADD COLUMN iteration_count INTEGER DEFAULT 0`);
+  }
+  if (tasksInfo && !tasksInfo.sql.includes('worker_session_id')) {
+    database.exec(`ALTER TABLE tasks ADD COLUMN worker_session_id TEXT`);
+  }
+
+  // Cleanup: remove orphaned path_locks for tasks no longer active
+  const pathLocksInfo = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='path_locks'"
+  ).get();
+  if (pathLocksInfo) {
+    database.exec(`
+      DELETE FROM path_locks
+      WHERE task_id NOT IN (
+        SELECT id FROM tasks WHERE status IN ('pending','processing')
+      )
+    `);
   }
 }
 

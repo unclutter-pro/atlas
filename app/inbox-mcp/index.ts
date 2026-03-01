@@ -144,16 +144,55 @@ if (IS_TRIGGER) {
         .describe(
           "Task brief with full context (self-contained — worker has no access to this conversation)",
         ),
+      path: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to lock during task. Worker is spawned in this directory. Enables parallel execution with tasks on non-overlapping paths.",
+        ),
+      task_type: z
+        .enum(["normal", "readonly"])
+        .optional()
+        .default("normal")
+        .describe(
+          "'normal' tasks write files and need path locking. 'readonly' tasks (research, browser automation) always run in parallel without locking.",
+        ),
     },
-    async ({ content }) => {
+    async ({ content, path, task_type }) => {
       const db = getDb();
 
-      const task = db
+      // Path conflict check (only for normal tasks with a path)
+      if (path && task_type !== "readonly") {
+        const conflictingLock = db
+          .prepare(
+            `SELECT pl.path, pl.task_id FROM path_locks pl
+             JOIN tasks t ON t.id = pl.task_id
+             WHERE t.status IN ('pending','processing')
+               AND (pl.path = ? OR ? LIKE pl.path || '/%' OR pl.path LIKE ? || '/%')`,
+          )
+          .get(path, path, path) as { path: string; task_id: number } | undefined;
+
+        if (conflictingLock) {
+          return err(
+            `Path conflict: '${path}' overlaps with locked path for active task ${conflictingLock.task_id}`,
+          );
+        }
+      }
+
+      // Insert task
+      const result = db
         .prepare(
-          "INSERT INTO tasks (trigger_name, content) VALUES (?, ?) RETURNING *",
+          "INSERT INTO tasks (trigger_name, content, path, task_type) VALUES (?, ?, ?, ?)",
         )
-        .get(ATLAS_TRIGGER, content) as any;
-      const taskId = task.id;
+        .run(ATLAS_TRIGGER, content, path ?? null, task_type ?? "normal");
+      const taskId = result.lastInsertRowid as number;
+
+      // Acquire path lock if needed
+      if (path && task_type !== "readonly") {
+        db.prepare(
+          "INSERT INTO path_locks (path, task_id) VALUES (?, ?)",
+        ).run(path, taskId);
+      }
 
       // Auto-register for re-awakening
       db.prepare(
@@ -165,6 +204,7 @@ if (IS_TRIGGER) {
       mkdirSync(indexDir2, { recursive: true });
       touchFile(indexDir2 + "/.wake");
 
+      const task = db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
       return ok(task);
     },
   );
@@ -417,9 +457,12 @@ if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
         "UPDATE tasks SET review_status = 'approved' WHERE id = ?"
       ).run(REVIEWER_TASK_ID);
 
+      // Release path lock
+      db.prepare("DELETE FROM path_locks WHERE task_id = ?").run(REVIEWER_TASK_ID);
+
       wakeTriggerIfAwaiting(REVIEWER_TASK_ID, task.response_summary);
 
-      // Wake worker to pick up next task (or retry this one if rejected)
+      // Wake worker to pick up next task
       const indexDir = process.env.HOME + "/.index";
       mkdirSync(indexDir, { recursive: true });
       touchFile(indexDir + "/.wake");
@@ -444,20 +487,51 @@ if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
         .get(REVIEWER_TASK_ID) as any;
       if (!task) return err(`Task ${REVIEWER_TASK_ID} not found`);
 
-      // Append feedback to task content and reset to pending
-      const updatedContent = `${task.content}\n\n---\n**Reviewer Feedback (attempt ${(task.review_attempts ?? 0) + 1}):**\n${feedback}`;
+      const newCount = (task.iteration_count ?? 0) + 1;
+
+      // Force-approve after 5 iterations to prevent infinite loops
+      if (newCount >= 5) {
+        const warningSummary = `[WARNING: Max review iterations (5) reached] ${task.response_summary ?? ""}`;
+        db.prepare(
+          `UPDATE tasks SET status = 'done', review_status = 'approved_with_warning',
+           review_feedback = ?, response_summary = ?, processed_at = datetime('now'),
+           iteration_count = ?
+           WHERE id = ?`,
+        ).run(
+          `Max iterations reached. Last feedback: ${feedback}`,
+          warningSummary,
+          newCount,
+          REVIEWER_TASK_ID,
+        );
+
+        // Release path lock
+        db.prepare("DELETE FROM path_locks WHERE task_id = ?").run(REVIEWER_TASK_ID);
+
+        wakeTriggerIfAwaiting(REVIEWER_TASK_ID, warningSummary);
+
+        // Wake worker for next task
+        const indexDir = process.env.HOME + "/.index";
+        mkdirSync(indexDir, { recursive: true });
+        touchFile(indexDir + "/.wake");
+
+        return ok({ force_approved: true, iterations: newCount, task_id: REVIEWER_TASK_ID });
+      }
+
+      // Normal reject: increment counter, append feedback, reset to pending
+      const updatedContent = `${task.content}\n\n---\n**Reviewer Feedback (iteration ${newCount}):**\n${feedback}`;
       db.prepare(
         `UPDATE tasks SET status = 'pending', review_status = 'rejected',
-         review_feedback = ?, content = ?, processed_at = NULL, response_summary = NULL
-         WHERE id = ?`
-      ).run(feedback, updatedContent, REVIEWER_TASK_ID);
+         review_feedback = ?, content = ?, processed_at = NULL, response_summary = NULL,
+         iteration_count = ?
+         WHERE id = ?`,
+      ).run(feedback, updatedContent, newCount, REVIEWER_TASK_ID);
 
-      // Wake worker to pick up next task (or retry this one if rejected)
+      // Wake worker to pick up the rejected task
       const indexDir = process.env.HOME + "/.index";
       mkdirSync(indexDir, { recursive: true });
       touchFile(indexDir + "/.wake");
 
-      return ok({ rejected: true, task_id: REVIEWER_TASK_ID, feedback });
+      return ok({ rejected: true, task_id: REVIEWER_TASK_ID, feedback, iteration: newCount });
     }
   );
 
