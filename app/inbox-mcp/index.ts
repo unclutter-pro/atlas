@@ -446,7 +446,7 @@ if (IS_REVIEWER && REVIEWER_TASK_ID !== null) {
 
   // task_get: Read the task to review
   server.tool(
-    "task_review_get",
+    "task_get_for_review",
     "Get the task details to review — original content and worker's response summary.",
     {},
     async () => {

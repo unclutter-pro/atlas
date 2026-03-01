@@ -93,9 +93,16 @@ CONFIG="$WORKSPACE/config.yml"
 MODEL="sonnet"  # default fallback
 HAS_MODEL_FLAG=false
 
-# Reviewer always runs on Sonnet
-if [ "$MODE" = "reviewer" ] && [ "$HAS_MODEL_FLAG" = false ]; then
-  MODEL="sonnet"
+# Reviewer reads model from review.model config key (default: haiku)
+if [ "$MODE" = "reviewer" ] && [ "$HAS_MODEL_FLAG" = false ] && [ -f "$CONFIG" ]; then
+  REVIEW_MODEL=$(python3 -c "
+import yaml, sys
+try:
+    c = yaml.safe_load(open('$CONFIG'))
+    print(c.get('review', {}).get('model', 'haiku'))
+except: print('haiku')
+" 2>/dev/null) || true
+  MODEL="${REVIEW_MODEL:-haiku}"
   HAS_MODEL_FLAG=true
 fi
 

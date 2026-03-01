@@ -146,7 +146,7 @@ handle_review_wake() {
     LOG="/atlas/logs/reviewer.log"
     REVIEWER_PROMPT_FILE="$HOME/triggers/task-reviewer/prompt.md"
     if [ ! -f "$REVIEWER_PROMPT_FILE" ]; then
-      REVIEWER_PROMPT="Task #${TASK_ID} has been completed by the worker. Use task_review_get() to see the original task and the worker's response. Review the work quality: check if the task requirements are fully met and the result is correct. If acceptable, call task_review_approve(). If there are issues, call task_review_reject(feedback) with specific actionable feedback."
+      REVIEWER_PROMPT="Task #${TASK_ID} has been completed by the worker. Use task_get_for_review() to see the original task and the worker's response. Review the work quality: check if the task requirements are fully met and the result is correct. If acceptable, call task_review_approve(). If there are issues, call task_review_reject(feedback) with specific actionable feedback."
     else
       REVIEWER_PROMPT=$(cat "$REVIEWER_PROMPT_FILE")
       REVIEWER_PROMPT="${REVIEWER_PROMPT//\{\{task_id\}\}/$TASK_ID}"
