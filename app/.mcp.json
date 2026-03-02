@@ -1,7 +1,14 @@
 {
   "mcpServers": {
+    "inbox": {
+      "command": "bun",
+      "args": ["run", "/atlas/app/inbox-mcp/index.ts"]
+    },
+    "memory": {
+      "command": "node",
+      "args": ["/usr/lib/node_modules/@tobilu/qmd/dist/qmd.js", "mcp"]
+    },
     "playwright": {
-      "type": "sse",
       "url": "http://localhost:8931/sse"
     }
   }
