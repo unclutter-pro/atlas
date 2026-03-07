@@ -141,10 +141,11 @@ ${PAYLOAD:-$PROMPT}
 Process this message using the channel CLI tools (signal send / email reply) as appropriate."
       fi
 
-      if echo "$INJECT_MSG" | python3 -c "
+      if echo "$INJECT_MSG" | timeout 10 python3 -c "
 import socket, json, sys
 msg = sys.stdin.read()
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
 s.connect(sys.argv[1])
 s.sendall(json.dumps({'action': 'send', 'text': msg, 'submit': True}).encode() + b'\n')
 s.close()
@@ -179,10 +180,11 @@ if [ "$SESSION_MODE" = "persistent" ] && [ -n "${EXISTING_SESSION:-}" ]; then
                                 "{{payload}}" "${PAYLOAD:-$PROMPT}" \
                                 < "$INJECT_TEMPLATE")
     fi
-    if echo "$INJECT_MSG" | python3 -c "
+    if echo "$INJECT_MSG" | timeout 10 python3 -c "
 import socket, json, sys
 msg = sys.stdin.read()
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
 s.connect(sys.argv[1])
 s.sendall(json.dumps({'action': 'send', 'text': msg, 'submit': True}).encode() + b'\n')
 s.close()
@@ -222,18 +224,36 @@ TRIGGER_OUT=$(mktemp /tmp/trigger-out-XXXXXX.json)
 
 # Unset CLAUDECODE so spawning a trigger session while a worker is running doesn't fail
 # with "Claude Code cannot be launched inside another Claude Code session"
+# Timeout: 5 minutes to prevent stuck sessions from holding the flock indefinitely
+TRIGGER_TIMEOUT="${TRIGGER_TIMEOUT:-300}"
 TRIGGER_EXIT=0
-ATLAS_TRIGGER="$TRIGGER_NAME" ATLAS_TRIGGER_CHANNEL="$CHANNEL" ATLAS_TRIGGER_SESSION_KEY="$SESSION_KEY" \
-  env -u CLAUDECODE \
+timeout "$TRIGGER_TIMEOUT" env \
+  ATLAS_TRIGGER="$TRIGGER_NAME" ATLAS_TRIGGER_CHANNEL="$CHANNEL" ATLAS_TRIGGER_SESSION_KEY="$SESSION_KEY" \
+  -u CLAUDECODE \
   claude-atlas --mode trigger "${CLAUDE_ARGS[@]}" --output-format json "$PROMPT" < /dev/null > "$TRIGGER_OUT" 2>>"$LOG" || TRIGGER_EXIT=$?
 
-# If resume failed, retry as fresh session (stale/corrupted session that wasn't caught above)
-if [ "$TRIGGER_EXIT" -ne 0 ] && [ -n "${EXISTING_SESSION:-}" ]; then
+# Handle timeout (exit code 124) — kill stale session and retry fresh
+if [ "$TRIGGER_EXIT" -eq 124 ]; then
+  echo "[$(date)] TIMEOUT after ${TRIGGER_TIMEOUT}s for session ${EXISTING_SESSION:-new} — clearing and retrying" | tee -a "$LOG"
+  if [ -n "${EXISTING_SESSION:-}" ]; then
+    sqlite3 "$DB" "DELETE FROM trigger_sessions WHERE trigger_name='${TRIGGER_NAME//\'/\'\'}' AND session_key='${SESSION_KEY//\'/\'\'}';" 2>/dev/null || true
+    rm -f "/tmp/claudec-${EXISTING_SESSION}.sock"
+  fi
+  TRIGGER_EXIT=0
+  timeout "$TRIGGER_TIMEOUT" env \
+    ATLAS_TRIGGER="$TRIGGER_NAME" ATLAS_TRIGGER_CHANNEL="$CHANNEL" ATLAS_TRIGGER_SESSION_KEY="$SESSION_KEY" \
+    -u CLAUDECODE \
+    claude-atlas --mode trigger "${CLAUDE_BASE_ARGS[@]}" --output-format json "$PROMPT" < /dev/null > "$TRIGGER_OUT" 2>>"$LOG" || TRIGGER_EXIT=$?
+fi
+
+# If resume failed (non-timeout), retry as fresh session (stale/corrupted session that wasn't caught above)
+if [ "$TRIGGER_EXIT" -ne 0 ] && [ "$TRIGGER_EXIT" -ne 124 ] && [ -n "${EXISTING_SESSION:-}" ]; then
   echo "[$(date)] Resume failed (exit=$TRIGGER_EXIT) for session $EXISTING_SESSION — retrying as fresh session" | tee -a "$LOG"
   sqlite3 "$DB" "DELETE FROM trigger_sessions WHERE trigger_name='${TRIGGER_NAME//\'/\'\'}' AND session_key='${SESSION_KEY//\'/\'\'}';" 2>/dev/null || true
   TRIGGER_EXIT=0
-  ATLAS_TRIGGER="$TRIGGER_NAME" ATLAS_TRIGGER_CHANNEL="$CHANNEL" ATLAS_TRIGGER_SESSION_KEY="$SESSION_KEY" \
-    env -u CLAUDECODE \
+  timeout "$TRIGGER_TIMEOUT" env \
+    ATLAS_TRIGGER="$TRIGGER_NAME" ATLAS_TRIGGER_CHANNEL="$CHANNEL" ATLAS_TRIGGER_SESSION_KEY="$SESSION_KEY" \
+    -u CLAUDECODE \
     claude-atlas --mode trigger "${CLAUDE_BASE_ARGS[@]}" --output-format json "$PROMPT" < /dev/null > "$TRIGGER_OUT" 2>>"$LOG" || TRIGGER_EXIT=$?
 fi
 
