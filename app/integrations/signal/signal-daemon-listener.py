@@ -23,6 +23,38 @@ def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
+def send_read_receipt(sender, timestamp):
+    """Send a read receipt back to the sender via the daemon socket."""
+    if not sender or not timestamp:
+        return
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(10)
+        sock.connect(SOCKET_PATH)
+        req = json.dumps({
+            "jsonrpc": "2.0",
+            "id": "receipt",
+            "method": "sendReceipt",
+            "params": {
+                "recipient": sender,
+                "targetTimestamp": int(timestamp),
+                "type": "read",
+            },
+        })
+        sock.sendall(req.encode() + b"\n")
+        # Read response (don't block forever)
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        sock.close()
+        log(f"Read receipt sent to {sender} for ts={timestamp}")
+    except Exception as e:
+        log(f"Failed to send read receipt to {sender}: {e}")
+
+
 def connect_socket(path, retries=60, delay=2):
     """Wait for the signal-cli daemon socket to become available."""
     for attempt in range(retries):
@@ -58,6 +90,9 @@ def handle_notification(notification):
         return
 
     log(f"Message from {sender} ({name}): {body[:80] if body else f'[{len(attachments)} attachment(s)]'}")
+
+    # Send read receipt immediately so sender sees "read" status
+    send_read_receipt(sender, ts)
 
     cmd = ["signal", "incoming", sender, body or ""]
     if name:
