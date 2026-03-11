@@ -27,6 +27,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # --- Paths ---
 CONFIG_PATH = os.environ["HOME"] + "/config.yml"
@@ -318,6 +319,53 @@ def cmd_poll(config, once=False):
                      attachments_json=json.dumps(attachments) if attachments else "")
 
 
+# --- XML payload helpers ---
+
+WEEKDAYS_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+MONTHS_DE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+
+def _format_timestamp(ts_raw: str) -> str:
+    """Format a timestamp into a human-readable German-style string."""
+    try:
+        # Handle both ISO8601 and epoch-millis from signal-cli
+        if ts_raw.isdigit():
+            dt = datetime.fromtimestamp(int(ts_raw) / 1000)
+        else:
+            dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+        wd = WEEKDAYS_DE[dt.weekday()]
+        mon = MONTHS_DE[dt.month - 1]
+        return f"{wd}, {dt.day:02d}. {mon} {dt.year}, {dt.hour:02d}:{dt.minute:02d}"
+    except Exception:
+        return ts_raw  # Fallback: return raw
+
+
+def _build_xml_payload(
+    inbox_msg_id: int,
+    sender: str,
+    sender_name: str,
+    message: str,
+    timestamp: str,
+    attachments: list | None = None,
+) -> str:
+    """Build a structured XML payload for AI processing."""
+    name_attr = f' name="{xml_escape(sender_name)}"' if sender_name else ""
+    parts = [
+        f'<signal-message from="{xml_escape(sender)}"{name_attr} at="{xml_escape(timestamp)}" inbox-id="{inbox_msg_id}">',
+    ]
+
+    if attachments:
+        for att in attachments:
+            att_attrs = f'type="{xml_escape(str(att.get("content_type", "unknown")))}"'
+            if att.get("transcription"):
+                att_attrs += f' transcription="{xml_escape(att["transcription"])}"'
+            parts.append(f"  <attachment {att_attrs} />")
+
+    parts.append(f"  {xml_escape(message)}")
+    parts.append("</signal-message>")
+    return "\n".join(parts)
+
+
 # --- INCOMING command (core: inject message into session) ---
 
 def cmd_incoming(config, sender, message, name="", timestamp="", attachments_json=""):
@@ -380,16 +428,18 @@ def cmd_incoming(config, sender, message, name="", timestamp="", attachments_jso
         return
 
     # 3. Fire trigger (trigger.sh handles IPC socket injection vs new session)
-    payload_data = {
-        "inbox_message_id": inbox_msg_id,
-        "sender": sender,
-        "sender_name": name,
-        "message": effective_message[:4000],
-        "timestamp": ts,
-    }
-    if attachment_metadata:
-        payload_data["attachments"] = attachment_metadata
-    payload = json.dumps(payload_data)
+    # Format timestamp for readability (German locale style)
+    formatted_ts = _format_timestamp(ts)
+
+    # Build structured XML payload instead of JSON for better AI processing
+    payload = _build_xml_payload(
+        inbox_msg_id=inbox_msg_id,
+        sender=sender,
+        sender_name=name,
+        message=effective_message[:4000],
+        timestamp=formatted_ts,
+        attachments=attachment_metadata if attachment_metadata else None,
+    )
 
     try:
         subprocess.Popen(

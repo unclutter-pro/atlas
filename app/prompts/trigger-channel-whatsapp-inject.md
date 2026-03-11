@@ -1,5 +1,3 @@
-<message from="{{sender}}">
 {{payload}}
-</message>
 
-Please respond directly using `whatsapp send "{{sender}}" "..."`.
+Respond directly using `whatsapp send "{{sender}}" "..."`.

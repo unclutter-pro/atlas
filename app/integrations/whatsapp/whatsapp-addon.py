@@ -27,6 +27,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # --- Paths ---
 CONFIG_PATH = os.environ["HOME"] + "/config.yml"
@@ -213,6 +214,54 @@ def _process_attachments(attachments_json: str, config: dict) -> tuple[list[dict
     return metadata, transcription_text
 
 
+# --- XML payload helpers ---
+
+WEEKDAYS_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+MONTHS_DE = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
+
+
+def _format_timestamp(ts_raw: str) -> str:
+    """Format a timestamp into a human-readable German-style string."""
+    try:
+        if ts_raw.isdigit():
+            dt = datetime.fromtimestamp(int(ts_raw) / 1000)
+        else:
+            dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+        wd = WEEKDAYS_DE[dt.weekday()]
+        mon = MONTHS_DE[dt.month - 1]
+        return f"{wd}, {dt.day:02d}. {mon} {dt.year}, {dt.hour:02d}:{dt.minute:02d}"
+    except Exception:
+        return ts_raw
+
+
+def _build_xml_payload(
+    inbox_msg_id: int,
+    sender: str,
+    sender_name: str,
+    message: str,
+    timestamp: str,
+    attachments: list | None = None,
+    channel: str = "whatsapp",
+) -> str:
+    """Build a structured XML payload for AI processing."""
+    name_attr = f' name="{xml_escape(sender_name)}"' if sender_name else ""
+    tag = f"{channel}-message"
+    parts = [
+        f'<{tag} from="{xml_escape(sender)}"{name_attr} at="{xml_escape(timestamp)}" inbox-id="{inbox_msg_id}">',
+    ]
+
+    if attachments:
+        for att in attachments:
+            att_attrs = f'type="{xml_escape(str(att.get("content_type", "unknown")))}"'
+            if att.get("transcription"):
+                att_attrs += f' transcription="{xml_escape(att["transcription"])}"'
+            parts.append(f"  <attachment {att_attrs} />")
+
+    parts.append(f"  {xml_escape(message)}")
+    parts.append(f"</{tag}>")
+    return "\n".join(parts)
+
+
 # --- INCOMING command (core: inject message into session) ---
 
 def cmd_incoming(config, sender, message, name="", timestamp="", attachments_json=""):
@@ -272,17 +321,17 @@ def cmd_incoming(config, sender, message, name="", timestamp="", attachments_jso
         cmd_new_session(config, sender, inbox_msg_id, name=name, timestamp=ts)
         return
 
-    # 3. Fire trigger
-    payload_data = {
-        "inbox_message_id": inbox_msg_id,
-        "sender": sender,
-        "sender_name": name,
-        "message": effective_message[:4000],
-        "timestamp": ts,
-    }
-    if attachment_metadata:
-        payload_data["attachments"] = attachment_metadata
-    payload = json.dumps(payload_data)
+    # 3. Fire trigger — structured XML payload
+    formatted_ts = _format_timestamp(ts)
+    payload = _build_xml_payload(
+        inbox_msg_id=inbox_msg_id,
+        sender=sender,
+        sender_name=name,
+        message=effective_message[:4000],
+        timestamp=formatted_ts,
+        attachments=attachment_metadata if attachment_metadata else None,
+        channel="whatsapp",
+    )
 
     try:
         subprocess.Popen(
