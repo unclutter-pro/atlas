@@ -55,6 +55,13 @@ export type MetricsData = {
   isError: boolean;
 };
 
+export type UsageReportingConfig = {
+  enabled: boolean;
+  webhook_url: string;
+  webhook_secret: string;
+  include_tokens: boolean;
+};
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -460,6 +467,100 @@ export function readTriggerConfig(db: Database, name: string): TriggerConfig | n
     "SELECT id, name, type, channel, prompt, session_mode, enabled FROM triggers WHERE name = ? LIMIT 1"
   ).get(name) as TriggerConfig | undefined;
   return row ?? null;
+}
+
+/**
+ * Read usage_reporting config from config.yml.
+ * Follows the same candidate path pattern as resolveModel.
+ */
+export function readUsageReportingConfig(): UsageReportingConfig {
+  const defaults: UsageReportingConfig = {
+    enabled: false,
+    webhook_url: "",
+    webhook_secret: "",
+    include_tokens: false,
+  };
+
+  const candidates = [
+    `${HOME}/config.yml`,
+    `${APP_DIR}/defaults/config.yml`,
+  ];
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const raw = readFileSync(candidate, "utf8");
+      const config = yaml.load(raw) as Record<string, unknown> | null;
+      const section = config?.usage_reporting as Partial<UsageReportingConfig> | undefined;
+      if (section) {
+        return {
+          enabled: section.enabled ?? defaults.enabled,
+          webhook_url: section.webhook_url ?? defaults.webhook_url,
+          webhook_secret: section.webhook_secret ?? defaults.webhook_secret,
+          include_tokens: section.include_tokens ?? defaults.include_tokens,
+        };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return defaults;
+}
+
+/**
+ * Send session usage data to the configured webhook endpoint.
+ * Fire-and-forget — errors are logged but never block the trigger flow.
+ */
+export async function sendUsageWebhook(
+  config: UsageReportingConfig,
+  data: MetricsData,
+  log: { log: (msg: string) => void }
+): Promise<void> {
+  if (!config.enabled || !config.webhook_url) return;
+
+  const payload: Record<string, unknown> = {
+    event: "session.completed",
+    session_id: data.sessionId,
+    trigger_name: data.triggerName,
+    started_at: data.startedAt,
+    ended_at: data.endedAt,
+    duration_ms: data.durationMs,
+    duration_seconds: Math.round(data.durationMs / 1000),
+    num_turns: data.numTurns,
+    is_error: data.isError,
+    timestamp: new Date().toISOString(),
+  };
+
+  if (config.include_tokens) {
+    payload.input_tokens = data.inputTokens;
+    payload.output_tokens = data.outputTokens;
+    payload.cache_read_tokens = data.cacheReadTokens;
+    payload.cache_creation_tokens = data.cacheCreationTokens;
+    payload.cost_usd = data.costUsd;
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (config.webhook_secret) {
+    headers["X-Webhook-Secret"] = config.webhook_secret;
+  }
+
+  try {
+    const resp = await fetch(config.webhook_url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      log.log(`Usage webhook failed: ${resp.status} ${resp.statusText}`);
+    } else {
+      log.log(`Usage webhook sent (${data.durationMs}ms session)`);
+    }
+  } catch (err) {
+    log.log(`Usage webhook error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**
@@ -1224,6 +1325,28 @@ export async function main(): Promise<void> {
     });
   } catch {
     // session_metrics table may not exist in very old DBs
+  }
+
+  // --- Send usage reporting webhook ---
+  try {
+    const usageConfig = readUsageReportingConfig();
+    await sendUsageWebhook(usageConfig, {
+      sessionType: "trigger",
+      sessionId: capturedSessionId ?? "",
+      triggerName,
+      startedAt,
+      endedAt,
+      durationMs: (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
+      inputTokens: (usage.input_tokens as number | undefined) ?? 0,
+      outputTokens: (usage.output_tokens as number | undefined) ?? 0,
+      cacheReadTokens: (usage.cache_read_input_tokens as number | undefined) ?? 0,
+      cacheCreationTokens: (usage.cache_creation_input_tokens as number | undefined) ?? 0,
+      costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
+      numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
+      isError,
+    }, log);
+  } catch {
+    // Usage reporting should never block trigger completion
   }
 
   // --- Mark run completed ---
