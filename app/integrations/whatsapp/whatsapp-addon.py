@@ -132,13 +132,123 @@ def _resolve_attachment_path(attachment_id: str) -> str | None:
     return None
 
 
-def _transcribe_audio(file_path: str, stt_url: str) -> str | None:
-    """Send audio file to STT endpoint (Whisper-compatible API) and return text."""
-    import mimetypes
-    content_type = mimetypes.guess_type(file_path)[0] or "audio/mpeg"
-    filename = os.path.basename(file_path)
+def _convert_to_wav(file_path: str) -> str | None:
+    """Convert audio file to WAV using ffmpeg. Returns path to temp WAV file."""
+    import tempfile
+    wav_path = tempfile.mktemp(suffix=".wav")
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-i", file_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+            capture_output=True, timeout=120,
+        )
+        if result.returncode == 0 and os.path.exists(wav_path):
+            return wav_path
+        print(f"[{datetime.now()}] ffmpeg conversion failed: {result.stderr.decode()[:200]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[{datetime.now()}] ffmpeg error: {e}", file=sys.stderr)
+    return None
 
-    # Build multipart/form-data request (stdlib only)
+
+def _get_audio_duration(file_path: str) -> float:
+    """Get audio duration in seconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            import json as _json
+            info = _json.loads(result.stdout)
+            return float(info.get("format", {}).get("duration", 0))
+    except Exception:
+        pass
+    return 0
+
+
+def _split_wav_chunks(wav_path: str, chunk_secs: int = 120, overlap_secs: int = 1) -> list[str]:
+    """Split a WAV file into overlapping chunks using ffmpeg. Returns list of chunk paths."""
+    import tempfile
+    duration = _get_audio_duration(wav_path)
+    if duration <= chunk_secs:
+        return [wav_path]
+
+    chunks = []
+    start = 0
+    idx = 0
+    while start < duration:
+        chunk_path = tempfile.mktemp(suffix=f"_chunk{idx}.wav")
+        try:
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-i", wav_path, "-ss", str(start), "-t", str(chunk_secs),
+                 "-ar", "16000", "-ac", "1", chunk_path],
+                capture_output=True, timeout=60,
+            )
+            if result.returncode == 0 and os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 100:
+                chunks.append(chunk_path)
+            else:
+                break
+        except Exception as e:
+            print(f"[{datetime.now()}] Chunk split error at {start}s: {e}", file=sys.stderr)
+            break
+        start += chunk_secs - overlap_secs
+        idx += 1
+
+    return chunks if chunks else [wav_path]
+
+
+# Formats that Parakeet supports natively (no conversion needed)
+_NATIVE_STT_FORMATS = {".wav", ".flac", ".ogg"}
+
+# Audio longer than this (seconds) gets split into chunks
+_CHUNK_THRESHOLD_SECS = 120
+_CHUNK_SIZE_SECS = 120
+_CHUNK_OVERLAP_SECS = 1
+
+
+def _transcribe_audio(file_path: str, stt_url: str) -> str | None:
+    """Send audio file to STT endpoint (Whisper-compatible API) and return text.
+    Long audio files are split into overlapping chunks to avoid timeouts."""
+    import mimetypes
+
+    # Convert non-native formats to WAV
+    ext = os.path.splitext(file_path)[1].lower()
+    converted_path = None
+    if ext not in _NATIVE_STT_FORMATS:
+        converted_path = _convert_to_wav(file_path)
+        if not converted_path:
+            return None
+        file_path = converted_path
+
+    content_type = mimetypes.guess_type(file_path)[0] or "audio/wav"
+    chunk_paths = []
+
+    try:
+        duration = _get_audio_duration(file_path)
+        if duration > _CHUNK_THRESHOLD_SECS:
+            print(f"[{datetime.now()}] Audio is {duration:.0f}s, splitting into {_CHUNK_SIZE_SECS}s chunks "
+                  f"with {_CHUNK_OVERLAP_SECS}s overlap", file=sys.stderr)
+            chunk_paths = _split_wav_chunks(file_path, _CHUNK_SIZE_SECS, _CHUNK_OVERLAP_SECS)
+            transcriptions = []
+            for i, chunk in enumerate(chunk_paths):
+                print(f"[{datetime.now()}] Transcribing chunk {i+1}/{len(chunk_paths)}", file=sys.stderr)
+                chunk_name = os.path.basename(chunk)
+                text = _do_stt_request(chunk, chunk_name, "audio/wav", stt_url)
+                if text:
+                    transcriptions.append(text)
+            return " ".join(transcriptions) if transcriptions else None
+        else:
+            filename = os.path.basename(file_path)
+            return _do_stt_request(file_path, filename, content_type, stt_url)
+    finally:
+        if converted_path and os.path.exists(converted_path):
+            os.unlink(converted_path)
+        for cp in chunk_paths:
+            if cp != file_path and os.path.exists(cp):
+                os.unlink(cp)
+
+
+def _do_stt_request(file_path: str, filename: str, content_type: str, stt_url: str) -> str | None:
+    """Build and send the multipart STT request."""
     boundary = "----AtlasSTTBoundary"
     body = b""
     body += f"--{boundary}\r\n".encode()
@@ -160,7 +270,7 @@ def _transcribe_audio(file_path: str, stt_url: str) -> str | None:
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             result = json.loads(resp.read())
             return result.get("text", "").strip()
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
@@ -253,8 +363,14 @@ def _build_xml_payload(
     if attachments:
         for att in attachments:
             att_attrs = f'type="{xml_escape(str(att.get("content_type", "unknown")))}"'
+            if att.get("path"):
+                att_attrs += f' path="{xml_escape(att["path"])}"'
+            if att.get("size"):
+                att_attrs += f' size="{att["size"]}"'
             if att.get("transcription"):
                 att_attrs += f' transcription="{xml_escape(att["transcription"])}"'
+            elif att.get("transcription_error"):
+                att_attrs += f' transcription-error="{xml_escape(att["transcription_error"])}"'
             parts.append(f"  <attachment {att_attrs} />")
 
     parts.append(f"  {xml_escape(message)}")

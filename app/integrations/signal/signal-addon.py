@@ -357,8 +357,14 @@ def _build_xml_payload(
     if attachments:
         for att in attachments:
             att_attrs = f'type="{xml_escape(str(att.get("content_type", "unknown")))}"'
+            if att.get("path"):
+                att_attrs += f' path="{xml_escape(att["path"])}"'
+            if att.get("size"):
+                att_attrs += f' size="{att["size"]}"'
             if att.get("transcription"):
                 att_attrs += f' transcription="{xml_escape(att["transcription"])}"'
+            elif att.get("transcription_error"):
+                att_attrs += f' transcription-error="{xml_escape(att["transcription_error"])}"'
             parts.append(f"  <attachment {att_attrs} />")
 
     parts.append(f"  {xml_escape(message)}")
