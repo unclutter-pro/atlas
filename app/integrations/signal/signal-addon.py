@@ -210,7 +210,7 @@ _NATIVE_STT_FORMATS = {".wav", ".flac", ".ogg"}
 # Audio longer than this (seconds) gets split into chunks
 _CHUNK_THRESHOLD_SECS = 120
 _CHUNK_SIZE_SECS = 120
-_CHUNK_OVERLAP_SECS = 5
+_CHUNK_OVERLAP_SECS = 1
 
 
 def _transcribe_audio(file_path: str, stt_url: str) -> str | None:
