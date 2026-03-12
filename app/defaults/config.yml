@@ -2,7 +2,8 @@
 # Editable by Claude and via the Web-UI
 
 agent:
-  name: "Atlas" # Display name for the agent (used in UI, logs, prompts). Override with AGENT_NAME env var.
+  name: "Atlas" # Display name for the agent (used in UI, logs, prompts). Override with ATLAS_AGENT_NAME env var.
+  email: "" # Agent email address (optional, for integrations)
 
 models:
   trigger: opus # Trigger sessions (PM/team lead) — needs strong reasoning
@@ -71,3 +72,7 @@ usage_reporting:
   webhook_url: ""          # POST endpoint for session metrics (e.g. "https://app.example.org/api/usage")
   webhook_secret: ""       # Shared secret sent as X-Webhook-Secret header
   include_tokens: false    # Include token counts in payload (default: only duration/timing)
+
+# Workspace paths — override to customize directory layout
+workspace:
+  projects_dir: "" # Custom projects directory path (default: $HOME/projects). Override with ATLAS_PROJECTS_DIR env var.

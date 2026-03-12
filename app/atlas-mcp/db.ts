@@ -112,6 +112,15 @@ function createTables(database: Database): void {
       ON trigger_runs(completed_at) WHERE completed_at IS NULL;
   `);
 
+  // System state: key-value store for control plane (kill switch, etc.)
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS system_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+  `);
+
   // Migration: drop pending_trigger_messages if it exists (replaced by socket-based injection)
   database.exec(`DROP TABLE IF EXISTS pending_trigger_messages`);
   database.exec(`DROP INDEX IF EXISTS idx_pending_trigger_messages`);

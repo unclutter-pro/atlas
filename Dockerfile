@@ -126,6 +126,10 @@ RUN chmod +x /atlas/app/entrypoint.sh \
   && chmod +x /atlas/app/triggers/trigger-runner \
   && chmod +x /atlas/app/bin/*
 
+# Install shared lib dependencies
+WORKDIR /atlas/app/lib
+RUN bun install
+
 # Install Atlas-MCP dependencies
 WORKDIR /atlas/app/atlas-mcp
 RUN bun install

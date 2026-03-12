@@ -8,10 +8,15 @@ import {
   closeSync,
   openSync,
   statSync,
+  unlinkSync,
+  chmodSync,
 } from "fs";
-import { join, resolve } from "path";
+import { join, resolve, relative } from "path";
 import { homedir } from "os";
 import { getDb } from "../atlas-mcp/db";
+import { apiKeyAuth } from "../lib/api-auth";
+import { resolveConfig, redactConfig, getConfigSources } from "../lib/config";
+import { pauseAtlas, resumeAtlas, stopAllSessions, getControlStatus, isAtlasPaused } from "../lib/kill-switch";
 
 // --- Config ---
 const AGENT_NAME = process.env.AGENT_NAME || "Atlas";
@@ -1347,6 +1352,263 @@ app.get("/sessions/:sessionId", (c) => {
     <div style="display:flex;flex-direction:column;gap:6px">${messagesHtml}</div>
   </div></td>`);
 });
+
+// =============================================================================
+// External Configuration API (v1)
+// =============================================================================
+
+const api = new Hono();
+api.use("*", apiKeyAuth);
+
+// --- Configuration ---
+
+api.get("/config", (c) => {
+  const config = resolveConfig(WS);
+  return c.json({ ok: true, config: redactConfig(config), sources: getConfigSources() });
+});
+
+api.get("/config/:section", (c) => {
+  const section = c.req.param("section");
+  const config = resolveConfig(WS) as Record<string, any>;
+  if (!(section in config)) {
+    return c.json({ error: "Not found", message: `Unknown config section: ${section}` }, 404);
+  }
+  return c.json({ ok: true, section, config: config[section] });
+});
+
+api.patch("/config", async (c) => {
+  const body = await c.req.json();
+  const runtimePath = join(WS, ".atlas-runtime-config.json");
+
+  // Read existing runtime config
+  let existing: Record<string, any> = {};
+  try {
+    if (existsSync(runtimePath)) {
+      existing = JSON.parse(readFileSync(runtimePath, "utf-8"));
+    }
+  } catch {}
+
+  // Deep merge
+  function deepMerge(target: Record<string, any>, source: Record<string, any>): Record<string, any> {
+    for (const key of Object.keys(source)) {
+      if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
+        target[key] = deepMerge(target[key] || {}, source[key]);
+      } else {
+        target[key] = source[key];
+      }
+    }
+    return target;
+  }
+
+  deepMerge(existing, body);
+  writeFileSync(runtimePath, JSON.stringify(existing, null, 2), "utf-8");
+
+  // Regenerate settings
+  try {
+    Bun.spawnSync(["bun", "run", "/atlas/app/hooks/generate-settings.ts"]);
+  } catch {}
+  syncCrontab();
+
+  const config = resolveConfig(WS);
+  return c.json({ ok: true, config: redactConfig(config), sources: getConfigSources() });
+});
+
+// --- Secrets ---
+
+api.get("/secrets", (c) => {
+  const secretsDir = join(WS, "secrets");
+  if (!existsSync(secretsDir)) return c.json({ ok: true, secrets: [] });
+  const files = readdirSync(secretsDir).filter((f) => {
+    try { return statSync(join(secretsDir, f)).isFile(); } catch { return false; }
+  });
+  return c.json({ ok: true, secrets: files });
+});
+
+api.put("/secrets/:name", async (c) => {
+  const name = c.req.param("name");
+  // Sanitize: prevent path traversal
+  if (name.includes("/") || name.includes("..") || name.startsWith(".")) {
+    return c.json({ error: "Invalid secret name" }, 400);
+  }
+  const body = await c.req.json();
+  if (!body.value || typeof body.value !== "string") {
+    return c.json({ error: "Missing 'value' field" }, 400);
+  }
+
+  const secretsDir = join(WS, "secrets");
+  mkdirSync(secretsDir, { recursive: true });
+  const filePath = join(secretsDir, name);
+  writeFileSync(filePath, body.value, { mode: 0o600 });
+  return c.json({ ok: true, name });
+});
+
+api.delete("/secrets/:name", (c) => {
+  const name = c.req.param("name");
+  if (name.includes("/") || name.includes("..") || name.startsWith(".")) {
+    return c.json({ error: "Invalid secret name" }, 400);
+  }
+  const filePath = join(WS, "secrets", name);
+  if (!existsSync(filePath)) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  unlinkSync(filePath);
+  return c.json({ ok: true, name });
+});
+
+// --- Identity & Soul ---
+
+api.get("/identity", (c) => {
+  const content = existsSync(IDENTITY) ? readFileSync(IDENTITY, "utf-8") : "";
+  return c.json({ ok: true, content });
+});
+
+api.put("/identity", async (c) => {
+  const body = await c.req.json();
+  if (typeof body.content !== "string") {
+    return c.json({ error: "Missing 'content' field" }, 400);
+  }
+  writeFileSync(IDENTITY, body.content, "utf-8");
+  return c.json({ ok: true });
+});
+
+api.get("/soul", (c) => {
+  const soulPath = join(WS, "SOUL.md");
+  const content = existsSync(soulPath) ? readFileSync(soulPath, "utf-8") : "";
+  return c.json({ ok: true, content });
+});
+
+api.put("/soul", async (c) => {
+  const body = await c.req.json();
+  if (typeof body.content !== "string") {
+    return c.json({ error: "Missing 'content' field" }, 400);
+  }
+  writeFileSync(join(WS, "SOUL.md"), body.content, "utf-8");
+  return c.json({ ok: true });
+});
+
+// --- Memory ---
+
+function walkMemoryFiles(dir: string, base: string): string[] {
+  const results: string[] = [];
+  if (!existsSync(dir)) return results;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = join(dir, entry.name);
+    const relPath = join(base, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...walkMemoryFiles(fullPath, relPath));
+    } else {
+      results.push(relPath);
+    }
+  }
+  return results;
+}
+
+api.get("/memory", (c) => {
+  const memDir = join(WS, "memory");
+  const files = walkMemoryFiles(memDir, "");
+  return c.json({ ok: true, files });
+});
+
+api.get("/memory/*", (c) => {
+  const path = c.req.path.replace("/api/v1/memory/", "");
+  if (path.includes("..")) return c.json({ error: "Invalid path" }, 400);
+  const filePath = join(WS, "memory", path);
+  if (!existsSync(filePath)) return c.json({ error: "Not found" }, 404);
+  const content = readFileSync(filePath, "utf-8");
+  return c.json({ ok: true, path, content });
+});
+
+api.put("/memory/*", async (c) => {
+  const path = c.req.path.replace("/api/v1/memory/", "");
+  if (path.includes("..")) return c.json({ error: "Invalid path" }, 400);
+  const body = await c.req.json();
+  if (typeof body.content !== "string") {
+    return c.json({ error: "Missing 'content' field" }, 400);
+  }
+  const filePath = join(WS, "memory", path);
+  mkdirSync(join(filePath, ".."), { recursive: true });
+  writeFileSync(filePath, body.content, "utf-8");
+  return c.json({ ok: true, path });
+});
+
+api.delete("/memory/*", (c) => {
+  const path = c.req.path.replace("/api/v1/memory/", "");
+  if (path.includes("..")) return c.json({ error: "Invalid path" }, 400);
+  const filePath = join(WS, "memory", path);
+  if (!existsSync(filePath)) return c.json({ error: "Not found" }, 404);
+  unlinkSync(filePath);
+  return c.json({ ok: true, path });
+});
+
+// --- Control (Kill Switch) ---
+
+api.get("/control/status", (c) => {
+  const status = getControlStatus(db, WS);
+  return c.json({ ok: true, ...status });
+});
+
+api.post("/control/pause", (c) => {
+  pauseAtlas(db, WS);
+  return c.json({ ok: true, paused: true });
+});
+
+api.post("/control/resume", (c) => {
+  resumeAtlas(db, WS);
+  return c.json({ ok: true, paused: false });
+});
+
+api.post("/control/stop", (c) => {
+  const result = stopAllSessions(db, WS);
+  return c.json({ ok: true, paused: true, killed: result.killed });
+});
+
+// --- Sessions (read-only) ---
+
+api.get("/sessions", (c) => {
+  const limit = parseInt(c.req.query("limit") || "50", 10);
+  const sessions = db.query(
+    "SELECT id, trigger_name, session_key, session_mode, session_id, payload, started_at, completed_at FROM trigger_runs ORDER BY started_at DESC LIMIT ?"
+  ).all(limit);
+  return c.json({ ok: true, sessions });
+});
+
+// --- Triggers (JSON API) ---
+
+api.get("/triggers", (c) => {
+  const triggers = db.query(
+    "SELECT id, name, type, description, channel, schedule, session_mode, enabled, last_run, run_count, created_at FROM triggers ORDER BY name"
+  ).all();
+  return c.json({ ok: true, triggers });
+});
+
+api.post("/triggers/:name/toggle", (c) => {
+  const name = c.req.param("name");
+  const trigger = db.query("SELECT id, enabled FROM triggers WHERE name = ?").get(name) as { id: number; enabled: number } | null;
+  if (!trigger) return c.json({ error: "Not found" }, 404);
+  const newEnabled = trigger.enabled ? 0 : 1;
+  db.run("UPDATE triggers SET enabled = ? WHERE id = ?", [newEnabled, trigger.id]);
+  syncCrontab();
+  return c.json({ ok: true, name, enabled: !!newEnabled });
+});
+
+api.post("/triggers/:name/run", (c) => {
+  const name = c.req.param("name");
+  const trigger = db.query("SELECT id, name FROM triggers WHERE name = ?").get(name) as { id: number; name: string } | null;
+  if (!trigger) return c.json({ error: "Not found" }, 404);
+
+  if (isAtlasPaused(WS)) {
+    return c.json({ error: "Atlas is paused", message: "Resume Atlas before firing triggers" }, 409);
+  }
+
+  const triggerScript = "/atlas/app/triggers/trigger.sh";
+  Bun.spawn(["bash", triggerScript, trigger.name, "", "_manual"], {
+    stdout: "ignore", stderr: "ignore",
+  });
+  return c.json({ ok: true, name, message: "Trigger fired" });
+});
+
+// Mount API under /api/v1
+app.route("/api/v1", api);
 
 // --- Start ---
 export default {

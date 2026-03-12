@@ -10,10 +10,36 @@ services:
       - ./logs:/atlas/logs
     environment:
       - TZ=Europe/Berlin
-      # - AGENT_NAME=Atlas  # Display name for the agent (UI, logs, prompts)
-      # Uncomment for API key auth (alternative to OAuth):
-      # - ANTHROPIC_API_KEY=sk-ant-...
-      # - STT_URL=http://stt:5092/v1/audio/transcriptions  # External STT service URL (overrides config.yml)
+      # --- Core ---
+      # - ATLAS_AGENT_NAME=Atlas          # Display name (alias: AGENT_NAME)
+      # - ATLAS_AGENT_EMAIL=              # Agent email address
+      # - ANTHROPIC_API_KEY=sk-ant-...    # API key auth (alternative to OAuth)
+      # - ATLAS_API_KEY=                  # Protect /api/v1/* endpoints with this key
+      #
+      # --- Models ---
+      # - ATLAS_MODEL_TRIGGER=opus        # Model for trigger/PM sessions
+      # - ATLAS_MODEL_CRON=sonnet         # Model for cron sessions
+      # - ATLAS_MODEL_SUBAGENT_REVIEW=sonnet
+      # - ATLAS_MODEL_HOOKS=haiku
+      #
+      # --- Integrations ---
+      # - ATLAS_SIGNAL_NUMBER=+491701234567
+      # - ATLAS_SIGNAL_WHITELIST=+49170...,+49171...
+      # - ATLAS_EMAIL_IMAP_HOST=imap.gmail.com
+      # - ATLAS_EMAIL_USERNAME=atlas@example.com
+      # - ATLAS_STT_URL=http://stt:5092/v1/audio/transcriptions
+      #
+      # --- Secrets (bridged to $HOME/secrets/<name>) ---
+      # - ATLAS_SECRET_GITHUB_TOKEN=ghp_...
+      # - ATLAS_SECRET_EMAIL_PASSWORD=...
+      #
+      # --- Workspace ---
+      # - ATLAS_PROJECTS_DIR=/shared/projects  # Custom projects mount point
+      #
+      # --- Usage Reporting ---
+      # - ATLAS_USAGE_ENABLED=true
+      # - ATLAS_USAGE_WEBHOOK_URL=https://app.example.org/api/usage
+      # - ATLAS_USAGE_WEBHOOK_SECRET=secret
     ports:
       - "127.0.0.1:8080:8080"
     networks:

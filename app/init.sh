@@ -115,6 +115,71 @@ if command -v qmd >/dev/null 2>&1; then
   echo "  QMD memory collection configured"
 fi
 
+# ── Phase 2b: ENV Secret Bridge ──
+# Any env var matching ATLAS_SECRET_* gets written to $HOME/secrets/<lowercase_suffix>
+echo "[$(date)] Phase 2b: ENV secret bridge"
+env | grep '^ATLAS_SECRET_' | while IFS='=' read -r key value; do
+  secret_name=$(echo "$key" | sed 's/^ATLAS_SECRET_//' | tr '[:upper:]' '[:lower:]')
+  secret_file="$WORKSPACE/secrets/$secret_name"
+  echo "$value" > "$secret_file"
+  chmod 600 "$secret_file"
+  echo "  Bridged env $key → secrets/$secret_name"
+done
+
+# ── Phase 2c: Injection Directory ──
+# Process $HOME/.atlas-inject/ for first-boot data injection (Docker mount pattern)
+INJECT_DIR="$WORKSPACE/.atlas-inject"
+if [ -d "$INJECT_DIR" ] && [ ! -f "$INJECT_DIR/.done" ]; then
+  echo "[$(date)] Phase 2c: Processing injection directory"
+
+  # Inject IDENTITY.md
+  if [ -f "$INJECT_DIR/identity.md" ]; then
+    cp "$INJECT_DIR/identity.md" "$WORKSPACE/IDENTITY.md"
+    echo "  Injected IDENTITY.md"
+  fi
+
+  # Inject SOUL.md
+  if [ -f "$INJECT_DIR/soul.md" ]; then
+    cp "$INJECT_DIR/soul.md" "$WORKSPACE/SOUL.md"
+    echo "  Injected SOUL.md"
+  fi
+
+  # Inject memory files (merge into memory/)
+  if [ -d "$INJECT_DIR/memory" ]; then
+    cp -rn "$INJECT_DIR/memory/"* "$WORKSPACE/memory/" 2>/dev/null || true
+    echo "  Injected memory files"
+  fi
+
+  # Inject runtime config overrides
+  if [ -f "$INJECT_DIR/config-overrides.json" ]; then
+    cp "$INJECT_DIR/config-overrides.json" "$WORKSPACE/.atlas-runtime-config.json"
+    echo "  Injected runtime config overrides"
+  fi
+
+  # Mark as processed
+  touch "$INJECT_DIR/.done"
+  echo "  Injection complete"
+fi
+
+# ── Phase 2d: Projects Directory Symlink ──
+# Allow ATLAS_PROJECTS_DIR to customize where projects/ points
+if [ -n "${ATLAS_PROJECTS_DIR:-}" ] && [ "$ATLAS_PROJECTS_DIR" != "$WORKSPACE/projects" ]; then
+  if [ -d "$ATLAS_PROJECTS_DIR" ]; then
+    # Remove default projects dir if it's empty, then symlink
+    if [ -d "$WORKSPACE/projects" ] && [ ! -L "$WORKSPACE/projects" ]; then
+      if [ -z "$(ls -A "$WORKSPACE/projects" 2>/dev/null)" ]; then
+        rmdir "$WORKSPACE/projects"
+      fi
+    fi
+    if [ ! -e "$WORKSPACE/projects" ]; then
+      ln -sfn "$ATLAS_PROJECTS_DIR" "$WORKSPACE/projects"
+      echo "  Linked projects/ → $ATLAS_PROJECTS_DIR"
+    fi
+  else
+    echo "  ⚠ ATLAS_PROJECTS_DIR=$ATLAS_PROJECTS_DIR does not exist"
+  fi
+fi
+
 # ── Phase 3: Default Config ──
 echo "[$(date)] Phase 3: Default config"
 if [ ! -f "$WORKSPACE/config.yml" ]; then
@@ -338,7 +403,13 @@ supervisorctl start atlas-mcp || true
 sleep 1
 supervisorctl start playwright-mcp || true
 supervisorctl start web-ui || true
-supervisorctl start supercronic || true
+
+# Check pause state before starting cron
+if [ -f "$WORKSPACE/.atlas-paused" ]; then
+  echo "  ⚠ Atlas is PAUSED — skipping supercronic. Use API POST /api/v1/control/resume to unpause."
+else
+  supervisorctl start supercronic || true
+fi
 
 # ── Phase 11: Resume interrupted trigger sessions ──
 echo "[$(date)] Phase 11: Resuming interrupted triggers"

@@ -904,6 +904,12 @@ export async function runDirect(
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
+  // --- Pause guard: skip execution if Atlas is paused ---
+  if (existsSync(join(HOME, ".atlas-paused"))) {
+    console.log(`[${new Date().toISOString()}] Atlas is paused, skipping trigger execution`);
+    process.exit(0);
+  }
+
   const args = process.argv.slice(2);
 
   // --- Direct mode: --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] ---
