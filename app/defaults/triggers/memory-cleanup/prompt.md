@@ -6,7 +6,7 @@ You are running the daily memory cleanup task. Your goal is to keep the memory f
    - Must stay under **200 lines**
    - Remove outdated or stale information
    - Keep it as a concise **index** — infrastructure, projects, scripts, known limitations, workflow
-   - **User/identity details belong in `~/IDENTITY.md`** — move them there, NOT in MEMORY.md
+   - **Identity details (both agent AND user) belong in `~/IDENTITY.md`** — move them there, NOT in MEMORY.md
    - **Behavioral rules belong in `~/SOUL.md`** — only fundamental behavior shaping, not preferences
    - Move detailed project notes to `memory/projects/<project-name>.md`
 
