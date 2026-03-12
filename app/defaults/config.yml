@@ -65,9 +65,9 @@ webhook:
   relay_url: "https://webhooks.unclutter.pro"  # Base URL for webhook relay (smee.io compatible)
 
 # Usage reporting — send session metrics to external endpoints after each session.
-# Used by hosting platforms (e.g. Unclutter) for billing based on work hours.
+# Used by hosting platforms for billing based on work hours.
 usage_reporting:
   enabled: false
-  webhook_url: ""          # POST endpoint for session metrics (e.g. "https://app.unclutter.pro/api/usage")
+  webhook_url: ""          # POST endpoint for session metrics (e.g. "https://app.example.org/api/usage")
   webhook_secret: ""       # Shared secret sent as X-Webhook-Secret header
   include_tokens: false    # Include token counts in payload (default: only duration/timing)
