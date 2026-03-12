@@ -44,16 +44,51 @@ mkdir -p "$WORKSPACE/memory/projects" \
          "$WORKSPACE/supervisor.d" \
          "$WORKSPACE/.qmd-cache"
 
-# Claude Code project-scoped memory (MEMORY.md + subdirs)
-# Path pattern: ~/.claude/projects/-home-<username>/memory/
+# ── Migration: Consolidate .claude/projects memory into ~/memory/ ──
 AGENT_USER=$(basename "$HOME")
-CLAUDE_PROJECT_SLUG="-home-${AGENT_USER}"
-CLAUDE_MEMORY_DIR="$HOME/.claude/projects/${CLAUDE_PROJECT_SLUG}/memory"
-mkdir -p "$CLAUDE_MEMORY_DIR/journal" "$CLAUDE_MEMORY_DIR/projects"
+CLAUDE_MEMORY_DIR="$HOME/.claude/projects/-home-${AGENT_USER}/memory"
+if [ -d "$CLAUDE_MEMORY_DIR" ]; then
+  echo "  Migrating .claude/projects memory to ~/memory/..."
 
-if [ ! -f "$CLAUDE_MEMORY_DIR/MEMORY.md" ]; then
+  # Merge MEMORY.md (keep ~/memory/ version if both exist, but preserve .claude version as backup)
+  if [ -f "$CLAUDE_MEMORY_DIR/MEMORY.md" ] && [ ! -f "$WORKSPACE/memory/MEMORY.md" ]; then
+    cp "$CLAUDE_MEMORY_DIR/MEMORY.md" "$WORKSPACE/memory/MEMORY.md"
+    echo "    Migrated MEMORY.md"
+  fi
+
+  # Merge journal entries (copy missing ones)
+  if [ -d "$CLAUDE_MEMORY_DIR/journal" ]; then
+    for f in "$CLAUDE_MEMORY_DIR/journal"/*.md; do
+      [ -f "$f" ] || continue
+      basename_f=$(basename "$f")
+      if [ ! -f "$WORKSPACE/memory/journal/$basename_f" ]; then
+        cp "$f" "$WORKSPACE/memory/journal/$basename_f"
+        echo "    Migrated journal/$basename_f"
+      fi
+    done
+  fi
+
+  # Merge project files (copy missing ones)
+  if [ -d "$CLAUDE_MEMORY_DIR/projects" ]; then
+    for f in "$CLAUDE_MEMORY_DIR/projects"/*.md; do
+      [ -f "$f" ] || continue
+      basename_f=$(basename "$f")
+      if [ ! -f "$WORKSPACE/memory/projects/$basename_f" ]; then
+        cp "$f" "$WORKSPACE/memory/projects/$basename_f"
+        echo "    Migrated projects/$basename_f"
+      fi
+    done
+  fi
+
+  # Remove old .claude memory dir to avoid future confusion
+  rm -rf "$CLAUDE_MEMORY_DIR"
+  echo "  Migration complete — removed $CLAUDE_MEMORY_DIR"
+fi
+
+# Create default MEMORY.md if it doesn't exist yet
+if [ ! -f "$WORKSPACE/memory/MEMORY.md" ]; then
   DISPLAY_NAME="${AGENT_NAME:-Atlas}"
-  cat > "$CLAUDE_MEMORY_DIR/MEMORY.md" << MEMEOF
+  cat > "$WORKSPACE/memory/MEMORY.md" << MEMEOF
 # ${DISPLAY_NAME} Memory
 
 ## Key Infrastructure
@@ -71,7 +106,13 @@ if [ ! -f "$CLAUDE_MEMORY_DIR/MEMORY.md" ]; then
 ## Workflow
 - [Commit conventions, branch strategy, delegation patterns, etc.]
 MEMEOF
-  echo "  Created default MEMORY.md at $CLAUDE_MEMORY_DIR/MEMORY.md"
+  echo "  Created default MEMORY.md"
+fi
+
+# Set up QMD memory collection (idempotent)
+if command -v qmd >/dev/null 2>&1; then
+  qmd collection add "$WORKSPACE/memory/" --name "atlas-memory" 2>/dev/null || true
+  echo "  QMD memory collection configured"
 fi
 
 # ── Phase 3: Default Config ──

@@ -35,11 +35,11 @@ You shouldn't explicitly mention it to the user when scheduling a reminder/cronj
 <memory_instructions>
 To prevent losing information between chat sessions, keep the following documents updated:
 
-- **MEMORY.md**: Concise index — infrastructure, projects, active scripts, known limitations, workflow. **NOT for user/agent identity or behavioral rules.** Keep under 200 lines.
+- **~/memory/MEMORY.md**: Concise index — infrastructure, projects, active scripts, known limitations, workflow. **NOT for user/agent identity or behavioral rules.** Keep under 200 lines.
 - **~/IDENTITY.md**: Identity of both the agent (name, persona, purpose) and the user (name, contact, preferences, companies). This is the place for "who we are".
 - **~/SOUL.md**: Fundamental behavioral rules and personality shaping. Only for how the agent should behave at a high level.
-- **memory/journal/<YYYY-MM-DD>.md**: Daily journal — session activities, task results, full details. Never compress or summarize journal entries.
-- **memory/projects/<project-name>.md**: Project-specific notes — decisions, architecture, non-code details
+- **~/memory/journal/<YYYY-MM-DD>.md**: Daily journal — session activities, task results, full details. Never compress or summarize journal entries.
+- **~/memory/projects/<project-name>.md**: Project-specific notes — decisions, architecture, non-code details
 
 Update memories subtly, without notice to the user. Write down subtle preferences which may be helpful in future work. Most important is to keep preferences and goals up-to-date as they change.
 
