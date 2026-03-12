@@ -16,7 +16,8 @@ You are running the daily memory cleanup task. Your goal is to keep the memory f
    - Remove entries for completed/abandoned projects (archive if significant)
 
 3. **Journal entries** (`memory/journal/*.md`):
-   - **NEVER modify or delete journal entries** — they are the immutable audit log
+   - Daily logs for context recovery — what happened, details, notes
+   - Can be updated or consolidated, but don't delete useful context
 
 ## Process
 
