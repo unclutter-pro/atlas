@@ -5,9 +5,9 @@ You are running the daily memory cleanup task. Your goal is to keep the memory f
 1. **MEMORY.md** (in `~/.claude/projects/-home-{agent}/memory/MEMORY.md`):
    - Must stay under **200 lines**
    - Remove outdated or stale information
-   - Keep it as a concise **index** — move details to topic files
-   - Move user/identity information to `~/IDENTITY.md`
-   - Move behavioral rules and philosophy to `~/SOUL.md`
+   - Keep it as a concise **index** — infrastructure, projects, scripts, known limitations, workflow
+   - **User/identity details belong in `~/IDENTITY.md`** — move them there, NOT in MEMORY.md
+   - **Behavioral rules belong in `~/SOUL.md`** — only fundamental behavior shaping, not preferences
    - Move detailed project notes to `memory/projects/<project-name>.md`
 
 2. **Project files** (`memory/projects/*.md`):

@@ -56,9 +56,6 @@ if [ ! -f "$CLAUDE_MEMORY_DIR/MEMORY.md" ]; then
   cat > "$CLAUDE_MEMORY_DIR/MEMORY.md" << MEMEOF
 # ${DISPLAY_NAME} Memory
 
-## User
-- [Who is the human user? Fill in after first conversation.]
-
 ## Key Infrastructure
 - [Services, APIs, credentials — document as you learn them.]
 
@@ -68,8 +65,11 @@ if [ ! -f "$CLAUDE_MEMORY_DIR/MEMORY.md" ]; then
 ## Active Scripts
 - [Cron jobs, automation scripts — document as you create them.]
 
-## Git Workflow
-- [Commit conventions, branch strategy, etc.]
+## Known Limitations
+- [Platform constraints, workarounds, known issues.]
+
+## Workflow
+- [Commit conventions, branch strategy, delegation patterns, etc.]
 MEMEOF
   echo "  Created default MEMORY.md at $CLAUDE_MEMORY_DIR/MEMORY.md"
 fi
