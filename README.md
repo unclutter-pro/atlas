@@ -165,7 +165,15 @@ daily_cleanup:
 web_ui:
   port: 8080
   bind: "127.0.0.1"
+
+usage_reporting:
+  enabled: true
+  webhook_url: "https://app.example.org/api/usage"
+  webhook_secret: "your-secret"
+  include_tokens: false
 ```
+
+See [docs/usage-reporting.md](docs/usage-reporting.md) for payload format and integration details.
 
 ### user-extensions.sh
 
@@ -240,6 +248,7 @@ See [docs/development.md](docs/development.md) for more development commands.
 - [docs/development.md](docs/development.md) — Developer guide
 - [docs/Triggers.md](docs/Triggers.md) — Triggers guide
 - [docs/Integrations.md](docs/Integrations.md) — Signal and Email
+- [docs/usage-reporting.md](docs/usage-reporting.md) — Usage reporting webhooks
 
 ## License
 
