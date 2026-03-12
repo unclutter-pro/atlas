@@ -100,7 +100,7 @@ def handle_notification(notification):
         cmd += ["--attachments", json.dumps(attachments)]
 
     try:
-        subprocess.run(cmd, timeout=180, check=False)
+        subprocess.run(cmd, timeout=600, check=False)
     except Exception as e:
         log(f"ERROR calling 'signal incoming': {e}")
 
