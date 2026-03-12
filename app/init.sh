@@ -44,6 +44,36 @@ mkdir -p "$WORKSPACE/memory/projects" \
          "$WORKSPACE/supervisor.d" \
          "$WORKSPACE/.qmd-cache"
 
+# Claude Code project-scoped memory (MEMORY.md + subdirs)
+# Path pattern: ~/.claude/projects/-home-<username>/memory/
+AGENT_USER=$(basename "$HOME")
+CLAUDE_PROJECT_SLUG="-home-${AGENT_USER}"
+CLAUDE_MEMORY_DIR="$HOME/.claude/projects/${CLAUDE_PROJECT_SLUG}/memory"
+mkdir -p "$CLAUDE_MEMORY_DIR/journal" "$CLAUDE_MEMORY_DIR/projects"
+
+if [ ! -f "$CLAUDE_MEMORY_DIR/MEMORY.md" ]; then
+  DISPLAY_NAME="${AGENT_NAME:-Atlas}"
+  cat > "$CLAUDE_MEMORY_DIR/MEMORY.md" << MEMEOF
+# ${DISPLAY_NAME} Memory
+
+## User
+- [Who is the human user? Fill in after first conversation.]
+
+## Key Infrastructure
+- [Services, APIs, credentials — document as you learn them.]
+
+## Projects
+- See \`memory/projects/\` for detailed project notes.
+
+## Active Scripts
+- [Cron jobs, automation scripts — document as you create them.]
+
+## Git Workflow
+- [Commit conventions, branch strategy, etc.]
+MEMEOF
+  echo "  Created default MEMORY.md at $CLAUDE_MEMORY_DIR/MEMORY.md"
+fi
+
 # ── Phase 3: Default Config ──
 echo "[$(date)] Phase 3: Default config"
 if [ ! -f "$WORKSPACE/config.yml" ]; then
@@ -173,6 +203,17 @@ if [ "$FIRST_DB" = true ] && [ -f "$DB" ]; then
   echo "  Database initialized with default trigger"
 else
   echo "  Database ready (schema + migrations applied)"
+fi
+
+# Ensure memory-cleanup trigger exists (idempotent)
+sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (
+  'memory-cleanup', 'cron', 'Daily memory file cleanup and organization', 'internal', '0 7 * * *', '', 'ephemeral');" || echo "  ⚠ memory-cleanup trigger insert failed (non-fatal)"
+
+# Create default memory-cleanup trigger prompt
+mkdir -p "$WORKSPACE/triggers/memory-cleanup"
+if [ ! -f "$WORKSPACE/triggers/memory-cleanup/prompt.md" ]; then
+  cp /atlas/app/defaults/triggers/memory-cleanup/prompt.md "$WORKSPACE/triggers/memory-cleanup/prompt.md"
+  echo "  Created memory-cleanup trigger prompt"
 fi
 
 # Ensure web-chat trigger exists (idempotent migration)
