@@ -17,7 +17,10 @@ emit_section() {
   fi
 }
 
-# Only emit memory context here (not part of system prompt)
+# Emit context briefing (pre-compiled session awareness)
+emit_section "$WORKSPACE/memory/briefing.md" "session-briefing"
+
+# Emit long-term memory
 emit_section "$MEMORY" "long-term-memory"
 
 # Show recent journal entries (titles only)
