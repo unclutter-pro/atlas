@@ -33,6 +33,9 @@ fi
 echo "[$(date)] Phase 2: Directory setup"
 mkdir -p "$WORKSPACE/memory/projects" \
          "$WORKSPACE/memory/journal" \
+         "$WORKSPACE/memory/entities" \
+         "$WORKSPACE/memory/decisions" \
+         "$WORKSPACE/memory/workflows" \
          "$WORKSPACE/.index" \
          "$WORKSPACE/projects" \
          "$WORKSPACE/skills" \
@@ -315,11 +318,56 @@ fi
 sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (
   'memory-cleanup', 'cron', 'Daily memory file cleanup and organization', 'internal', '0 7 * * *', '', 'ephemeral');" || echo "  ⚠ memory-cleanup trigger insert failed (non-fatal)"
 
-# Create default memory-cleanup trigger prompt
+# Create/update memory-cleanup trigger prompt
 mkdir -p "$WORKSPACE/triggers/memory-cleanup"
 if [ ! -f "$WORKSPACE/triggers/memory-cleanup/prompt.md" ]; then
   cp /atlas/app/defaults/triggers/memory-cleanup/prompt.md "$WORKSPACE/triggers/memory-cleanup/prompt.md"
   echo "  Created memory-cleanup trigger prompt"
+fi
+
+# ── Migration: Obsidian-style memory structure ──
+# For existing deployments: run a one-time session to migrate flat memory files
+# into the new structured format (entities, decisions, workflows, frontmatter).
+MEMORY_MIGRATION_MARKER="$WORKSPACE/.index/.memory-migration-done"
+if [ ! -f "$MEMORY_MIGRATION_MARKER" ] && [ -f "$WORKSPACE/memory/MEMORY.md" ]; then
+  # Check if already migrated (entities dir has files)
+  ENTITY_COUNT=$(ls -1 "$WORKSPACE/memory/entities/"*.md 2>/dev/null | wc -l || echo "0")
+  if [ "$ENTITY_COUNT" -eq 0 ]; then
+    echo "  Scheduling memory structure migration..."
+    MIGRATION_PROMPT="You are running a one-time memory migration. The memory system has been upgraded to Obsidian-style with structured directories.
+
+## Your Task
+
+1. Read ~/memory/MEMORY.md and extract distinct entities (services, platforms, tools, infrastructure) into individual files under ~/memory/entities/<name>.md
+2. Scan recent journal files for key decisions and create ~/memory/decisions/<date>-<slug>.md files
+3. Identify any repeatable workflows/procedures and create ~/memory/workflows/<name>.md files
+4. Add YAML frontmatter to ALL existing files that don't have it yet (journal, projects)
+5. Add a 'Memory Structure' reference section to MEMORY.md linking to the new directories
+6. Run: touch ~/.index/.memory-migration-done
+
+## Frontmatter Format
+\`\`\`yaml
+---
+type: entity | decision | workflow | journal | project
+date: YYYY-MM-DD
+tags: [relevant, tags]
+related: []
+status: active
+---
+\`\`\`
+
+## Rules
+- Be thorough — extract ALL identifiable entities from MEMORY.md
+- Don't delete content from MEMORY.md, just add the structure section
+- Don't modify journal content, only add frontmatter
+- Run qmd update when done"
+
+    /atlas/app/triggers/trigger.sh "memory-migration" "$MIGRATION_PROMPT" "memory-migration" &
+    echo "  Memory migration session started in background"
+  else
+    touch "$MEMORY_MIGRATION_MARKER"
+    echo "  Memory structure already migrated (entities exist)"
+  fi
 fi
 
 # Ensure web-chat trigger exists (idempotent migration)
