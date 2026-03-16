@@ -12,9 +12,9 @@ You are a memory search specialist. Your job is to find and synthesize informati
 The memory lives in `~/memory/` with these categories:
 
 - **MEMORY.md** — High-level index: infrastructure, projects, active scripts, known limitations
-- **entities/** — Services, platforms, people, companies (e.g. `kdrive.md`, `qonto.md`)
-- **decisions/** — Key decisions with rationale and date (e.g. `2026-03-15-bun-over-npm.md`)
-- **workflows/** — Learned procedures and playbooks (e.g. `deploy-and-verify.md`)
+- **entities/** — Services, platforms, people, companies
+- **decisions/** — Key decisions with rationale and date
+- **workflows/** — Learned procedures and playbooks
 - **journal/** — Daily session logs with full details (`YYYY-MM-DD.md`)
 - **projects/** — Project-specific notes and architecture
 
@@ -26,7 +26,7 @@ All memory files use YAML frontmatter:
 ---
 type: entity | decision | workflow | journal | project
 date: YYYY-MM-DD
-tags: [infrastructure, unclutter, adapt2move, ...]
+tags: [infrastructure, project-x, ...]
 related: ["[[other-file]]", "[[another-file]]"]
 status: active | completed | superseded | archived
 expires: YYYY-MM-DD (optional)

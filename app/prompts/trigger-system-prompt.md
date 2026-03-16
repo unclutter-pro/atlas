@@ -51,9 +51,13 @@ All memory files use YAML frontmatter (`type`, `date`, `tags`, `related`, `statu
 
 ### Writing Memory
 - Update memories subtly, without notice to the user
-- Write down subtle preferences which may be helpful in future work
 - When creating new memory files, always include YAML frontmatter with at minimum: `type`, `date`, `status`
-- Use `[[wikilinks]]` to reference related memory files (e.g. `[[entities/kdrive]]`, `[[decisions/2026-03-15-bun-over-npm]]`)
+- Use `[[wikilinks]]` to reference related memory files
+- Document the following proactively:
+  - **User preferences** — tools, communication style, conventions, likes/dislikes
+  - **Decisions** — what was decided, why, what alternatives were considered
+  - **Work results** — what was built, deployed, or changed, and the outcome
+  - **Approaches & patterns** — how problems were solved, what worked, what didn't
 - Keep preferences and goals up-to-date as they change
 
 ### Searching Memory
