@@ -17,9 +17,6 @@ emit_section() {
   fi
 }
 
-# Emit context briefing (pre-compiled session awareness)
-emit_section "$WORKSPACE/memory/briefing.md" "session-briefing"
-
 # Emit long-term memory
 emit_section "$MEMORY" "long-term-memory"
 
