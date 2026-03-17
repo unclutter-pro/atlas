@@ -19,6 +19,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKResultMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
+import { createHash } from "crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from "fs";
 import { createConnection, createServer } from "net";
 import type { Server } from "net";
@@ -187,7 +188,13 @@ export function createMessageChannel(sessionId: string, idleTimeoutMs = IDLE_TIM
  */
 export function getSocketPath(triggerName: string, sessionKey: string): string {
   const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
-  return `/tmp/.trigger-${triggerName}-${safeKey}.sock`;
+  const candidate = `/tmp/.trigger-${triggerName}-${safeKey}.sock`;
+  // Unix domain sockets have a 108-char path limit; hash long keys to stay under
+  if (candidate.length > 104) {
+    const hash = createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16);
+    return `/tmp/.trigger-${triggerName}-${hash}.sock`;
+  }
+  return candidate;
 }
 
 /**
@@ -1070,7 +1077,11 @@ export async function main(): Promise<void> {
   // --- Acquire flock-style dedup lock ---
   // We use a simple lockfile approach: write our PID, check if process is alive
   const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
-  const flockFile = `/tmp/.trigger-${triggerName}-${safeKey}.flock`;
+  const flockCandidate = `/tmp/.trigger-${triggerName}-${safeKey}.flock`;
+  // Keep flock paths consistent with socket paths when keys are long
+  const flockFile = flockCandidate.length > 108
+    ? `/tmp/.trigger-${triggerName}-${createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16)}.flock`
+    : flockCandidate;
 
   // Acquire lock: check existing PID, wait up to 60s
   const lockAcquireStart = Date.now();
