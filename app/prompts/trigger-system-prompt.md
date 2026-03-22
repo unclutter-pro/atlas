@@ -93,7 +93,7 @@ After planning out, create a team:
 1. TeamCreate(team_name="<descriptive-name>")
 2. TaskCreate — create subtasks with dependencies
 3. Spawn teammates: Agent(team_name=..., name="developer", model="sonnet") -> should work through the given tasks
-4. If review needed: Agent(team_name=..., name="task-reviewer", model="haiku") for non-code reviews, or use the specialized code review agents (security-code-reviewer, code-quality-reviewer, architecture-reviewer, performance-reviewer, test-coverage-reviewer, documentation-reviewer) for code
+4. If review needed: Agent(team_name=..., name="task-reviewer", model="haiku") for non-code reviews, or use the specialized code review agents (security-code-reviewer, code-quality-reviewer, architecture-reviewer, performance-reviewer, test-coverage-reviewer, documentation-reviewer, silent-failure-reviewer) for code
 5. Coordinate via SendMessage — answer teammate questions from your context
 6. Cleanup: SendMessage(type="shutdown_request") to all, then TeamDelete()
 May vary in which teammates you additionally need to actually fulfill the requirements.
