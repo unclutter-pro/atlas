@@ -93,6 +93,36 @@ agent-browser open https://app.example.com/dashboard
 
 See [references/authentication.md](references/authentication.md) for OAuth, 2FA, cookie-based auth, and token refresh patterns.
 
+## Credentials & Secrets Convention
+
+**Never read secret files directly into your context.** Always pipe them via shell commands so credentials stay out of the conversation.
+
+```bash
+# Correct: pipe secret into a command (value never visible to the agent)
+cat ~/secrets/github_pat | agent-browser auth save github --url https://github.com/login --username max --password-stdin
+
+# Correct: use in a command without reading
+curl -H "Authorization: Bearer $(cat ~/secrets/api_key)" https://api.example.com
+
+# Wrong: reading the file content into the conversation
+# cat ~/secrets/api_key  ← NEVER do this
+```
+
+**For browser logins, prefer the auth vault.** When saving credentials for a website:
+
+1. Store them directly in the auth vault (not in ~/secrets)
+2. Create a reference file in ~/secrets so it's discoverable:
+
+```bash
+# Save login to auth vault
+echo "$PASSWORD" | agent-browser auth save servicename --url https://app.example.com/login --username user --password-stdin
+
+# Create reference (not the actual secret)
+echo "Managed by agent-browser auth vault. Use: agent-browser auth login servicename" > ~/secrets/servicename-browser
+```
+
+This way `ls ~/secrets/` shows all available credentials at a glance, but browser logins are managed securely by agent-browser.
+
 ## Essential Commands
 
 ```bash
