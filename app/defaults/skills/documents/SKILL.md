@@ -1,6 +1,6 @@
 ---
 name: documents
-description: Generate PDFs, DOCX files, and other documents using Typst, Pandoc, and Playwright.
+description: Generate documents from scratch using Typst, Pandoc, and Playwright. Use for creating PDFs from Typst markup, converting between formats (Markdown to PDF/DOCX/EPUB), or rendering HTML to PDF. For working with existing .docx, .pptx, .xlsx, or .pdf files, use the dedicated skills instead.
 ---
 
 # Document Generation
