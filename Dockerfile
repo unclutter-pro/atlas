@@ -79,13 +79,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
 
-# Create directory structure
-RUN mkdir -p /atlas/app/hooks \
-  /atlas/app/prompts \
-  /atlas/app/triggers/cron \
-  /atlas/app/atlas-mcp \
-  /atlas/app/web-ui \
-  /atlas/app/defaults/skills \
+# Create directory structure (owned by agent from the start)
+RUN mkdir -p /atlas/app /atlas/logs \
   /home/agent/memory/projects \
   /home/agent/memory/journal \
   /home/agent/.index \
@@ -96,16 +91,19 @@ RUN mkdir -p /atlas/app/hooks \
   /home/agent/triggers \
   /home/agent/secrets \
   /home/agent/helpers \
-  /atlas/logs
+  && chown -R agent:agent /atlas /home/agent \
+  && ln -s /home/agent /home/atlas
 
-# Copy application code
-COPY app/ /atlas/app/
-COPY .claude/settings.json /atlas/app/.claude/settings.json
+# Copy application code (--chown avoids extra chown layer)
+COPY --chown=agent:agent app/ /atlas/app/
+COPY --chown=agent:agent .claude/settings.json /atlas/app/.claude/settings.json
+COPY --chown=agent:agent supervisord.conf /etc/supervisor/conf.d/atlas.conf
+COPY --chown=agent:agent app/nginx.conf /etc/nginx/sites-available/atlas
 
 # Copy compiled trigger-runner native binary from build stage
-COPY --from=trigger-builder /build/triggers/trigger-runner /atlas/app/triggers/trigger-runner
+COPY --chown=agent:agent --from=trigger-builder /build/triggers/trigger-runner /atlas/app/triggers/trigger-runner
 
-# Set permissions + install all bun deps + nginx/supervisor config in one layer
+# Set permissions, install bun deps, configure nginx/supervisor (single layer)
 RUN chmod +x /atlas/app/entrypoint.sh \
   && chmod +x /atlas/app/init.sh \
   && chmod +x /atlas/app/hooks/*.sh \
@@ -116,20 +114,11 @@ RUN chmod +x /atlas/app/entrypoint.sh \
   && cd /atlas/app/atlas-mcp && bun install \
   && cd /atlas/app/triggers && bun install \
   && cd /atlas/app/integrations/whatsapp && bun install \
-  && cd /atlas/app/web-ui && bun install
-
-# Copy supervisord config
-COPY supervisord.conf /etc/supervisor/conf.d/atlas.conf
-
-# Nginx config + symlinks + ownership (one final layer)
-COPY app/nginx.conf /etc/nginx/sites-available/atlas
-RUN ln -sf /etc/nginx/sites-available/atlas /etc/nginx/sites-enabled/atlas \
+  && cd /atlas/app/web-ui && bun install \
+  && ln -sf /etc/nginx/sites-available/atlas /etc/nginx/sites-enabled/atlas \
   && rm -f /etc/nginx/sites-enabled/default \
-  && ln -s /home/agent /home/atlas \
-  && chown -R agent:agent /atlas /home/agent \
-  && (chown -R agent:agent /var/run 2>/dev/null || true) \
-  && chown -R agent:agent /var/log/nginx /var/lib/nginx \
-  && chown -R agent:agent /etc/supervisor
+  && chown -R agent:agent /var/log/nginx /var/lib/nginx /etc/supervisor \
+  && (chown -R agent:agent /var/run 2>/dev/null || true)
 
 WORKDIR /home/agent
 
