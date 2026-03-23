@@ -29,7 +29,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Berlin
 
 # ---- Single mega-install layer ----
-# Claude CLI + agent-browser Chrome are installed at runtime via init.sh
+# Claude CLI is installed at runtime via init.sh
 # (too heavy for Kaniko on 8GB workers; will move to image when builder
 # nodes are available via Hetzner limit increase).
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -177,8 +177,8 @@ if [ -n "${ATLAS_PROJECTS_DIR:-}" ] && [ "$ATLAS_PROJECTS_DIR" != "$WORKSPACE/pr
 fi
 
 # ── Phase 2e: Runtime Tool Install ──
-# Claude CLI + agent-browser Chrome installed at runtime (too heavy for
-# Kaniko on 8GB workers). Cached on PVC so only runs once per volume.
+# Claude CLI installed at runtime (too heavy for Kaniko on 8GB workers).
+# Cached on PVC so only runs once per volume.
 RUNTIME_MARKER="$WORKSPACE/.index/.runtime-tools-installed"
 echo "[$(date)] Phase 2e: Runtime tool install"
 if [ ! -f "$RUNTIME_MARKER" ]; then
@@ -195,11 +195,6 @@ if [ ! -f "$RUNTIME_MARKER" ]; then
     sleep ${i}0
   done
   claude --version 2>/dev/null && echo "  Claude CLI installed" || echo "  ⚠ Claude CLI install failed"
-
-  # agent-browser: download Chrome for headless browsing
-  echo "  Installing agent-browser Chrome..."
-  agent-browser install 2>/dev/null || true
-  echo "  agent-browser Chrome installed"
 
   touch "$RUNTIME_MARKER"
   echo "  Runtime tools installed and cached"
