@@ -206,6 +206,43 @@ When no guidelines exist, explore freely and propose a direction.
 
 ---
 
+# Output Efficiency
+
+Your output is measured in tokens. Every line of HTML and CSS costs. The best designs achieve more with less — this is true visually AND in code.
+
+## CSS Architecture
+
+- **Define once, reuse everywhere.** CSS classes over inline styles. A `.card` class used 6 times beats 6 blocks of duplicated styles.
+- **CSS Grid and Flexbox reduce markup.** A 3-column grid needs 1 parent + 3 children, not nested wrapper divs.
+- **Custom properties ARE your design system.** Define tokens in `:root`, reference everywhere. Never repeat raw hex values.
+- **Combine related properties.** `margin: 0 0 var(--sp-4)` not four separate margin declarations.
+
+## Markup Discipline
+
+- **Flat over nested.** Every wrapper div you add costs tokens and adds no design value. Question every `<div>` — can a direct child selector or grid area replace it?
+- **Semantic HTML reduces code.** `<header>`, `<nav>`, `<main>`, `<section>`, `<aside>` need less class decoration than generic divs.
+- **SVG inline only when simple.** Complex illustrations should be external assets, not 200-line inline SVGs.
+- **Repeated structures = loops in your head.** If you're writing the same card structure 5 times, write one well and duplicate it. Don't reinvent each instance.
+
+## The Efficiency Test
+
+After building, ask: "Could I achieve the same visual result with 30% less code?" If yes — refactor before showing. The poster test achieved 9/10 visual quality at 18KB. The dashboard achieved 8/10 at 37KB. More code doesn't mean better design.
+
+---
+
+# Font Strategy
+
+Choose fonts with intention AND awareness of context:
+
+- **Visual artifacts & PDFs** → Use fonts from `canvas-fonts/`. These are local, have no network dependency, and are curated for design-forward work. Reference via `@font-face` with local file paths.
+- **Web pages & applications** → Google Fonts is acceptable. Always include `font-display: swap` and proper fallback stacks. Limit to 2 font families, 3-4 weights total.
+- **Never load fonts you don't use.** Each unused weight/style costs network and tokens.
+- **Fallback stacks matter.** `font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace` — not just `'JetBrains Mono', monospace`.
+
+Available canvas fonts (29 families): ArsenalSC, BigShoulders, Boldonse, BricolageGrotesque, CrimsonPro, DMMono, GeistMono, Gloock, IBMPlexMono, IBMPlexSerif, InstrumentSans, InstrumentSerif, Italiana, JetBrainsMono, Jura, LibreBaskerville, Lora, NationalPark, NothingYouCouldDo, Outfit, PixelifySans, PoiretOne, RedHatMono, Silkscreen, SmoochSans, Tektur, WorkSans, YoungSerif.
+
+---
+
 # The Mandate
 
 **Before showing the user, look at what you made.**
@@ -229,6 +266,10 @@ Run these against your output before presenting:
 - **The token test:** Read your CSS variables out loud. Do they sound like they belong to this project's world, or could they belong to any project?
 
 - **The content test:** Read every visible string as a user would. Does this tell one coherent story? Content incoherence breaks the illusion faster than any visual flaw.
+
+- **The accessibility test:** Check contrast on your most important text — does it pass 4.5:1 against its background? Are interactive elements at least 44px touch targets? Do focus states exist? See `references/accessibility.md` for specifics.
+
+- **The efficiency test:** Look at your HTML output. Are there repeated inline styles that should be classes? Unnecessary wrapper divs? Inline SVGs that could be simpler? Could you achieve the same result with 30% less code?
 
 If any check fails, iterate before showing.
 

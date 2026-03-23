@@ -223,7 +223,13 @@ When requested: create additional pages along the same design philosophy but dis
 
 ## Implementation
 
-Use Playwright for complex canvas compositions (HTML -> PDF/PNG), or Typst for typography-driven pieces. For generative/algorithmic elements, write self-contained HTML with inline CSS and JS. Load fonts from `canvas-fonts/` directory.
+Use Playwright for complex canvas compositions (HTML -> PDF/PNG), or Typst for typography-driven pieces. For generative/algorithmic elements, write self-contained HTML with inline CSS and JS. Load fonts from `canvas-fonts/` directory using `@font-face` declarations.
+
+**Efficiency matters here too.** Visual artifacts should be concise:
+- CSS custom properties for all colors and spacing — define once in `:root`
+- Reusable CSS classes for repeated patterns (grid cells, label styles)
+- SVG shapes over complex CSS shapes — cleaner and more maintainable
+- Target under 20KB of HTML for single-page artifacts. The best poster in testing achieved 18KB at 9/10 quality.
 
 ---
 

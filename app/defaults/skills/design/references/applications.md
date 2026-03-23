@@ -152,12 +152,19 @@ Density is a design decision. Consider the user's context:
 
 Every interactive element needs states: **default, hover, active, focus, disabled.** Data needs states: **loading, empty, error.** Missing states feel broken.
 
-AI almost never generates these. But this is where real apps spend most of their visual complexity:
+AI almost never generates these. But this is where real apps spend most of their visual complexity.
+
+**Hard requirement:** Your output MUST include at least:
+1. **One hover state** — on a button, card, or row. Show the CSS transition. (`transition: background 150ms ease, box-shadow 150ms ease`)
+2. **One focus state** — a visible focus ring on at least one interactive element. (`outline: 2px solid var(--brand); outline-offset: 2px`)
+3. **One non-default data state** — show an empty state, loading skeleton, or error. Pick whichever is most relevant to the design.
+
+Without these, the output is a mockup, not a design. Real products have states.
 
 - **Empty states:** Helpful illustration + clear CTA. Not just "No data found."
 - **Loading:** Skeleton screens matching actual content layout, not generic spinners.
 - **Error:** Specific message + what the user can do about it.
-- **Hover:** Subtle shadow transition (shadow-sm → shadow-md, 150ms ease) or background shift.
+- **Hover:** Subtle background shift or shadow transition (shadow-sm → shadow-md, 150ms ease). Define in CSS, not inline.
 
 **Doherty Threshold:** Show loading states within 400ms. Users perceive anything slower as laggy.
 

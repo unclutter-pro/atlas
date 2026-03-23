@@ -277,3 +277,33 @@ input[aria-invalid="true"] {
 8. **Autoplay audio/video** with no way to stop
 9. **Tiny close buttons** on modals (especially on mobile)
 10. **Drag-only interactions** with no button alternative
+
+---
+
+## Pre-Delivery Accessibility Checklist
+
+Run this against every output before showing it to the user:
+
+**Contrast (must-pass):**
+- [ ] Primary text color against its background ≥ 4.5:1
+- [ ] Heading text against its background ≥ 3:1 (if ≥ 18px bold or ≥ 24px)
+- [ ] Interactive element borders/fills against background ≥ 3:1
+- [ ] In dark mode: text is NOT pure white, background is NOT pure black
+
+**Structure (must-pass):**
+- [ ] Heading hierarchy is sequential (h1 → h2 → h3, no skipping)
+- [ ] Interactive elements have visible focus states
+- [ ] No information conveyed by color alone
+
+**Interactive (when applicable):**
+- [ ] All buttons/links have text content or `aria-label`
+- [ ] Touch targets ≥ 44×44px on mobile surfaces
+- [ ] At least one hover transition defined in CSS
+- [ ] `prefers-reduced-motion` media query included if animations exist
+
+Quick contrast reference for common pairings:
+- `#666` on `#fff` = 5.74:1 (passes AA)
+- `#767676` on `#fff` = 4.54:1 (minimum AA pass)
+- `#888` on `#fff` = 3.54:1 (fails for body text)
+- `#e0e0e0` on `#121212` = 12.6:1 (good dark mode)
+- `#9ca3af` on `#111827` = 5.28:1 (passes AA)

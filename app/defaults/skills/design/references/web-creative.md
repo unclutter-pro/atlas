@@ -123,6 +123,30 @@ The background sets the stage. A distinctive atmosphere is half the design.
 
 ---
 
+## Responsive Design
+
+Web output must work across viewports. Not as an afterthought — as a design constraint from the start.
+
+**Breakpoints (mobile-first):**
+```
+/* Mobile first — base styles for 320px+ */
+@media (min-width: 640px)  { /* Tablet */ }
+@media (min-width: 1024px) { /* Desktop */ }
+@media (min-width: 1440px) { /* Wide desktop */ }
+```
+
+**Key patterns:**
+- **Typography scales down.** Use `clamp()` for fluid type: `font-size: clamp(2rem, 5vw, 4rem)`. Don't just make everything smaller — reduce the scale ratio on mobile (1.200 → 1.125).
+- **Sections stack.** Multi-column layouts become single-column below tablet. Grid columns: `grid-template-columns: repeat(auto-fit, minmax(300px, 1fr))`.
+- **Spacing compresses.** Section gaps of 128-192px on desktop become 64-96px on mobile. Use viewport-relative units: `padding: clamp(4rem, 8vw, 12rem) 0`.
+- **Navigation adapts.** Horizontal nav → hamburger menu on mobile. But consider: does this page even need complex nav on mobile?
+- **Touch targets.** Everything interactive must be at least 44×44px on mobile. See `accessibility.md`.
+- **Hero images/graphics.** Consider art direction — a wide landscape hero might need a different crop or composition on mobile, not just shrinking.
+
+**The responsive test:** Resize your browser from 375px to 1440px. Does the layout break at any point? Are there horizontal scrollbars? Does text become unreadable? Fix these before showing.
+
+---
+
 ## Anti-Patterns
 
 These signal "AI-generated" immediately:

@@ -111,6 +111,24 @@ Long documents need pacing. Unbroken walls of text lose readers.
 
 ---
 
+## Chart Implementation
+
+When building charts in HTML/CSS/SVG:
+
+- **SVG for vector charts.** Line charts, bar charts, area charts — always SVG. They scale perfectly for print and screen.
+- **Keep SVG concise.** Define reusable elements with `<defs>` and reference with `<use>`. Don't repeat gradient definitions.
+- **Axis labels matter more than gridlines.** Label key data points directly on the chart (annotation) rather than relying on axis + gridline reading. Direct labels reduce cognitive load.
+- **Responsive SVG:** Use `viewBox` and `preserveAspectRatio`. Never hardcode pixel widths.
+- **Animation in charts:** Only for screen documents. Use CSS transitions on bar heights or line drawing (`stroke-dashoffset` technique).
+
+**Chart typography:**
+- Axis labels: 10-11px, secondary text color
+- Data labels: 11-12px, primary text color, `font-variant-numeric: tabular-nums`
+- Chart title: same as document H3
+- Source/footnote: 9-10px, muted text color
+
+---
+
 ## Print Considerations
 
 If the document might be printed:
