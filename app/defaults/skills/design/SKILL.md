@@ -1,7 +1,6 @@
 ---
 name: design
-description: Design any visual output — websites, landing pages, SaaS apps, dashboards, documents, reports, presentations, or any UI/layout/typography/color work. Use when the user asks to build, design, or style anything visual.
-license: Complete terms in LICENSE.txt
+description: Design any visual output — websites, landing pages, SaaS apps, dashboards, documents, reports, presentations, posters, infographics, or any UI/layout/typography/color work. Use when the user asks to build, design, style, or create anything visual, even if they don't explicitly say "design." Also use for visual artifacts like posters, covers, art pieces, and infographics.
 ---
 
 # Design
@@ -182,6 +181,9 @@ Different outputs have different needs. After establishing intent and domain, co
 
 **Presentations** — Slide decks, pitch materials, keynotes. Visual storytelling, projection readability, slide hierarchy.
 → See `references/presentations.md`
+
+**Visual artifacts** — Posters, infographics, covers, art pieces, visual identities. Philosophy-driven visual expression where text is a design element, not content. Museum-quality static output.
+→ See `references/visual-artifacts.md`
 
 When a project spans multiple surfaces (e.g., marketing site + dashboard), maintain shared tokens and identity across them while adapting expression to each surface's needs.
 

@@ -1,6 +1,6 @@
 ---
 name: documents
-description: Generate PDFs, DOCX files, and other documents using Typst, Pandoc, and Playwright.
+description: Create and process documents — generate PDFs, DOCX, reports, invoices, and letters using Typst, Pandoc, and Playwright. Also handles existing PDFs: extract text/tables, merge, split, rotate, watermark, OCR, and fill forms. Use when the user mentions any document format or asks to produce, edit, or extract from documents.
 ---
 
 # Document Generation
@@ -9,11 +9,19 @@ description: Generate PDFs, DOCX files, and other documents using Typst, Pandoc,
 
 | Scenario | Tool | Command |
 |----------|------|---------|
+| **Create** | | |
 | PDF from scratch (invoices, letters, reports) | Typst | `typst compile doc.typ output.pdf` |
 | Markdown to PDF | Pandoc + Typst | `pandoc input.md -o output.pdf --pdf-engine=typst` |
 | Markdown to DOCX | Pandoc | `pandoc input.md -o output.docx` |
-| HTML to PDF (complex web layouts) | Playwright | `browser_pdf_save` or scripted `page.pdf()` |
+| HTML to PDF (complex web layouts) | Playwright | scripted `page.pdf()` |
 | Format conversion (DOCX, EPUB, HTML, etc.) | Pandoc | `pandoc input.X -o output.Y` |
+| **Process existing PDFs** | | |
+| Extract text | pdfplumber | `page.extract_text()` |
+| Extract tables | pdfplumber | `page.extract_tables()` |
+| Merge PDFs | pypdf | `writer.add_page(page)` |
+| Split PDFs | pypdf / qpdf | One page per file |
+| OCR scanned PDFs | pytesseract | Convert to image first |
+| Fill PDF forms | pypdf | See `references/pdf-processing.md` |
 
 Save all generated files to `~/output/`. Save reusable templates to `~/templates/`.
 
@@ -153,6 +161,25 @@ await browser.close();
 ```bash
 node ~/helpers/html-to-pdf.mjs /home/atlas/output/report.html /home/atlas/output/report.pdf
 ```
+
+---
+
+## Processing Existing PDFs
+
+For working with existing PDF files — extracting text/tables, merging, splitting, watermarking, OCR, or filling forms — see `references/pdf-processing.md`.
+
+Key libraries:
+- **pypdf** — Merge, split, rotate, encrypt, watermark
+- **pdfplumber** — Text and table extraction (better than pypdf for structured content)
+- **reportlab** — Create PDFs programmatically from scratch
+- **pytesseract + pdf2image** — OCR for scanned documents
+- **qpdf** — CLI tool for merge, split, decrypt
+
+### Gotchas
+
+- Never use Unicode subscript/superscript characters in reportlab PDFs — built-in fonts render them as black boxes. Use `<sub>` and `<super>` XML tags instead.
+- For scanned PDFs, always try `pdfplumber` text extraction first before falling back to OCR.
+- `qpdf` is more reliable than `pdftk` for CLI operations.
 
 ---
 
