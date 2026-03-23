@@ -29,7 +29,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Berlin
 
 # ---- Single mega-install layer ----
-# Claude CLI + Playwright browsers are installed at runtime via init.sh
+# Claude CLI + agent-browser Chrome are installed at runtime via init.sh
 # (too heavy for Kaniko on 8GB workers; will move to image when builder
 # nodes are available via Hetzner limit increase).
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -72,7 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     | tar -xJ --strip-components=1 -C /usr/local/bin "typst-${TYPST_ARCH}-unknown-linux-musl/typst" \
   && chmod +x /usr/local/bin/typst \
   # --- npm globals ---
-  && npm install -g @playwright/mcp \
+  && npm install -g agent-browser \
   && npm cache clean --force
 
 ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
