@@ -258,7 +258,7 @@ for old_skill in "$WORKSPACE"/skills/*.md; do
 done
 
 # Remove stale system skill copies (now linked from app)
-for skill_name in dependencies playwright triggers agent-browser; do
+for skill_name in dependencies playwright triggers agent-browser browser; do
   [ -d "$WORKSPACE/skills/$skill_name" ] && rm -rf "$WORKSPACE/skills/$skill_name" \
     && echo "  Cleaned up stale system skill: $skill_name"
 done
