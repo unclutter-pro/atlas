@@ -73,6 +73,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && chmod +x /usr/local/bin/typst \
   # --- npm globals ---
   && npm install -g agent-browser \
+  && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
   && npm cache clean --force
 
 ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
