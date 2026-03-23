@@ -21,8 +21,6 @@ Commit to a BOLD direction and execute with precision. Pick a position on the sp
 
 These are starting points, not destinations. Design a direction true to the project, not a style from a list.
 
-**Bold maximalism and refined minimalism both work** — the key is intentionality, not intensity. Match implementation complexity to the vision.
-
 ---
 
 ## Typography
@@ -31,8 +29,20 @@ Choose fonts that are distinctive and characterful. The typography IS the design
 
 - **Pair with purpose:** A display font for headlines, a refined font for body. The contrast between them creates energy.
 - **Never default:** If your first instinct is Inter, Space Grotesk, or Roboto — stop. Those are patterns, not choices.
-- **Scale dramatically:** Hero text can be massive. Supporting text can be intimate. The range creates hierarchy through contrast.
-- **Track tightly on display sizes.** Letter-spacing compresses as size increases — this is what makes large type feel intentional rather than just big.
+- **Scale dramatically:** Use Perfect Fourth (1.333) or higher ratio. For a 16px base: 16, 21, 28, 38, 51, 68px. AI defaults to timid scales where headings barely differ from body text.
+- **Track tightly on display sizes.** Letter-spacing compresses as size increases — this is what makes large type feel intentional rather than just big. Headlines above 36px: `-0.02em` to `-0.04em`. Body text: `0` to `0.01em`.
+- **Two typefaces maximum.** One display, one text. A third is noise.
+
+---
+
+## Spacing: Dramatic Contrast
+
+This is the single biggest difference between AI output and professional design.
+
+- **Tight within groups** (8-16px) but **enormous gaps between sections** (120-200px). The ratio between inner and outer spacing should be at least 4:1.
+- AI tendency: uniform 40-60px gaps everywhere. This flattens the page into a monotone rhythm.
+- Build a spacing scale on multiples of 8: 8, 16, 24, 32, 48, 64, 96, 128, 192. Use the full range.
+- **Outer padding ≥ inner padding** in any container.
 
 ---
 
@@ -49,16 +59,44 @@ Break expectations. The web is not a vertical stack of centered sections.
 
 ---
 
+## Color
+
+- **Never use pure black (#000) or pure white (#FFF).** Use near-black and near-white. Add <5% saturation in HSB to neutrals, tinting warm or cool — never mixing both.
+- **Define 5+ greys** (e.g., 50/100/200/400/600/800/950 shades). Use no more than 2 accent colors.
+- **Colors in a palette must have distinctly different brightness values.** When colors compete at similar brightness, the palette feels muddy.
+- **Replace borders with spacing and background shifts.** Alternatives to borders: box shadows (`0 1px 3px rgba(0,0,0,0.1)`), 3-5% brightness difference, or 24-32px whitespace.
+- **Accent borders for punch:** A 3-4px colored top or left border on a card adds personality with minimal complexity.
+
+---
+
+## Shadows
+
+Professional shadows are **layered** (two shadows combined), use **negative spread**, and stay at **0.1 opacity or below**:
+
+| Level | CSS |
+|-------|-----|
+| Subtle | `0 1px 2px 0 rgb(0 0 0 / 0.05)` |
+| Small | `0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)` |
+| Medium | `0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)` |
+| Large | `0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)` |
+| XL | `0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)` |
+
+Shadow rule: **blur = 2× the Y-offset.** A shadow extending 4px on Y-axis needs 8px blur.
+
+**No shadows in dark interfaces.** They don't function visually — use brightness and border differences instead.
+
+---
+
 ## Motion
 
 Motion creates narrative on the web. Use it to tell a story, not to decorate.
 
-- **Page load orchestration** — staggered reveals with `animation-delay` create a choreographed entrance. One well-orchestrated load creates more delight than scattered micro-interactions.
-- **Scroll-triggered reveals** — content that appears as you reach it rewards exploration. But don't animate everything — choose moments.
-- **Hover surprise** — interactive elements that respond unexpectedly create discovery. A button that shifts perspective. A card that reveals a hidden layer.
-- **Parallax with restraint** — subtle depth shifts between layers. Heavy parallax feels dated; light parallax feels dimensional.
+- **Page load orchestration** — staggered reveals with `animation-delay` create a choreographed entrance
+- **Scroll-triggered reveals** — content that appears as you reach it rewards exploration. But don't animate everything — choose moments
+- **Hover surprise** — interactive elements that respond unexpectedly create discovery. Shadow-sm to shadow-md on hover with 150ms ease
+- **Parallax with restraint** — subtle depth shifts between layers. Heavy parallax feels dated; light parallax feels dimensional
 
-Prioritize CSS-only solutions for HTML/CSS projects. Use animation libraries (Motion, GSAP) when the project supports them.
+Prioritize CSS-only solutions. Use animation libraries (Motion, GSAP) when the project supports them.
 
 ---
 
@@ -70,11 +108,18 @@ Solid color backgrounds are the default. Defaults are what you're avoiding.
 - **Noise textures** — subtle grain adds physical quality
 - **Geometric patterns** — structured repetition at low opacity
 - **Layered transparencies** — overlapping semi-transparent shapes
-- **Dramatic shadows** — depth through darkness, not just borders
-- **Custom cursors** — the pointer is part of the experience
 - **Grain overlays** — a thin noise layer on everything unifies disparate elements
 
 The background sets the stage. A distinctive atmosphere is half the design.
+
+---
+
+## Button & Control Details
+
+- **Button padding: horizontal = 2× vertical** (e.g., 12px 24px, or 16px 32px)
+- **Nested border-radius: inner = outer minus gap.** Container with 16px radius and 8px padding → inner elements get 8px radius.
+- **Reduce icon opacity to 0.7** when icons appear next to text — prevents them from competing visually
+- **Responsive type scaling**: use different ratios per breakpoint (1.200 on mobile, 1.333 on desktop)
 
 ---
 
@@ -90,6 +135,9 @@ These signal "AI-generated" immediately:
 - Stock illustration style (flat, geometric, lifeless)
 - Cookie-cutter card grids with icon + heading + paragraph
 - Safe color palette with no personality
+- Dead-neutral greys with no warm or cool tinting
+- Uniform spacing everywhere with no dramatic contrast
+- Pure symmetry — everything perfectly centered
 
 If your output matches three or more of these, start over.
 

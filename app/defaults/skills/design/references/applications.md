@@ -10,6 +10,33 @@ This is the backbone. When you look at Vercel's dashboard, you don't think "nice
 
 ---
 
+## Spacing System
+
+Lock to a 4px grid. Every margin, padding, and gap must be from this scale:
+
+```
+4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 96
+```
+
+No exceptions. No `13px` or `37px`. This is the single biggest differentiator between amateur and professional app UI.
+
+---
+
+## Type Scale
+
+Use Major Second (1.125) or Minor Third (1.200). Apps need subtler hierarchy than marketing pages.
+
+For 14px base with 1.200 ratio: **14, 17, 20, 24, 29, 35px**
+
+Rules:
+- Bigger text → tighter letter-spacing and line-height
+- Smaller text → looser letter-spacing and line-height
+- Headlines: `line-height: 1.1-1.2`, `letter-spacing: -0.02em`
+- Body: `line-height: 1.5-1.6`, `letter-spacing: 0`
+- Labels/captions: `line-height: 1.4`, `letter-spacing: 0.01em`
+
+---
+
 ## Surface Elevation
 
 Surfaces stack. Build a numbered system:
@@ -22,26 +49,55 @@ Level 3: Nested overlays, stacked popovers
 Level 4: Highest elevation (rare)
 ```
 
-Each jump: a few percentage points of lightness. You can barely see the difference in isolation. But when surfaces stack, hierarchy emerges.
+**Container brightness differences:**
+- Light mode: max **7%** brightness difference between nested surfaces
+- Dark mode: max **12%** brightness difference
+- Higher elevation = slightly lighter in dark mode
+
+**Concrete values:**
+- Light mode: page `#F8F9FA`, card `#FFFFFF`, elevated card with shadow-sm
+- Dark mode: page `#0F1117`, card `#1A1D27`, elevated `#252836`
 
 **Key decisions:**
 - **Sidebars:** Same background as canvas, not different. Different colors fragment visual space. A subtle border is enough separation.
-- **Dropdowns:** One level above their parent. If both share the same level, the dropdown blends in and layering is lost.
-- **Inputs:** Slightly darker than surroundings, not lighter. Inputs are "inset" — they receive content. Darker signals "type here" without heavy borders.
+- **Dropdowns:** One level above their parent. If both share the same level, the dropdown blends in.
+- **Inputs:** Slightly darker than surroundings, not lighter. Inputs are "inset" — they receive content.
+
+---
+
+## Shadows
+
+Use the layered shadow scale from web-creative reference. Key difference for apps:
+
+- **No shadows in dark interfaces.** Use brightness steps and borders instead.
+- Pick ONE depth approach and commit: flat (borders only), subtle shadows, or layered shadows. Never mix.
+- Shadow blur = 2× the Y-offset.
 
 ---
 
 ## Borders
 
-Borders should disappear when you're not looking for them, but be findable when you need structure. Low-opacity rgba blends with the background — defines edges without demanding attention.
+Borders should disappear when you're not looking for them, but be findable when you need structure. Low-opacity rgba blends with the background.
 
 Build a progression:
-- **Default** — standard separation
-- **Subtle** — softer, background grouping
-- **Strong** — emphasis, hover states
-- **Stronger** — focus rings, maximum attention
+- **Default** — standard separation: `1px solid rgba(0,0,0,0.08)`
+- **Subtle** — softer, background grouping: `1px solid rgba(0,0,0,0.04)`
+- **Strong** — emphasis, hover states: `1px solid rgba(0,0,0,0.15)`
+- **Stronger** — focus rings: `2px solid var(--brand)`
 
-**The squint test:** Blur your eyes. You should perceive hierarchy but nothing should jump out. No harsh lines. No jarring shifts. Just quiet structure.
+**Borders must contrast with BOTH the container AND the background**, not split the difference.
+
+**Replace borders when possible:** spacing (24-32px), subtle background shift (3-5% brightness), or refined shadow (shadow-sm) communicate separation without visual noise.
+
+---
+
+## Colors
+
+- **Never pure black or pure white.** Tint neutrals warm or cool with <5% HSB saturation.
+- **5+ grey shades minimum.** Body text in near-black (e.g., `#1A1A2E`), secondary in mid-grey, muted in light-grey.
+- **One accent color, used with intention.** Primary action buttons, active nav states, selection indicators — all the same color.
+- **Von Restorff Effect for primary actions:** The main CTA must differ visually from all other buttons. Filled primary among outlined/ghost secondaries.
+- **Semantic colors:** red for destructive, amber for warning, green for success, blue for info. Desaturate these slightly in dark mode.
 
 ---
 
@@ -49,7 +105,7 @@ Build a progression:
 
 A metric card doesn't have to look like a plan card doesn't have to look like a settings card. Design each card's internal structure for its specific content — but keep surface treatment consistent: same border weight, shadow depth, corner radius, padding scale.
 
-Every pattern has infinite expressions. A metric display could be a hero number, sparkline, gauge, progress bar, comparison delta, or trend badge. Same sidebar + cards has infinite variations in proportion, spacing, and emphasis.
+Every pattern has infinite expressions. A metric display could be a hero number, sparkline, gauge, progress bar, comparison delta, or trend badge.
 
 **Before building, ask:**
 - What's the ONE thing users do most here?
@@ -65,32 +121,45 @@ Screens need grounding. A data table floating in space is a component demo, not 
 - **Navigation** — sidebar or top nav showing where you are
 - **Location indicator** — breadcrumbs, page title, active nav state
 - **User context** — who's logged in, what workspace/org
-
-Build navigation as part of the app, not a bolt-on wrapper.
+- **Serial Position Effect:** put critical actions first and last in nav lists. Users remember these best.
 
 ---
 
 ## Controls
 
-Native `<select>` and `<input type="date">` render OS-native elements that can't be styled. Build custom components:
-
-- Custom select: trigger button + positioned dropdown
-- Custom date picker: input + calendar popover
-- Custom checkbox/radio: styled div with state management
-
-Custom select triggers need `display: inline-flex` with `white-space: nowrap` to keep text and chevron aligned.
+- **Button padding: horizontal = 2× vertical** (12px 24px, 16px 32px)
+- **Nested border-radius:** inner = outer minus gap
+- **Custom select/date picker** — native `<select>` and `<input type="date">` can't be styled. Build custom components.
+- Custom select triggers need `display: inline-flex` with `white-space: nowrap`
 
 ---
 
 ## Information Density
 
-Density is a design decision, not a constant. Consider the user's context:
+Density is a design decision. Consider the user's context:
 
-- **High density** — trading floors, developer tools, monitoring dashboards. Every pixel earns its place. Tight spacing, smaller type, more data visible.
+- **High density** — trading floors, developer tools, monitoring dashboards. Tight spacing, 12-14px text, 36-44px row height, 12-16px cell padding.
 - **Medium density** — most SaaS products. Balanced breathing room with functional depth.
-- **Low density** — consumer apps, onboarding flows. Generous space, focused attention, progressive disclosure.
+- **Low density** — consumer apps, onboarding flows. Generous space, progressive disclosure.
 
-The right density comes from intent: who is the human, what are they doing, how often do they use this?
+**Hick's Law:** Limit choices per view. Group related actions. Use progressive disclosure. Don't dump all controls on one screen.
+
+**Miller's Law:** 7±2 items in working memory. Chunk navigation and options into groups of 3-5.
+
+---
+
+## States — The Missing Design
+
+Every interactive element needs states: **default, hover, active, focus, disabled.** Data needs states: **loading, empty, error.** Missing states feel broken.
+
+AI almost never generates these. But this is where real apps spend most of their visual complexity:
+
+- **Empty states:** Helpful illustration + clear CTA. Not just "No data found."
+- **Loading:** Skeleton screens matching actual content layout, not generic spinners.
+- **Error:** Specific message + what the user can do about it.
+- **Hover:** Subtle shadow transition (shadow-sm → shadow-md, 150ms ease) or background shift.
+
+**Doherty Threshold:** Show loading states within 400ms. Users perceive anything slower as laggy.
 
 ---
 
@@ -98,19 +167,21 @@ The right density comes from intent: who is the human, what are they doing, how 
 
 Dark interfaces have different needs:
 
-- **Borders over shadows** — shadows barely register on dark backgrounds. Lean on borders.
-- **Desaturate semantics** — success, warning, error colors often need slight desaturation on dark backgrounds.
-- **Invert the hierarchy** — same system, different direction. Higher elevation = slightly lighter.
-- **Watch contrast** — pure white text on pure black is harsh. Soften both ends.
+- **Borders over shadows** — shadows barely register on dark backgrounds
+- **Desaturate semantics** — success, warning, error colors need slight desaturation
+- **Invert the hierarchy** — higher elevation = slightly lighter
+- **Watch contrast** — pure white text on pure black is harsh. Soften both ends
+- **No shadows** — use brightness differences between surfaces instead
 
 ---
 
 ## Avoid
 
 - Harsh borders — if borders are the first thing you see, they're too strong
-- Dramatic surface jumps — elevation changes should be whisper-quiet
+- Dramatic surface jumps — elevation changes should be whisper-quiet (max 7% light, 12% dark)
 - Different hues for different surfaces — same hue, shift only lightness
 - Pure white cards on colored backgrounds
-- Thick decorative borders
-- Gradients for decoration — color should mean something
+- Decorative borders or gradients — color should mean something
 - Same sidebar width, same card grid, same metric boxes every time — this signals AI immediately
+- Uniform spacing — professional design uses dramatic spacing contrast between groups and within groups
+- Dead-neutral greys — always tint warm or cool
