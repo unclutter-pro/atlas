@@ -143,13 +143,13 @@ const DEFAULTS: AtlasConfig = {
     enabled: {
       // Enabled by default
       "skill-creator@claude-plugins-official": true,
-      "frontend-design@claude-plugins-official": true,
-      "feature-dev@claude-plugins-official": true,
-      "hookify@claude-plugins-official": true,
       "code-simplifier@claude-plugins-official": true,
       "security-guidance@claude-plugins-official": true,
-      "claude-code-setup@claude-plugins-official": true,
       // Disabled by default — not needed for most instances
+      "frontend-design@claude-plugins-official": false,
+      "feature-dev@claude-plugins-official": false,
+      "hookify@claude-plugins-official": false,
+      "claude-code-setup@claude-plugins-official": false,
       "plugin-dev@claude-plugins-official": false,
       "mcp-server-dev@claude-plugins-official": false,
       "agent-sdk-dev@claude-plugins-official": false,
