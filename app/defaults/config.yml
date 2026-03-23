@@ -79,3 +79,10 @@ usage_reporting:
 # Workspace paths — override to customize directory layout
 workspace:
   projects_dir: "" # Custom projects directory path (default: $HOME/projects). Override with ATLAS_PROJECTS_DIR env var.
+
+# Claude Code Plugins — enable/disable marketplace plugins
+# Format: "plugin-id@marketplace-id": true/false
+# The agent can modify this at runtime and re-run settings generation.
+# plugins:
+#   enabled:
+#     "agent-sdk-dev@claude-plugins-official": true  # Enable for SDK development

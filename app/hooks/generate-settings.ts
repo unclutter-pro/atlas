@@ -58,12 +58,16 @@ const subagentStopPrompt = [
   'Use "ok": false only if the result is clearly incomplete or wrong.',
 ].join("\n");
 
+// Build enabledPlugins map from config
+const enabledPlugins: Record<string, boolean> = { ...config.plugins.enabled };
+
 const settings: Record<string, unknown> = {
   env: {
     CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_MODEL: mainModel,
   },
+  enabledPlugins,
   permissions: {
     allow: [
       "Bash(*)",

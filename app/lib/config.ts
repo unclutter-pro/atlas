@@ -88,6 +88,11 @@ export interface UsageReportingConfig {
   include_tokens: boolean;
 }
 
+export interface PluginsConfig {
+  /** Plugin enable/disable overrides. Key: "plugin-id@marketplace-id", value: true/false */
+  enabled: Record<string, boolean>;
+}
+
 export interface WorkspaceConfig {
   projects_dir: string;
 }
@@ -105,6 +110,7 @@ export interface AtlasConfig {
   webhook: WebhookConfig;
   usage_reporting: UsageReportingConfig;
   workspace: WorkspaceConfig;
+  plugins: PluginsConfig;
 }
 
 export type ConfigSource = "env" | "runtime" | "file" | "default";
@@ -133,6 +139,26 @@ const DEFAULTS: AtlasConfig = {
   webhook: { relay_url: "https://webhooks.unclutter.pro" },
   usage_reporting: { enabled: false, webhook_url: "", webhook_secret: "", include_tokens: false },
   workspace: { projects_dir: "" }, // empty = $HOME/projects (resolved at runtime)
+  plugins: {
+    enabled: {
+      // Enabled by default
+      "skill-creator@claude-plugins-official": true,
+      "frontend-design@claude-plugins-official": true,
+      "feature-dev@claude-plugins-official": true,
+      "hookify@claude-plugins-official": true,
+      "code-simplifier@claude-plugins-official": true,
+      "security-guidance@claude-plugins-official": true,
+      "claude-code-setup@claude-plugins-official": true,
+      // Disabled by default — not needed for most instances
+      "plugin-dev@claude-plugins-official": false,
+      "mcp-server-dev@claude-plugins-official": false,
+      "agent-sdk-dev@claude-plugins-official": false,
+      "code-review@claude-plugins-official": false,
+      "pr-review-toolkit@claude-plugins-official": false,
+      "commit-commands@claude-plugins-official": false,
+      "ralph-loop@claude-plugins-official": false,
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -330,6 +356,28 @@ export function resolveConfig(home?: string): AtlasConfig {
   // Resolve workspace.projects_dir default
   if (!config.workspace.projects_dir) {
     config.workspace.projects_dir = join(homeDir, "projects");
+  }
+
+  // Resolve plugins config (merge from config.yml and runtime, not env-mapped)
+  // config.yml plugins.enabled overrides defaults
+  if (existsSync(configPath)) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const parsed = yaml.load(raw) as Record<string, any> | null;
+      if (parsed?.plugins?.enabled && typeof parsed.plugins.enabled === "object") {
+        config.plugins.enabled = { ...config.plugins.enabled, ...parsed.plugins.enabled };
+      }
+    } catch { /* already handled above */ }
+  }
+  // Runtime overrides for plugins
+  if (existsSync(runtimePath)) {
+    try {
+      const raw = readFileSync(runtimePath, "utf-8");
+      const parsed = JSON.parse(raw) as Record<string, any>;
+      if (parsed?.plugins?.enabled && typeof parsed.plugins.enabled === "object") {
+        config.plugins.enabled = { ...config.plugins.enabled, ...parsed.plugins.enabled };
+      }
+    } catch { /* already handled above */ }
   }
 
   lastSources = sources;
