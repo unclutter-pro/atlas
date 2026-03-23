@@ -6,32 +6,89 @@ This surface differs from documents and applications: the output is primarily **
 
 ---
 
-## The Approach: Philosophy → Expression
+## The Process: Philosophy → Expression
 
-### 1. Create a Design Philosophy
+Complete this in two steps:
+1. Design Philosophy Creation (.md file)
+2. Express by creating it on a canvas (.pdf file or .png file)
 
-Before any visual work, write a short manifesto (4-6 paragraphs) that defines the aesthetic language. This isn't decoration planning — it's establishing a visual worldview.
+### Step 1: Create a Design Philosophy
+
+Before any visual work, create a VISUAL PHILOSOPHY (not layouts or templates) that will be interpreted through:
+- Form, space, color, composition
+- Images, graphics, shapes, patterns
+- Minimal text as visual accent
+
+**The critical understanding:**
+- What is received: Subtle input from the user — a foundation, not a constraint on creative freedom
+- What is created: A design philosophy / aesthetic movement
+- What happens next: The philosophy is EXPRESSED VISUALLY — artifacts that are 90% visual design, 10% essential text
 
 **Name the movement** (1-2 words): "Brutalist Joy" / "Chromatic Silence" / "Metabolist Dreams"
 
-**Articulate through:**
-- Space and form — how elements occupy the canvas
-- Color and material — the chromatic vocabulary
-- Scale and rhythm — repetition, contrast, visual tempo
-- Composition and balance — where tension lives
-- Visual hierarchy — what leads, what whispers
+**Articulate the philosophy** (4-6 paragraphs — concise but complete):
 
-**Critical:** Emphasize craftsmanship repeatedly. The final work must appear meticulously crafted, the product of deep expertise. This framing directly impacts output quality.
+Express how the philosophy manifests through:
+- Space and form
+- Color and material
+- Scale and rhythm
+- Composition and balance
+- Visual hierarchy
 
-### 2. Deduce the Conceptual Thread
+**Critical guidelines:**
+- **Avoid redundancy**: Each design aspect mentioned once. Don't repeat color theory or spatial points unless adding new depth.
+- **Emphasize craftsmanship REPEATEDLY**: The philosophy MUST stress that the final work appears as though it took countless hours, was labored over with care, by someone at the absolute top of their field. Use phrases like "meticulously crafted," "the product of deep expertise," "painstaking attention," "master-level execution."
+- **Leave creative space**: Specific about aesthetic direction, but concise enough for interpretive choices at an extremely high level of craftsmanship.
 
-Identify the subtle reference from the user's request. This becomes the soul of the piece — a niche reference embedded within the art, not announced. Someone familiar with the subject should feel it intuitively. Others simply experience a masterful composition.
+The philosophy must guide visual expression, not text. Information lives in design, not paragraphs.
 
-Think like a jazz musician quoting another song — only those who know will catch it.
+Output the design philosophy as a `.md` file.
 
-### 3. Express on Canvas
+### Philosophy Examples
 
-Use the philosophy to guide a single-page (or multi-page) visual artifact.
+**"Concrete Poetry"**
+Communication through monumental form and bold geometry. Massive color blocks, sculptural typography (huge single words, tiny labels), Brutalist spatial divisions, Polish poster energy meets Le Corbusier. Text as rare, powerful gesture — never paragraphs, only essential words integrated into the visual architecture. Every element placed with the precision of a master craftsman.
+
+**"Chromatic Language"**
+Color as the primary information system. Geometric precision where color zones create meaning. Typography minimal — small sans-serif labels letting chromatic fields communicate. Josef Albers' interaction meets data visualization. Information encoded spatially and chromatically. Words only to anchor what color already shows. The result of painstaking chromatic calibration.
+
+**"Analog Meditation"**
+Quiet visual contemplation through texture and breathing room. Paper grain, ink bleeds, vast negative space. Photography and illustration dominate. Typography whispered (small, restrained, serving the visual). Japanese photobook aesthetic. Images breathe across pages. Text sparingly — short phrases, never explanatory blocks. Each composition balanced with the care of a meditation practice.
+
+**"Organic Systems"**
+Natural clustering and modular growth patterns. Rounded forms, organic arrangements, color from nature through architecture. Information shown through visual diagrams, spatial relationships, iconography. Text only for key labels floating in space. The composition tells the story through expert spatial orchestration.
+
+**"Geometric Silence"**
+Pure order and restraint. Grid-based precision, bold photography or stark graphics, dramatic negative space. Typography precise but minimal — small essential text, large quiet zones. Swiss formalism meets Brutalist material honesty. Structure communicates, not words. Every alignment the work of countless refinements.
+
+*These are condensed examples. The actual design philosophy should be 4-6 substantial paragraphs.*
+
+---
+
+### Step 2: Deduce the Subtle Reference
+
+**CRITICAL STEP**: Before creating the canvas, identify the subtle conceptual thread from the original request.
+
+The topic is a **subtle, niche reference embedded within the art itself** — not always literal, always sophisticated. Someone familiar with the subject should feel it intuitively, while others simply experience a masterful abstract composition. The design philosophy provides the aesthetic language. The deduced topic provides the soul — the quiet conceptual DNA woven invisibly into form, color, and composition.
+
+Think like a jazz musician quoting another song — only those who know will catch it, but everyone appreciates the music.
+
+---
+
+### Step 3: Canvas Creation
+
+With both the philosophy and the conceptual framework established, express it on a canvas. Use the design philosophy as the foundation. Create one single page, highly visual, design-forward PDF or PNG output (unless asked for more pages).
+
+**IMPORTANT**: Even for content referencing movies/games/books, the approach should still be sophisticated. Never lose sight that this should be art, not something cartoony or amateur.
+
+**The approach:**
+- Use repeating patterns and perfect shapes
+- Treat the design as a scientific bible — borrowing the visual language of systematic observation
+- Dense accumulation of marks, repeated elements, layered patterns that build meaning through patient repetition
+- Sparse, clinical typography and systematic reference markers suggesting a diagram from an imaginary discipline
+- Anchor with simple phrases positioned subtly
+- Limited color palette that feels intentional and cohesive
+- Embrace the paradox of using analytical visual language to express ideas about human experience
 
 ---
 
@@ -47,7 +104,7 @@ Use the philosophy to guide a single-page (or multi-page) visual artifact.
 
 ## Visual Hierarchy
 
-- **Primary element 2-3× larger** than secondary elements. The focal point must be unmistakable.
+- **Primary element 2-3x larger** than secondary elements. The focal point must be unmistakable.
 - **Proximity > lines for showing relationships.** Group related items with 8-12px gaps; separate groups with 32-48px gaps. AI uses connector lines everywhere when spacing alone would communicate.
 - **Chunking for complex information:** Break into groups of 3-5 items (Miller's Law). AI generates long undifferentiated lists.
 - **Arrange elements heaviest-first, lightest-last** in reading direction.
@@ -59,10 +116,47 @@ Use the philosophy to guide a single-page (or multi-page) visual artifact.
 - **Text is sparse, essential-only, integrated as visual accent** — never explanatory
 - Let context guide scale: a punk venue poster has aggressive type; a ceramics identity whispers
 - Most of the time, font weight should be thin and deliberate
-- **Use different fonts** — search available system fonts for character
+- **Use different fonts from `canvas-fonts/`** — search the directory for character and variety
+- Get creative by making typography part of the art itself — if the art is abstract, bring the font onto the canvas
 - **Minimum text size: 11px, ideally 12-14px** for any readable text
 - **Labels directly on data points** — never in a separate legend if avoidable
 - **Two typefaces maximum** even in visual pieces
+
+### Available Fonts
+
+Design-forward fonts are available in `canvas-fonts/`. Use these for all visual artifacts. Available families include:
+
+| Font | Character | Best for |
+|------|-----------|----------|
+| ArsenalSC | Clean, functional | Labels, technical |
+| BigShoulders | Bold, condensed | Headlines, posters |
+| Boldonse | Display, decorative | Titles, statements |
+| BricolageGrotesque | Modern grotesque | Body, headers |
+| CrimsonPro | Elegant serif | Literary, refined |
+| DMMono | Clean monospace | Code, data, technical |
+| EricaOne | Heavy display | Impact headlines |
+| GeistMono | Modern monospace | Technical, systematic |
+| Gloock | Dramatic serif | Editorial, luxury |
+| IBMPlexMono | Industrial mono | Data, systematic |
+| IBMPlexSerif | Industrial serif | Professional, reports |
+| InstrumentSans | Clean, geometric | Modern, versatile |
+| InstrumentSerif | Refined, classical | Elegant, editorial |
+| Italiana | Thin, elegant | Fashion, minimal |
+| JetBrainsMono | Developer mono | Code, technical |
+| Jura | Light, futuristic | Sci-fi, modern |
+| LibreBaskerville | Classical serif | Traditional, literary |
+| Lora | Warm serif | Readable, editorial |
+| NationalPark | Rustic, outdoors | Nature, vintage |
+| NothingYouCouldDo | Handwritten | Personal, informal |
+| Outfit | Clean, modern | UI, versatile |
+| PixelifySans | Pixel art | Retro, gaming |
+| PoiretOne | Art deco, thin | Elegant, decorative |
+| RedHatMono | Distinctive mono | Technical, branded |
+| Silkscreen | Pixel, bitmap | Retro, digital |
+| SmoochSans | Rounded, friendly | Approachable, modern |
+| Tektur | Technical, angular | Tech, engineering |
+| WorkSans | Versatile, clean | Body text, headers |
+| YoungSerif | Heavy, distinctive | Headlines, branding |
 
 ---
 
@@ -93,50 +187,43 @@ These separate professional work from amateur:
 
 | Platform | Dimensions | Ratio |
 |----------|-----------|-------|
-| Instagram post | 1080×1080 | 1:1 |
-| Instagram story | 1080×1920 | 9:16 |
-| Twitter/X | 1200×675 | 16:9 |
-| LinkedIn | 1200×627 | ~2:1 |
-| OG image | 1200×630 | ~2:1 |
-| A4 poster | 2480×3508 | ~1:√2 |
-| US Letter | 2550×3300 | ~1:1.29 |
+| Instagram post | 1080x1080 | 1:1 |
+| Instagram story | 1080x1920 | 9:16 |
+| Twitter/X | 1200x675 | 16:9 |
+| LinkedIn | 1200x627 | ~2:1 |
+| OG image | 1200x630 | ~2:1 |
+| A4 poster | 2480x3508 | ~1:v2 |
+| US Letter | 2550x3300 | ~1:1.29 |
 
 ---
 
-## Quality Bar
+## Quality Bar & Refinement
 
 - Museum or magazine quality — not decorative, not cartoony, not amateur
 - Every alignment the work of countless refinements
-- After first pass, always take a second pass to refine and polish
+- **Always take a second pass** to refine and polish
 - Ask: "How can I make what's already here more cohesive?" before adding more elements
-- Treat the composition as if it were a scientific diagram from an imaginary discipline — dense accumulation of marks, repeated elements, layered patterns that build meaning
+- To refine: avoid adding more graphics. Instead refine what exists and make it extremely crisp
+- If the instinct is to draw a new shape, STOP — ask how to make what's already there more of a piece of art
+- Treat the composition as if it were a scientific diagram from an imaginary discipline
 
 ---
 
-## Philosophy Examples
+## Multi-Page Output
 
-**"Concrete Poetry"** — Communication through monumental form. Massive color blocks, sculptural typography, Brutalist spatial divisions. Text as rare, powerful gesture.
-
-**"Chromatic Language"** — Color as primary information system. Geometric precision, minimal sans-serif labels, information encoded spatially and chromatically. Josef Albers meets data visualization.
-
-**"Analog Meditation"** — Quiet visual contemplation through texture. Paper grain, vast negative space, photography dominates. Japanese photobook aesthetic.
-
-**"Organic Systems"** — Natural clustering and modular growth. Rounded forms, color from nature through architecture. Information shown through spatial relationships and iconography.
-
-**"Geometric Silence"** — Pure order and restraint. Grid-based precision, dramatic negative space. Swiss formalism meets Brutalist material honesty.
+When requested: create additional pages along the same design philosophy but distinctly different. Bundle in the same PDF or multiple PNGs. Treat the first page as one page in a coffee table book. Each subsequent page is a unique twist — almost telling a story in a tasteful way. Exercise full creative freedom.
 
 ---
 
 ## Output
 
 - Single-page PDF or PNG (default)
-- Multi-page: treat as a coffee table book — each page a unique twist on the philosophy, almost telling a story
 - Save design philosophy as `.md` alongside the artifact
 - Always save to `~/output/`
 
 ## Implementation
 
-Use Playwright for complex canvas compositions (HTML → PDF/PNG), or Typst for typography-driven pieces. For generative/algorithmic elements, write self-contained HTML with inline CSS and JS.
+Use Playwright for complex canvas compositions (HTML -> PDF/PNG), or Typst for typography-driven pieces. For generative/algorithmic elements, write self-contained HTML with inline CSS and JS. Load fonts from `canvas-fonts/` directory.
 
 ---
 

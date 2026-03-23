@@ -182,7 +182,7 @@ Different outputs have different needs. After establishing intent and domain, co
 **Presentations** — Slide decks, pitch materials, keynotes. Visual storytelling, projection readability, slide hierarchy.
 → See `references/presentations.md`
 
-**Visual artifacts** — Posters, infographics, covers, art pieces, visual identities. Philosophy-driven visual expression where text is a design element, not content. Museum-quality static output.
+**Visual artifacts** — Posters, infographics, covers, art pieces, visual identities. Philosophy-driven visual expression where text is a design element, not content. Museum-quality static output. Design-forward fonts available in `canvas-fonts/`.
 → See `references/visual-artifacts.md`
 
 When a project spans multiple surfaces (e.g., marketing site + dashboard), maintain shared tokens and identity across them while adapting expression to each surface's needs.
