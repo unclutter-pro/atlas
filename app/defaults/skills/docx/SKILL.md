@@ -1,6 +1,7 @@
 ---
 name: docx
 description: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: any mention of 'Word doc', 'word document', '.docx', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation."
+license: Proprietary. LICENSE.txt has complete terms
 ---
 
 # DOCX creation, editing, and analysis
@@ -141,12 +142,16 @@ const doc = new Document({
 ### Lists (NEVER use unicode bullets)
 
 ```javascript
-// CORRECT - use numbering config with LevelFormat.BULLET
+// ❌ WRONG - never manually insert bullet characters
+new Paragraph({ children: [new TextRun("• Item")] })  // BAD
+new Paragraph({ children: [new TextRun("\u2022 Item")] })  // BAD
+
+// ✅ CORRECT - use numbering config with LevelFormat.BULLET
 const doc = new Document({
   numbering: {
     config: [
       { reference: "bullets",
-        levels: [{ level: 0, format: LevelFormat.BULLET, text: "\u2022", alignment: AlignmentType.LEFT,
+        levels: [{ level: 0, format: LevelFormat.BULLET, text: "•", alignment: AlignmentType.LEFT,
           style: { paragraph: { indent: { left: 720, hanging: 360 } } } }] },
       { reference: "numbers",
         levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1.", alignment: AlignmentType.LEFT,
@@ -163,7 +168,7 @@ const doc = new Document({
   }]
 });
 
-// Each reference creates INDEPENDENT numbering
+// ⚠️ Each reference creates INDEPENDENT numbering
 // Same reference = continues (1,2,3 then 4,5,6)
 // Different reference = restarts (1,2,3 then 1,2,3)
 ```
@@ -398,7 +403,7 @@ sections: [{
 ```bash
 python scripts/office/unpack.py document.docx unpacked/
 ```
-Extracts XML, pretty-prints, merges adjacent runs, and converts smart quotes to XML entities so they survive editing. Use `--merge-runs false` to skip run merging.
+Extracts XML, pretty-prints, merges adjacent runs, and converts smart quotes to XML entities (`&#x201C;` etc.) so they survive editing. Use `--merge-runs false` to skip run merging.
 
 ### Step 2: Edit XML
 
@@ -415,10 +420,10 @@ Edit files in `unpacked/word/`. See XML Reference below for patterns.
 ```
 | Entity | Character |
 |--------|-----------|
-| `&#x2018;` | ' (left single) |
-| `&#x2019;` | ' (right single / apostrophe) |
-| `&#x201C;` | " (left double) |
-| `&#x201D;` | " (right double) |
+| `&#x2018;` | ‘ (left single) |
+| `&#x2019;` | ’ (right single / apostrophe) |
+| `&#x201C;` | “ (left double) |
+| `&#x201D;` | ” (right double) |
 
 **Adding comments:** Use `comment.py` to handle boilerplate across multiple XML files (text must be pre-escaped XML):
 ```bash

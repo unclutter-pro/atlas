@@ -1,6 +1,7 @@
 ---
 name: pptx
-description: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions 'deck', 'slides', 'presentation', or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill."
+description: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions \"deck,\" \"slides,\" \"presentation,\" or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill."
+license: Proprietary. LICENSE.txt has complete terms
 ---
 
 # PPTX Skill
@@ -10,8 +11,8 @@ description: "Use this skill any time a .pptx file is involved in any way — as
 | Task | Guide |
 |------|-------|
 | Read/analyze content | `python -m markitdown presentation.pptx` |
-| Edit or create from template | Read [references/editing.md](references/editing.md) |
-| Create from scratch | Read [references/pptxgenjs.md](references/pptxgenjs.md) |
+| Edit or create from template | Read [editing.md](editing.md) |
+| Create from scratch | Read [pptxgenjs.md](pptxgenjs.md) |
 
 ---
 
@@ -32,7 +33,7 @@ python scripts/office/unpack.py presentation.pptx unpacked/
 
 ## Editing Workflow
 
-**Read [references/editing.md](references/editing.md) for full details.**
+**Read [editing.md](editing.md) for full details.**
 
 1. Analyze template with `thumbnail.py`
 2. Unpack → manipulate slides → edit content → clean → pack
@@ -41,7 +42,7 @@ python scripts/office/unpack.py presentation.pptx unpacked/
 
 ## Creating from Scratch
 
-**Read [references/pptxgenjs.md](references/pptxgenjs.md) for full details.**
+**Read [pptxgenjs.md](pptxgenjs.md) for full details.**
 
 Use when no template or reference presentation is available.
 
@@ -161,15 +162,35 @@ If grep returns results, fix them before declaring success.
 
 ### Visual QA
 
-**Use subagents** — even for 2-3 slides. You've been staring at the code and will see what you expect, not what's there. Subagents have fresh eyes.
+**⚠️ USE SUBAGENTS** — even for 2-3 slides. You've been staring at the code and will see what you expect, not what's there. Subagents have fresh eyes.
 
-Convert slides to images (see Converting to Images), then inspect visually for:
+Convert slides to images (see [Converting to Images](#converting-to-images)), then use this prompt:
+
+```
+Visually inspect these slides. Assume there are issues — find them.
+
+Look for:
 - Overlapping elements (text through shapes, lines through words, stacked elements)
 - Text overflow or cut off at edges/box boundaries
+- Decorative lines positioned for single-line text but title wrapped to two lines
+- Source citations or footers colliding with content above
 - Elements too close (< 0.3" gaps) or cards/sections nearly touching
+- Uneven gaps (large empty area in one place, cramped in another)
 - Insufficient margin from slide edges (< 0.5")
-- Low-contrast text or icons
+- Columns or similar elements not aligned consistently
+- Low-contrast text (e.g., light gray text on cream-colored background)
+- Low-contrast icons (e.g., dark icons on dark backgrounds without a contrasting circle)
+- Text boxes too narrow causing excessive wrapping
 - Leftover placeholder content
+
+For each slide, list issues or areas of concern, even if minor.
+
+Read and analyze these images:
+1. /path/to/slide-01.jpg (Expected: [brief description])
+2. /path/to/slide-02.jpg (Expected: [brief description])
+
+Report ALL issues found, including minor ones.
+```
 
 ### Verification Loop
 
@@ -193,6 +214,12 @@ pdftoppm -jpeg -r 150 output.pdf slide
 ```
 
 This creates `slide-01.jpg`, `slide-02.jpg`, etc.
+
+To re-render specific slides after fixes:
+
+```bash
+pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
+```
 
 ---
 
