@@ -175,6 +175,55 @@ Dark interfaces have different needs:
 
 ---
 
+## Application Types
+
+The same fundamentals apply everywhere, but emphasis shifts. Know what kind of app you're designing:
+
+### Data-Heavy Tools (Dashboards, Analytics, Admin Panels)
+
+Priority: **density and scanability.** Users spend hours here daily. Every pixel earns its place.
+
+- **Typography:** 12-14px body, tight line-height (1.3-1.4). Tabular numbers (`font-variant-numeric: tabular-nums`).
+- **Row height:** 36-44px in tables. Compact cell padding (8-12px).
+- **Layout:** Fixed sidebars, persistent filters, multi-column layouts. Users expect stability — things don't move.
+- **Color:** Minimal. Grey-dominant with semantic colors only for status. Accent color reserved for active states.
+- **Patterns:** Sortable tables, faceted filters, bulk actions, export controls, keyboard shortcuts.
+- **Reference:** Linear, Vercel Dashboard, Datadog, Grafana.
+
+### Consumer / End-User Apps
+
+Priority: **clarity and delight.** Users may be new. First impression matters. Onboarding matters.
+
+- **Typography:** 16px body, generous line-height (1.5-1.6). Friendly, readable fonts.
+- **Spacing:** Generous whitespace. Cards with 24-32px padding. Sections separated by 48-64px.
+- **Layout:** Single-column or simple 2-column. Progressive disclosure — show basics, reveal advanced.
+- **Touch targets:** 44px minimum on everything interactive. Generous hit areas.
+- **Onboarding:** Empty states that educate. Contextual tips. Feature discovery that doesn't annoy.
+- **Patterns:** Bottom navigation on mobile, clear primary actions, social proof, streak/reward mechanics.
+- **Reference:** Notion (consumer mode), Spotify, Duolingo, Airbnb.
+
+### Internal Tools (Back-office, CRM, Operations)
+
+Priority: **efficiency over aesthetics.** Power users who need speed. They'll tolerate density but not inefficiency.
+
+- **Typography:** 13-14px body. Compact but not cramped.
+- **Layout:** Master-detail views, split panes, collapsible sections. Navigation that exposes the full feature set.
+- **Forms:** Dense multi-field layouts, inline editing, batch operations. Reduce clicks.
+- **Keyboard:** Heavy keyboard support. Tab through fields, Enter to submit, Escape to cancel. Command palette (Cmd+K).
+- **Polish:** Functional over decorative. Skip the illustrations and micro-animations. Focus on fast state transitions and reliable feedback.
+- **Patterns:** Multi-select, drag-to-reorder, inline validation, saved filters, audit logs.
+- **Reference:** Retool, Salesforce Lightning, GitLab.
+
+### Choosing the Right Density
+
+When in doubt, start medium and adjust based on:
+- **Session length:** Longer sessions → higher density (users learn the interface)
+- **Task frequency:** Daily use → optimize for speed. Monthly use → optimize for discoverability
+- **User expertise:** Experts tolerate and prefer density. Beginners need space and guidance
+- **Data volume:** More data → tighter spacing, smaller text, compact controls
+
+---
+
 ## Avoid
 
 - Harsh borders — if borders are the first thing you see, they're too strong

@@ -1,6 +1,6 @@
 ---
 name: video
-description: "Use this skill whenever the user wants to create animated videos, motion graphics, screencasts, product demos, or explainer videos programmatically using React Remotion. Triggers include: any mention of 'video', 'animation', 'screencast', 'demo video', 'explainer', 'motion graphics', 'Remotion', or requests to produce MP4/WebM output with animated content. Also use when combining visuals with voiceover (ElevenLabs, TTS) or background music. Do NOT use for simple video file conversion, trimming, or ffmpeg-only tasks."
+description: "Use this skill whenever the user wants to programmatically create animated videos, motion graphics, screencasts, product demos, or explainer videos. Triggers include: any mention of 'video', 'animation', 'screencast', 'demo video', 'explainer', 'motion graphics', or requests to produce MP4/WebM output with animated content. Also use when combining visuals with voiceover (ElevenLabs, TTS) or background music. The primary tool is React Remotion, but this skill covers the full video creation workflow. Do NOT use for simple video file conversion, trimming, or ffmpeg-only tasks."
 ---
 
 ## When to use
