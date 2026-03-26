@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "fs";
+import { openDb } from "../lib/db.ts";
 
 const DB_PATH = process.env.HOME + "/.index/atlas.db";
 
@@ -355,10 +356,7 @@ function migrateSchema(database: Database): void {
 }
 
 export function initDb(): Database {
-  mkdirSync(process.env.HOME + "/.index", { recursive: true });
-  const database = new Database(DB_PATH, { create: true });
-  database.exec("PRAGMA journal_mode = WAL");
-  database.exec("PRAGMA foreign_keys = ON");
+  const database = openDb();
   migrateSchema(database);
   createTables(database);
   return database;

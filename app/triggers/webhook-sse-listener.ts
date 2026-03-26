@@ -18,8 +18,7 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, appendFileSync } from "fs";
-
-const DB_PATH = (process.env.HOME ?? "") + "/.index/atlas.db";
+import { openDb } from "../lib/db.ts";
 const LOG_PATH = "/atlas/logs/webhook-sse.log";
 const TRIGGER_SH = "/atlas/app/triggers/trigger.sh";
 const HOME = process.env.HOME ?? "";
@@ -60,7 +59,7 @@ interface WebhookTrigger {
 
 function getWebhookTriggers(): WebhookTrigger[] {
   try {
-    const db = new Database(DB_PATH, { readonly: true });
+    const db = openDb({ readonly: true });
     const rows = db
       .prepare(
         "SELECT name, webhook_channel, enabled, session_mode FROM triggers WHERE type = 'webhook' AND enabled = 1 AND webhook_channel IS NOT NULL AND webhook_channel != ''"

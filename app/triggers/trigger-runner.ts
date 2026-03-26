@@ -26,6 +26,7 @@ import type { Server } from "net";
 import { join, dirname } from "path";
 import yaml from "js-yaml";
 import { resolveConfig } from "../lib/config.ts";
+import { openDb as openSharedDb } from "../lib/db.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -793,11 +794,7 @@ function buildInjectMessage(
  * We use a simple open-only approach here.
  */
 function openDb(): Database {
-  mkdirSync(dirname(DB_PATH), { recursive: true });
-  const db = new Database(DB_PATH, { create: true });
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA foreign_keys = ON");
-  return db;
+  return openSharedDb();
 }
 
 // ---------------------------------------------------------------------------

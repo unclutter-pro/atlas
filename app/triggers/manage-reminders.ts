@@ -12,8 +12,7 @@
  */
 
 import { Database } from "bun:sqlite";
-
-const DB_PATH = process.env.HOME + "/.index/atlas.db";
+import { openDb } from "../lib/db.ts";
 
 function die(msg: string): never {
   console.error(`Error: ${msg}`);
@@ -136,8 +135,7 @@ Time formats for --at:
 }
 
 const flags = parseFlags(argv.slice(1));
-const db = new Database(DB_PATH);
-db.run("PRAGMA journal_mode=WAL");
+const db = openDb();
 
 // Ensure reminders table exists (in case db.ts hasn't run yet for this DB)
 db.run(`

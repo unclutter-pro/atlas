@@ -6,8 +6,7 @@
  */
 import { Database } from "bun:sqlite";
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
-
-const DB_PATH = process.env.HOME + "/.index/atlas.db";
+import { openDb } from "../lib/db.ts";
 const CRONTAB_OUT = process.env.HOME + "/crontab";
 const STATIC_CRONTAB = "/atlas/app/defaults/crontab";
 const MARKER = "# === AUTO-GENERATED TRIGGERS (do not edit below) ===";
@@ -30,8 +29,7 @@ try {
 // Read enabled cron triggers from DB
 let cronLines: string[] = [];
 try {
-  mkdirSync(process.env.HOME + "/.index", { recursive: true });
-  const db = new Database(DB_PATH, { readonly: true });
+  const db = openDb({ readonly: true });
   const triggers = db.prepare(
     "SELECT name, schedule FROM triggers WHERE type = 'cron' AND enabled = 1 AND schedule IS NOT NULL"
   ).all() as { name: string; schedule: string }[];

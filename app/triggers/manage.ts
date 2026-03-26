@@ -14,8 +14,7 @@
 
 import { Database } from "bun:sqlite";
 import { mkdirSync, existsSync, readFileSync } from "fs";
-
-const DB_PATH = process.env.HOME + "/.index/atlas.db";
+import { openDb } from "../lib/db.ts";
 
 function die(msg: string): never {
   console.error(`Error: ${msg}`);
@@ -112,8 +111,7 @@ Commands:
 }
 
 const flags = parseFlags(argv.slice(1));
-const db = new Database(DB_PATH);
-db.run("PRAGMA journal_mode=WAL");
+const db = openDb();
 
 switch (command) {
   case "create": {
