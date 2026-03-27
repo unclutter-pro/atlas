@@ -1021,41 +1021,50 @@ export async function main(): Promise<void> {
     if (existingSession) {
       const claudeSocketPath = `/tmp/claudec-${existingSession}.sock`;
       const claudeSocketAlive = existsSync(claudeSocketPath);
+      const customSocketPath = getSocketPath(triggerName, sessionKey);
       const idleSeconds = getSessionIdleSeconds(existingSession);
 
-      if (claudeSocketAlive && idleSeconds < STALE_SESSION_THRESHOLD_S) {
-        // Session is running and active — try Claude's native IPC first
-        const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
-        const injected = await tryIpcInject(existingSession, injectMsg);
-        if (injected) {
-          log.log(`Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`);
-          process.exit(0);
-        }
-        // Claude IPC failed — try our custom socket
-        log.log(`Claude IPC failed for ${existingSession}, trying custom socket`);
-        const customSocketPath = getSocketPath(triggerName, sessionKey);
-        const socketInjected = await trySocketInject(customSocketPath, injectMsg, channel, sessionKey);
-        if (socketInjected) {
-          log.log(`Injected via custom socket into session ${existingSession} (key=${sessionKey})`);
-          process.exit(0);
-        }
-        // Both IPC methods failed — fall through to resume
-        log.log(`Both IPC methods failed for ${existingSession}, will resume`);
-      } else if (claudeSocketAlive) {
+      if (idleSeconds >= STALE_SESSION_THRESHOLD_S && claudeSocketAlive) {
         // Session is running but stale — kill it, then resume with notice
         log.log(`Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killing process`);
         killSessionProcess(existingSession);
         staleRecovery = true;
       } else {
-        // No Claude socket — try our custom socket (session may still be alive via SDK)
-        const customSocketPath = getSocketPath(triggerName, sessionKey);
+        // Session might be alive — try injection
+        // Prefer custom socket (goes through message channel, keeps session alive)
+        // over Claude IPC (message may be queued but lost if session is ending)
         const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
+
+        // 1. Try custom socket first (most reliable — message channel managed)
         const socketInjected = await trySocketInject(customSocketPath, injectMsg, channel, sessionKey);
         if (socketInjected) {
-          log.log(`Injected via custom socket (no Claude socket) for ${triggerName} (key=${sessionKey})`);
+          log.log(`Injected via custom socket into session ${existingSession} (key=${sessionKey})`);
           process.exit(0);
         }
-        // No socket at all — fall through to resume
+
+        // 2. Fall back to Claude IPC with post-injection verification
+        if (claudeSocketAlive) {
+          const injected = await tryIpcInject(existingSession, injectMsg);
+          if (injected) {
+            // Verify session is still alive after injection — race condition guard:
+            // the session may have ended between socket check and injection,
+            // causing the message to be accepted but never processed.
+            await Bun.sleep(300);
+            if (existsSync(claudeSocketPath)) {
+              log.log(`Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`);
+              process.exit(0);
+            }
+            // Session died right after injection — message likely lost
+            log.log(`Session ${existingSession} died after IPC injection — message may be lost, will resume`);
+            db.prepare(
+              "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+            ).run(triggerName, sessionKey);
+            existingSession = null;
+          } else {
+            log.log(`Both injection methods failed for ${existingSession}, will resume`);
+          }
+        }
+        // No sockets available — fall through to resume
       }
     }
   }
@@ -1142,13 +1151,7 @@ export async function main(): Promise<void> {
   // Re-check IPC socket after acquiring lock
   if (sessionMode === "persistent" && existingSession) {
     const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
-    // Try Claude IPC first, then custom socket
-    const injected = await tryIpcInject(existingSession, injectMsg);
-    if (injected) {
-      log.log(`Injected into session after lock wait ${existingSession} (key=${sessionKey})`);
-      releaseLock();
-      process.exit(0);
-    }
+    // Try custom socket first (preferred — message channel managed), then Claude IPC
     const customInjected = await trySocketInject(
       getSocketPath(triggerName, sessionKey), injectMsg, channel, sessionKey
     );
@@ -1156,6 +1159,22 @@ export async function main(): Promise<void> {
       log.log(`Injected via custom socket after lock wait for ${triggerName} (key=${sessionKey})`);
       releaseLock();
       process.exit(0);
+    }
+    const injected = await tryIpcInject(existingSession, injectMsg);
+    if (injected) {
+      // Verify Claude IPC injection — session may have ended during lock wait
+      const claudeSocket = `/tmp/claudec-${existingSession}.sock`;
+      await Bun.sleep(300);
+      if (existsSync(claudeSocket)) {
+        log.log(`Injected via Claude IPC after lock wait ${existingSession} (key=${sessionKey})`);
+        releaseLock();
+        process.exit(0);
+      }
+      log.log(`Session ${existingSession} died after post-lock IPC injection — starting fresh`);
+      db.prepare(
+        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+      ).run(triggerName, sessionKey);
+      existingSession = null;
     }
   }
 
