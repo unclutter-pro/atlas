@@ -9,9 +9,10 @@ WORKDIR /build
 COPY app/triggers/package.json app/triggers/bun.lock* ./
 RUN bun install --frozen-lockfile
 
-# Copy source files: trigger-runner + lib/config.ts (imported via ../lib/config.ts)
+# Copy source files: trigger-runner + lib imports (config.ts, db.ts)
 COPY app/triggers/trigger-runner.ts ./triggers/
 COPY app/lib/config.ts ./lib/
+COPY app/lib/db.ts ./lib/
 
 # Compile to native binary (auto-detect architecture)
 RUN ARCH=$(uname -m) && \
