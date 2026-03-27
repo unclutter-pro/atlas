@@ -621,6 +621,25 @@ def cmd_poll(config, once=False):
 
 # --- IMAP IDLE helpers ---
 
+def _read_until_tag(mail, tag, max_lines=50):
+    """Read lines from IMAP until we see the tagged response or hit a safety limit.
+
+    Prevents infinite spin when the connection is in a broken state where
+    readline() returns empty or unexpected data in a tight loop.
+    Raises ConnectionError if readline() returns empty bytes (connection lost)
+    or if max_lines is exceeded without finding the tag.
+    """
+    for _ in range(max_lines):
+        line = mail.readline()
+        if not line:
+            raise ConnectionError("IMAP connection lost (empty readline)")
+        if line.startswith(tag):
+            return line
+    raise ConnectionError(
+        f"IMAP protocol error: did not receive tagged response after {max_lines} lines"
+    )
+
+
 def _imap_idle(mail, timeout=1500):
     """Enter IMAP IDLE mode (RFC 2177).
 
@@ -649,18 +668,12 @@ def _imap_idle(mail, timeout=1500):
             if b'EXISTS' in data or b'RECENT' in data:
                 # New mail — exit IDLE
                 mail.send(b'DONE\r\n')
-                while True:
-                    line = mail.readline()
-                    if line.startswith(tag):
-                        break
+                _read_until_tag(mail, tag)
                 return True
 
     # Timeout — exit IDLE gracefully
     mail.send(b'DONE\r\n')
-    while True:
-        line = mail.readline()
-        if line.startswith(tag):
-            break
+    _read_until_tag(mail, tag)
     return False
 
 
