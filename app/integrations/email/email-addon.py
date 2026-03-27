@@ -214,13 +214,24 @@ def get_email_db(config):
 
 # --- Thread helpers ---
 
+def _clean_subject(subject):
+    """Strip Re:/Fwd:/AW:/WG: prefixes and whitespace for comparison."""
+    cleaned = re.sub(r"^(?:Re|Fwd|Fw|AW|WG)\s*:\s*", "", subject.strip(), flags=re.IGNORECASE)
+    # Recurse in case of multiple prefixes like "Re: Fwd: ..."
+    if cleaned != subject.strip():
+        return _clean_subject(cleaned)
+    return cleaned
+
+
 def extract_thread_id(msg, db=None):
     """Extract thread identifier from email headers.
 
-    If db is provided, looks up existing threads by referenced message IDs
-    to prevent conversation splitting from incomplete References headers.
-    Apple Mail sometimes sends only the last reply's Message-ID in References
-    rather than the full chain, which would otherwise create a new thread_id.
+    Strategy (in order):
+    1. Look up existing threads by referenced message IDs (References/In-Reply-To)
+    2. Subject-based fallback: match against recent threads (last 14 days) with the
+       same cleaned subject. This handles relay Message-ID rewriting (e.g. SES replaces
+       the original Message-ID, so the recipient's reply references an ID we never stored).
+    3. Derive from headers (original behavior) — creates a new thread.
     """
     references = msg.get("References", "").strip()
     in_reply_to = msg.get("In-Reply-To", "").strip()
@@ -232,7 +243,7 @@ def extract_thread_id(msg, db=None):
     if in_reply_to and in_reply_to not in ref_ids:
         ref_ids.append(in_reply_to)
 
-    # Look up existing threads by any referenced message ID
+    # Strategy 1: Look up existing threads by any referenced message ID
     if db and ref_ids:
         # Search for both raw (<...>) and stripped forms
         search_ids = []
@@ -247,7 +258,21 @@ def extract_thread_id(msg, db=None):
         if row:
             return row[0]
 
-    # Fallback: derive from headers (original behavior)
+    # Strategy 2: Subject-based fallback for replies (handles SES Message-ID rewriting)
+    subject = msg.get("Subject", "").strip()
+    cleaned_subject = _clean_subject(subject)
+    is_reply = subject.lower() != cleaned_subject.lower()  # Had a Re:/Fwd: prefix
+    if db and is_reply and cleaned_subject:
+        row = db.execute(
+            """SELECT thread_id FROM threads
+               WHERE subject = ? AND updated_at > datetime('now', '-14 days')
+               ORDER BY updated_at DESC LIMIT 1""",
+            (cleaned_subject,),
+        ).fetchone()
+        if row:
+            return row[0]
+
+    # Strategy 3: Derive from headers (original behavior — creates new thread)
     if ref_ids:
         return sanitize_thread_id(ref_ids[0])
 
@@ -278,7 +303,7 @@ def update_thread(db, thread_id, msg):
     sender = msg.get("From", "")
     _, sender_addr = emaillib.utils.parseaddr(sender)
     subject = msg.get("Subject", "(no subject)")
-    subject_clean = re.sub(r"^(Re:\s*)+", "", subject, flags=re.IGNORECASE).strip()
+    subject_clean = _clean_subject(subject)
     message_id = msg.get("Message-ID", "").strip()
     references = build_references_chain(msg)
 
