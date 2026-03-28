@@ -1820,6 +1820,16 @@ api.get("/chat/stream", (c) => {
 // Mount API under /api/v1
 app.route("/api/v1", api);
 
+// --- Health Check ---
+app.get("/healthz", (c) => {
+  const dbPath = `${WS}/.index/atlas.db`;
+  const dbExists = Bun.file(dbPath).size > 0;
+  if (!dbExists) {
+    return c.json({ status: "initializing", db: false }, 503);
+  }
+  return c.json({ status: "ok", db: true }, 200);
+});
+
 // --- Start ---
 export default {
   port: 3000,
