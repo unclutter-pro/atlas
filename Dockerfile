@@ -30,9 +30,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Berlin
 
 # ---- Single mega-install layer ----
-# Claude CLI is installed at runtime via init.sh
-# (too heavy for Kaniko on 8GB workers; will move to image when builder
-# nodes are available via Hetzner limit increase).
 RUN apt-get update && apt-get install -y --no-install-recommends \
   curl wget git jq ripgrep \
   supervisor \
@@ -75,7 +72,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   # --- npm globals ---
   && npm install -g agent-browser \
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
-  && npm cache clean --force
+  && npm cache clean --force \
+  # --- Claude Code CLI ---
+  && npm install -g @anthropic-ai/claude-code \
+  && claude --version
 
 ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent

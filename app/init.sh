@@ -176,42 +176,22 @@ if [ -n "${ATLAS_PROJECTS_DIR:-}" ] && [ "$ATLAS_PROJECTS_DIR" != "$WORKSPACE/pr
   fi
 fi
 
-# ── Phase 2e: Runtime Tool Install ──
-# Claude CLI installed at runtime (too heavy for Kaniko on 8GB workers).
-# Cached on PVC so only runs once per volume.
-RUNTIME_MARKER="$WORKSPACE/.index/.runtime-tools-installed"
-echo "[$(date)] Phase 2e: Runtime tool install"
-if [ ! -f "$RUNTIME_MARKER" ]; then
-  # Claude CLI
-  echo "  Installing Claude CLI..."
-  for i in 1 2 3 4 5; do
+# ── Phase 2e: Runtime Tool Check ──
+# Claude Code CLI is now pre-installed in the Docker image.
+echo "[$(date)] Phase 2e: Runtime tool check"
+if command -v claude >/dev/null 2>&1; then
+  echo "  Claude CLI: $(claude --version 2>/dev/null || echo 'available')"
+else
+  echo "  ⚠ Claude CLI not found in image — attempting runtime install..."
+  for i in 1 2 3; do
     HOME=/tmp/claude-install curl -fsSL https://claude.ai/install.sh | HOME=/tmp/claude-install bash \
       && cp /tmp/claude-install/.local/bin/claude /usr/local/bin/claude \
       && chmod +x /usr/local/bin/claude \
       && rm -rf /tmp/claude-install \
       && break
-    echo "    Attempt $i failed (likely rate-limited), retrying in ${i}0s..."
-    rm -rf /tmp/claude-install
     sleep ${i}0
   done
   claude --version 2>/dev/null && echo "  Claude CLI installed" || echo "  ⚠ Claude CLI install failed"
-
-  touch "$RUNTIME_MARKER"
-  echo "  Runtime tools installed and cached"
-else
-  # Claude CLI binary doesn't survive image updates — re-check
-  if ! command -v claude >/dev/null 2>&1; then
-    echo "  Claude CLI missing after image update, reinstalling..."
-    for i in 1 2 3; do
-      HOME=/tmp/claude-install curl -fsSL https://claude.ai/install.sh | HOME=/tmp/claude-install bash \
-        && cp /tmp/claude-install/.local/bin/claude /usr/local/bin/claude \
-        && chmod +x /usr/local/bin/claude \
-        && rm -rf /tmp/claude-install \
-        && break
-      sleep ${i}0
-    done
-  fi
-  echo "  Runtime tools already cached"
 fi
 
 # ── Phase 3: Default Config ──
