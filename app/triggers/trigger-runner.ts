@@ -1001,6 +1001,17 @@ export async function main(): Promise<void> {
   let existingSession: string | null = null;
   let staleRecovery = false;
 
+  function sessionFileExists(sessionId: string): boolean {
+    const projectsDir = join(HOME, ".claude", "projects");
+    if (!existsSync(projectsDir)) return false;
+    try {
+      for (const dir of readdirSync(projectsDir)) {
+        if (existsSync(join(projectsDir, dir, `${sessionId}.jsonl`))) return true;
+      }
+    } catch {}
+    return false;
+  }
+
   if (sessionMode === "persistent") {
     const sessionRow = db.prepare(
       "SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1"
@@ -1011,6 +1022,15 @@ export async function main(): Promise<void> {
     // Guard: corrupted session (killed mid-IPC-inject)
     if (existingSession && checkCorruptedSession(existingSession)) {
       log.log(`Corrupted session ${existingSession} (ended mid-IPC-inject) — clearing, will start fresh`);
+      db.prepare(
+        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+      ).run(triggerName, sessionKey);
+      existingSession = null;
+    }
+
+    // Guard: session file doesn't exist — clear stale session entry
+    if (existingSession && !sessionFileExists(existingSession)) {
+      log.log(`Session file missing for ${existingSession} — clearing, will start fresh`);
       db.prepare(
         "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
       ).run(triggerName, sessionKey);
@@ -1146,6 +1166,15 @@ export async function main(): Promise<void> {
     if (existingSession) {
       log.log(`Session appeared after lock wait: ${existingSession} (key=${sessionKey})`);
     }
+  }
+
+  // Guard: session file doesn't exist after lock — clear stale session entry
+  if (existingSession && !sessionFileExists(existingSession)) {
+    log.log(`Session file missing for ${existingSession} after lock — will start fresh`);
+    db.prepare(
+      "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+    ).run(triggerName, sessionKey);
+    existingSession = null;
   }
 
   // Re-check IPC socket after acquiring lock
@@ -1292,9 +1321,13 @@ export async function main(): Promise<void> {
       log.log(`Resuming session for key=${sessionKey}: ${existingSession}`);
       try {
         await runQuery(existingSession);
+        // Check for silent failure: error with 0 turns means resume failed
+        if (isError && (resultMsg as any)?.num_turns === 0) {
+          throw new Error("Resume returned error with 0 turns");
+        }
       } catch (err) {
         // Resume failed — retry as fresh session
-        log.log(`Resume failed for session ${existingSession} — retrying as fresh session`);
+        log.log(`Resume failed for session ${existingSession} — retrying as fresh session: ${err}`);
         db.prepare(
           "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
         ).run(triggerName, sessionKey);
