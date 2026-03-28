@@ -176,24 +176,6 @@ if [ -n "${ATLAS_PROJECTS_DIR:-}" ] && [ "$ATLAS_PROJECTS_DIR" != "$WORKSPACE/pr
   fi
 fi
 
-# ── Phase 2e: Runtime Tool Check ──
-# Claude Code CLI is now pre-installed in the Docker image.
-echo "[$(date)] Phase 2e: Runtime tool check"
-if command -v claude >/dev/null 2>&1; then
-  echo "  Claude CLI: $(claude --version 2>/dev/null || echo 'available')"
-else
-  echo "  ⚠ Claude CLI not found in image — attempting runtime install..."
-  for i in 1 2 3; do
-    HOME=/tmp/claude-install curl -fsSL https://claude.ai/install.sh | HOME=/tmp/claude-install bash \
-      && cp /tmp/claude-install/.local/bin/claude /usr/local/bin/claude \
-      && chmod +x /usr/local/bin/claude \
-      && rm -rf /tmp/claude-install \
-      && break
-    sleep ${i}0
-  done
-  claude --version 2>/dev/null && echo "  Claude CLI installed" || echo "  ⚠ Claude CLI install failed"
-fi
-
 # ── Phase 3: Default Config ──
 echo "[$(date)] Phase 3: Default config"
 if [ ! -f "$WORKSPACE/config.yml" ]; then
