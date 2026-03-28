@@ -357,6 +357,13 @@ function renderConversation(messages: ParsedMessage[]): string {
 // --- App ---
 const app = new Hono();
 
+// ============ HEALTH CHECK (no auth, no DB query) ============
+app.get("/healthz", (c) => {
+  const dbPath = `${WS}/.index/atlas.db`;
+  const dbExists = existsSync(dbPath);
+  return c.json({ status: dbExists ? "ok" : "initializing", db: dbExists }, dbExists ? 200 : 503);
+});
+
 // ============ DASHBOARD ============
 app.get("/", (c) => {
   // Active path locks
