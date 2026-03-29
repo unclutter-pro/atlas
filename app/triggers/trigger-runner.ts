@@ -532,13 +532,39 @@ export function readUsageReportingConfig(): UsageReportingConfig {
  * Send session usage data to the configured webhook endpoint.
  * Fire-and-forget — errors are logged but never block the trigger flow.
  */
-export async function sendUsageWebhook(
-  config: UsageReportingConfig,
-  data: MetricsData,
-  log: { log: (msg: string) => void }
-): Promise<void> {
-  if (!config.enabled || !config.webhook_url) return;
+/**
+ * Send a single webhook request. Returns true on success, error message on failure.
+ */
+async function deliverWebhook(
+  url: string,
+  payloadJson: string,
+  secret: string | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (secret) {
+    // x-atlas-secret: used by Unclutter's authenticateAtlasRequest() to identify the container
+    headers["x-atlas-secret"] = secret;
+  }
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers,
+      body: payloadJson,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      return { ok: false, error: `HTTP ${resp.status} ${resp.statusText}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
+/**
+ * Build the webhook payload from metrics data.
+ */
+function buildWebhookPayload(config: UsageReportingConfig, data: MetricsData): string {
   // Payload keys match Unclutter's /api/usage/session expected fields (camelCase)
   const payload: Record<string, unknown> = {
     event: "session.completed",
@@ -562,29 +588,92 @@ export async function sendUsageWebhook(
     };
   }
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (config.webhook_secret) {
-    // x-atlas-secret: used by Unclutter's authenticateAtlasRequest() to identify the container
-    headers["x-atlas-secret"] = config.webhook_secret;
+  return JSON.stringify(payload);
+}
+
+const MAX_WEBHOOK_ATTEMPTS = 5;
+
+export async function sendUsageWebhook(
+  config: UsageReportingConfig,
+  data: MetricsData,
+  log: { log: (msg: string) => void },
+  db?: Database,
+): Promise<void> {
+  if (!config.enabled || !config.webhook_url) return;
+
+  const payloadJson = buildWebhookPayload(config, data);
+  const result = await deliverWebhook(config.webhook_url, payloadJson, config.webhook_secret || null);
+
+  if (result.ok) {
+    log.log(`Usage webhook sent (${data.durationMs}ms session)`);
+    return;
   }
 
-  try {
-    const resp = await fetch(config.webhook_url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) {
-      log.log(`Usage webhook failed: ${resp.status} ${resp.statusText}`);
-    } else {
-      log.log(`Usage webhook sent (${data.durationMs}ms session)`);
+  log.log(`Usage webhook failed: ${result.error} — queuing for retry`);
+
+  // Queue for retry if DB available
+  if (db) {
+    try {
+      db.prepare(
+        `INSERT INTO webhook_queue (url, payload, secret, attempts, last_error, next_retry_at)
+         VALUES (?, ?, ?, 1, ?, datetime('now', '+2 minutes'))`
+      ).run(config.webhook_url, payloadJson, config.webhook_secret || null, result.error);
+    } catch {
+      log.log("Failed to queue webhook for retry");
     }
-  } catch (err) {
-    log.log(`Usage webhook error: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+/**
+ * Flush pending webhooks from the queue. Called at the start of each trigger run.
+ * Retries with exponential backoff: 2m, 10m, 30m, 2h, 6h (then gives up).
+ */
+export async function flushWebhookQueue(
+  db: Database,
+  log: { log: (msg: string) => void },
+): Promise<void> {
+  const BACKOFF_MINUTES = [2, 10, 30, 120, 360];
+
+  let pending: Array<{ id: number; url: string; payload: string; secret: string | null; attempts: number }>;
+  try {
+    pending = db.prepare(
+      `SELECT id, url, payload, secret, attempts FROM webhook_queue
+       WHERE attempts <= ? AND next_retry_at <= datetime('now')
+       ORDER BY created_at ASC LIMIT 20`
+    ).all(MAX_WEBHOOK_ATTEMPTS) as typeof pending;
+  } catch {
+    return; // Table may not exist yet in older DBs
+  }
+
+  if (!pending.length) return;
+  log.log(`Flushing ${pending.length} queued webhook(s)...`);
+
+  for (const item of pending) {
+    const result = await deliverWebhook(item.url, item.payload, item.secret);
+
+    if (result.ok) {
+      db.prepare("DELETE FROM webhook_queue WHERE id = ?").run(item.id);
+      log.log(`Queued webhook #${item.id} delivered successfully`);
+    } else {
+      const nextAttempt = item.attempts + 1;
+      if (nextAttempt > MAX_WEBHOOK_ATTEMPTS) {
+        db.prepare("DELETE FROM webhook_queue WHERE id = ?").run(item.id);
+        log.log(`Queued webhook #${item.id} failed permanently after ${item.attempts} attempts — dropped`);
+      } else {
+        const delayMin = BACKOFF_MINUTES[Math.min(nextAttempt - 1, BACKOFF_MINUTES.length - 1)];
+        db.prepare(
+          `UPDATE webhook_queue SET attempts = ?, last_error = ?, next_retry_at = datetime('now', '+${delayMin} minutes')
+           WHERE id = ?`
+        ).run(nextAttempt, result.error, item.id);
+        log.log(`Queued webhook #${item.id} retry ${nextAttempt}/${MAX_WEBHOOK_ATTEMPTS} — next in ${delayMin}m`);
+      }
+    }
+  }
+
+  // Cleanup: remove entries older than 7 days regardless of status
+  try {
+    db.prepare("DELETE FROM webhook_queue WHERE created_at < datetime('now', '-7 days')").run();
+  } catch {}
 }
 
 /**
@@ -975,6 +1064,13 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
   const db = openDb();
+
+  // --- Flush any queued webhooks from previous failed sends ---
+  try {
+    await flushWebhookQueue(db, log);
+  } catch {
+    // Non-critical — don't block the trigger run
+  }
 
   // --- Read trigger config ---
   const config = readTriggerConfig(db, triggerName);
@@ -1429,7 +1525,7 @@ export async function main(): Promise<void> {
       costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
       numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
       isError,
-    }, log);
+    }, log, db);
   } catch {
     // Usage reporting should never block trigger completion
   }

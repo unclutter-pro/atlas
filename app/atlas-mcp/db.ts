@@ -122,6 +122,22 @@ function createTables(database: Database): void {
     );
   `);
 
+  // Webhook queue: failed usage webhooks for retry on next trigger run
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS webhook_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      url TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      secret TEXT,
+      attempts INTEGER DEFAULT 1,
+      last_error TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      next_retry_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_queue_retry
+      ON webhook_queue(next_retry_at) WHERE attempts <= 5;
+  `);
+
   // Migration: drop pending_trigger_messages if it exists (replaced by socket-based injection)
   database.exec(`DROP TABLE IF EXISTS pending_trigger_messages`);
   database.exec(`DROP INDEX IF EXISTS idx_pending_trigger_messages`);
