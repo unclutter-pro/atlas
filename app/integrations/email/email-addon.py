@@ -561,7 +561,7 @@ def _fetch_new_emails(mail, db, config):
         save_email_file(thread_id, sender, subject, msg.get("Date", ""), body, attachments)
 
         # 3. Write to agent inbox
-        inbox_content = f"From: {sender}\nSubject: {subject}\n\n{body[:4000]}"
+        inbox_content = f"From: {sender}\nSubject: {subject}\n\n{body[:20000]}"
         if attachments:
             att_summary = "\n".join(f"  - {a['filename']} ({a['content_type']}, {a['size']} bytes): {a['path']}" for a in attachments)
             inbox_content += f"\n\nAttachments:\n{att_summary}"
@@ -578,7 +578,7 @@ def _fetch_new_emails(mail, db, config):
             "inbox_message_id": inbox_msg_id,
             "sender": sender,
             "subject": subject,
-            "body": body[:4000],
+            "body": body[:20000],
             "thread_id": thread_id,
             "message_id": message_id_hdr,
             "date": msg.get("Date", ""),
