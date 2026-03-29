@@ -913,7 +913,7 @@ app.post("/chat", async (c) => {
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
-    message: content.slice(0, 4000),
+    message: content.slice(0, 20000),
     timestamp: msg.created_at,
   });
   Bun.spawn(
@@ -1643,7 +1643,7 @@ api.post("/chat/messages", async (c) => {
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
-    message: content.slice(0, 4000),
+    message: content.slice(0, 20000),
     timestamp: msg.created_at,
   });
   Bun.spawn(
