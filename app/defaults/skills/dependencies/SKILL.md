@@ -45,9 +45,32 @@ For JavaScript/TypeScript dependencies:
 - Project-local: `cd /some/project && bun add <package>`
 - Global: `bun add -g <package>`
 
-## Important
+## Gotchas
 
-- **Use `nix-env`** for system packages — do NOT use `apt-get` (requires root, which is not available)
-- Nix packages are stored in `/nix` — mount it as a volume for persistence
-- The container has no Docker daemon — you cannot run `docker` commands
-- Pre-installed: Bun, Node.js, Python, git, sqlite3, curl, jq, ripgrep, ffmpeg, pandoc, typst
+- **Do NOT use `apt-get`** — it requires root, which is not available in the container. Always use `nix-env` for system packages.
+- **Do NOT use `sudo`** — it is blocked by the container's security policy (`allowPrivilegeEscalation: false`).
+- Nix packages are stored in `/nix` — they persist only if `/nix` is mounted as a volume. If not, packages are lost on restart; add install commands to `~/user-extensions.sh` for automatic re-installation.
+- `nix-env -qaP` can be slow on first run (downloads channel index). Be patient or use https://search.nixos.org/packages instead.
+- Some Nix package names differ from their apt equivalents (e.g. `nixpkgs.python3` not `nixpkgs.python3-pip`). Search first if unsure.
+- The container has no Docker daemon — you cannot run `docker` commands.
+
+## Troubleshooting
+
+**`nix-env: command not found`**
+→ Nix profile not in PATH. Run: `source ~/.nix-profile/etc/profile.d/nix.sh`
+
+**`error: file 'nixpkgs' was not found in the Nix search path`**
+→ Channel not configured. Run: `nix-channel --add https://nixos.org/channels/nixpkgs-unstable nixpkgs && nix-channel --update`
+
+**`permission denied` when installing**
+→ Check that `/nix` is owned by agent: `ls -la /nix`. If root-owned, the container image may be outdated.
+
+**Package installed but binary not found**
+→ New shell sessions pick up nix PATH automatically. In current session, run: `export PATH="$HOME/.nix-profile/bin:$PATH"` or start a new shell.
+
+**`error: this derivation is not meant to be built`**
+→ You're likely using the wrong attribute path. Try `nix-env -qaP | grep <name>` to find the exact attribute.
+
+## Pre-installed
+
+Bun, Node.js, Python, git, sqlite3, curl, jq, ripgrep, ffmpeg, pandoc, typst, chromium
