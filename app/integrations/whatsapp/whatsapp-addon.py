@@ -445,7 +445,7 @@ def cmd_incoming(config, sender, message, name="", timestamp="", attachments_jso
         inbox_msg_id=inbox_msg_id,
         sender=sender,
         sender_name=name,
-        message=effective_message[:4000],
+        message=effective_message[:10000],
         timestamp=formatted_ts,
         attachments=attachment_metadata if attachment_metadata else None,
         channel="whatsapp",
