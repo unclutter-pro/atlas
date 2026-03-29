@@ -1720,8 +1720,8 @@ api.delete("/chat/messages", async (c) => {
           ["/atlas/app/triggers/trigger-runner", "--direct", farewell, "--channel", "web", "--resume", session.session_id],
           { stdout: "ignore", stderr: "ignore", env },
         );
-        // Wait up to 60s for farewell to complete (non-blocking for the caller)
-        setTimeout(() => { try { proc.kill(); } catch {} }, 60_000);
+        // Kill farewell after 180s max (runs in background, doesn't block the response)
+        setTimeout(() => { try { proc.kill(); } catch {} }, 180_000);
         farewellSent = true;
       } catch {
         // Resume failed — proceed with cleanup

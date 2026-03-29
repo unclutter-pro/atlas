@@ -597,8 +597,26 @@ def _resume_with_farewell(session_id, sender, farewell):
     )
 
 
+def _farewell_background(old_session_id, sender, farewell):
+    """Run farewell in background thread — inject via IPC or resume session."""
+    socket_path = f"/tmp/claudec-{old_session_id}.sock"
+    try:
+        if os.path.exists(socket_path):
+            _inject_ipc(socket_path, farewell)
+            print(f"[{datetime.now()}] /new: Injected farewell into running session {old_session_id}")
+        else:
+            _resume_with_farewell(old_session_id, sender, farewell)
+            print(f"[{datetime.now()}] /new: Resumed session {old_session_id} for farewell")
+    except Exception as e:
+        print(f"[{datetime.now()}] /new: Farewell failed for {old_session_id}: {e}", file=sys.stderr)
+
+
 def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
-    """Handle /new command: instruct old session to save to memory, then start fresh."""
+    """Handle /new command: instruct old session to save to memory, then start fresh.
+
+    Session entry is deleted IMMEDIATELY so new messages go to a fresh session
+    while the farewell runs in the background.
+    """
     ts = timestamp or datetime.now().isoformat()
 
     atlas_db = sqlite3.connect(ATLAS_DB_PATH)
@@ -611,39 +629,21 @@ def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
     ).fetchone()
 
     old_session_id = row[0] if row else None
-    farewell_sent = False
 
     if old_session_id:
-        farewell = _load_farewell_message()
-        socket_path = f"/tmp/claudec-{old_session_id}.sock"
-
-        if os.path.exists(socket_path):
-            # Session is currently running — inject farewell via IPC
-            try:
-                _inject_ipc(socket_path, farewell)
-                farewell_sent = True
-                print(f"[{datetime.now()}] /new: Injected farewell into running session {old_session_id}")
-                _wait_for_socket_gone(socket_path, timeout=120)
-            except Exception as e:
-                print(f"[{datetime.now()}] /new: Failed to inject farewell: {e}", file=sys.stderr)
-        else:
-            # Session not running — resume it with farewell prompt
-            try:
-                _resume_with_farewell(old_session_id, sender, farewell)
-                farewell_sent = True
-                print(f"[{datetime.now()}] /new: Resumed session {old_session_id} for farewell")
-            except subprocess.TimeoutExpired:
-                print(f"[{datetime.now()}] /new: Farewell resume timed out", file=sys.stderr)
-            except Exception as e:
-                print(f"[{datetime.now()}] /new: Failed to resume for farewell: {e}", file=sys.stderr)
-
-        # Clear old session from DB (even if farewell failed — proceed with fresh start)
+        # Clear session entry FIRST — new messages immediately get a fresh session
         atlas_db.execute(
             "DELETE FROM trigger_sessions WHERE trigger_name=? AND session_key=?",
             (TRIGGER_NAME, sender),
         )
         atlas_db.commit()
         print(f"[{datetime.now()}] /new: Cleared session for {sender}")
+
+        # Send farewell in background (non-blocking)
+        farewell = _load_farewell_message()
+        import threading
+        t = threading.Thread(target=_farewell_background, args=(old_session_id, sender, farewell), daemon=True)
+        t.start()
 
     atlas_db.close()
 
@@ -666,7 +666,7 @@ def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
     except Exception as e:
         print(f"[{datetime.now()}] /new: Failed to fire fresh trigger: {e}", file=sys.stderr)
 
-    print(f"[{datetime.now()}] /new: Fresh session fired for {sender} (farewell_sent={farewell_sent})")
+    print(f"[{datetime.now()}] /new: Fresh session fired for {sender}")
 
 
 # --- SEND command ---
