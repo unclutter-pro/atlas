@@ -17,7 +17,7 @@ memory:
   load_journal_days: 7
 
 # Signal integration (requires signal-cli)
-# Install: apt-get install -y signal-cli  (in user-extensions.sh)
+# Install: nix-env -iA nixpkgs.signal-cli
 # Register: signal-cli -a +YOUR_NUMBER register && signal-cli -a +YOUR_NUMBER verify CODE
 signal:
   number: "" # Your Signal phone number (e.g. "+491701234567")
