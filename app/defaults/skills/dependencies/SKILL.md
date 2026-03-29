@@ -11,8 +11,6 @@ You have **no root or sudo access**. Use the tools below to install what you nee
 |------|-----|---------|
 | System packages | `nix-env -iA nixpkgs.<pkg>` | `nix-env -iA nixpkgs.imagemagick` |
 | Python packages | `pip install <pkg>` | `pip install requests` |
-| JS/TS (project) | `bun add <pkg>` | `cd ~/projects/app && bun add zod` |
-| JS/TS (global) | `bun add -g <pkg>` | `bun add -g tsx` |
 
 Search for Nix packages: `nix-env -qaP | grep <name>` or https://search.nixos.org/packages
 
