@@ -592,7 +592,7 @@ def _resume_with_farewell(session_id, sender, farewell):
          "--resume", session_id],
         stdin=subprocess.DEVNULL,
         capture_output=True,
-        timeout=180,
+        timeout=300,
         env=env,
     )
 
