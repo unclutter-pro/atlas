@@ -90,12 +90,13 @@ function printTable(reminders: any[]): void {
     console.log("No reminders found.");
     return;
   }
-  const cols = ["id", "title", "fire_at (local)", "channel", "status"];
+  const cols = ["id", "title", "fire_at (local)", "channel", "session", "status"];
   const rows = reminders.map((r) => ({
     id: String(r.id),
     title: r.title,
     "fire_at (local)": toLocalDisplay(r.fire_at),
     channel: r.channel ?? "internal",
+    session: r.trigger_name ? `${r.trigger_name}/${r.session_key || "_default"}` : "ephemeral",
     status: r.status,
   }));
 
@@ -120,7 +121,7 @@ if (!command || command === "--help" || command === "-h") {
   console.log(`Usage: bun /atlas/app/triggers/manage-reminders.ts <command> [flags]
 
 Commands:
-  add     --title=<text> --at=<time> --prompt=<text> [--channel=internal]
+  add     --title=<text> --at=<time> --prompt=<text> [--channel=internal] [--new-session]
   list    [--all]
   cancel  --id=<id>
   delete  --id=<id>
@@ -130,7 +131,12 @@ Time formats for --at:
   "+30m", "+2h", "+1d"           relative offset
   "14:00"                         today at given time
   "2026-03-08 14:00"              specific date + time (local timezone)
-  "2026-03-08T14:00:00"           ISO-style (local timezone)`);
+  "2026-03-08T14:00:00"           ISO-style (local timezone)
+
+Session routing:
+  By default, reminders fire into the same session that created them
+  (e.g., a Signal reminder wakes the Signal session).
+  Use --new-session to force a standalone ephemeral session instead.`);
   process.exit(0);
 }
 
@@ -145,6 +151,8 @@ db.run(`
     prompt TEXT NOT NULL,
     fire_at TEXT NOT NULL,
     channel TEXT DEFAULT 'internal',
+    trigger_name TEXT,
+    session_key TEXT,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending','fired','cancelled')),
     created_at TEXT DEFAULT (datetime('now')),
     fired_at TEXT
@@ -152,12 +160,17 @@ db.run(`
 `);
 db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_status_fire ON reminders(status, fire_at)`);
 
+// Migration: add trigger_name and session_key columns to existing tables
+try { db.run("ALTER TABLE reminders ADD COLUMN trigger_name TEXT"); } catch {}
+try { db.run("ALTER TABLE reminders ADD COLUMN session_key TEXT"); } catch {}
+
 switch (command) {
   case "add": {
     const title = flags["title"] || "";
     const at = flags["at"] || "";
     const prompt = flags["prompt"] || "";
     const channel = flags["channel"] || "internal";
+    const newSession = flags["new-session"] === "true";
 
     if (!title) die("--title is required");
     if (!at) die("--at is required");
@@ -166,14 +179,25 @@ switch (command) {
     const fireAt = parseAt(at);
     const fireAtLocal = toLocalDisplay(fireAt);
 
+    // Capture trigger context from environment (set by trigger-runner)
+    // so the reminder fires into the same session that created it.
+    // --new-session forces an ephemeral session (ignores trigger context).
+    const triggerName = newSession ? null : (process.env.ATLAS_TRIGGER || null);
+    const sessionKey = newSession ? null : (process.env.ATLAS_TRIGGER_SESSION_KEY || null);
+
     const result = db.prepare(
-      `INSERT INTO reminders (title, prompt, fire_at, channel) VALUES (?, ?, ?, ?)`
-    ).run(title, prompt, fireAt, channel);
+      `INSERT INTO reminders (title, prompt, fire_at, channel, trigger_name, session_key) VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(title, prompt, fireAt, channel, triggerName, sessionKey);
 
     const id = result.lastInsertRowid;
     console.log(`Reminder #${id} scheduled: "${title}"`);
     console.log(`  Fire at: ${fireAtLocal}`);
     console.log(`  Channel: ${channel}`);
+    if (triggerName) {
+      console.log(`  Session: ${triggerName}/${sessionKey || "_default"} (will resume originating session)`);
+    } else {
+      console.log(`  Session: new ephemeral session`);
+    }
     break;
   }
 
@@ -237,21 +261,41 @@ switch (command) {
       // Wrap the user's prompt with reminder context and memory instructions
       const promptText = `[Reminder #${reminder.id}: "${reminder.title}"]\n\n${reminder.prompt}\n\nIMPORTANT: After completing this task, write a brief note to today's journal (memory/journal/) documenting what you did and any messages you sent. This ensures other sessions (e.g. Signal) have context if the user replies.`;
 
-      // Spawn trigger-runner as a detached process (fire-and-forget, truly independent)
-      // Using --direct mode so no DB trigger lookup is needed.
-      const proc = Bun.spawn(
-        ["/atlas/app/triggers/trigger-runner", "--direct", promptText, "--channel", channel],
-        {
-          env: {
-            ...process.env,
-            ATLAS_REMINDER_ID: String(reminder.id),
-            ATLAS_REMINDER_TITLE: reminder.title,
-          },
-          stdin: "ignore",
-          stdout: "inherit",
-          stderr: "inherit",
-        }
-      );
+      let proc;
+      if (reminder.trigger_name) {
+        // Fire into the originating session via trigger.sh
+        // This resumes or injects into the same session that created the reminder
+        const sessionKey = reminder.session_key || "_default";
+        console.log(`[${new Date().toISOString()}] Reminder #${reminder.id}: routing to ${reminder.trigger_name}/${sessionKey}`);
+        proc = Bun.spawn(
+          ["/atlas/app/triggers/trigger.sh", reminder.trigger_name, promptText, sessionKey],
+          {
+            env: {
+              ...process.env,
+              ATLAS_REMINDER_ID: String(reminder.id),
+              ATLAS_REMINDER_TITLE: reminder.title,
+            },
+            stdin: "ignore",
+            stdout: "inherit",
+            stderr: "inherit",
+          }
+        );
+      } else {
+        // No trigger context — spawn ephemeral session (original behavior)
+        proc = Bun.spawn(
+          ["/atlas/app/triggers/trigger-runner", "--direct", promptText, "--channel", channel],
+          {
+            env: {
+              ...process.env,
+              ATLAS_REMINDER_ID: String(reminder.id),
+              ATLAS_REMINDER_TITLE: reminder.title,
+            },
+            stdin: "ignore",
+            stdout: "inherit",
+            stderr: "inherit",
+          }
+        );
+      }
 
       // Fire-and-forget: log the PID but don't await
       console.log(`[${new Date().toISOString()}] Reminder #${reminder.id} spawned (pid=${proc.pid})`);

@@ -33,11 +33,25 @@ reminder cancel --id=5  # mark as cancelled (keeps history)
 reminder delete --id=5  # permanently remove
 ```
 
+## Session Routing
+
+By default, reminders fire into the **same session** that created them. This means:
+- A reminder set from a **Signal** session will wake up the Signal session for that contact
+- A reminder set from a **web chat** session will wake up the web chat session
+- A reminder set from a **cron job** will resume that cron trigger's session
+
+This ensures the firing session has full conversation context and can respond via the right channel.
+
+To force a **standalone ephemeral session** instead (no session context), use `--new-session`:
+```bash
+reminder add --title="Independent task" --at="+1h" --prompt="Do something" --new-session
+```
+
 ## How It Works
 
 - Reminders are stored in the SQLite database (`~/.index/atlas.db`) in the `reminders` table
 - A cron job checks for due reminders every minute: `* * * * * bun /atlas/app/triggers/manage-reminders.ts check`
-- When a reminder fires, it spawns an ephemeral Claude session with the reminder's prompt
+- When a reminder fires, it routes to the originating session via `trigger.sh` (or spawns an ephemeral session if no context)
 - Fired and cancelled reminders older than 30 days are automatically cleaned up by the daily cleanup job
 
 ## Notes
@@ -45,3 +59,4 @@ reminder delete --id=5  # permanently remove
 - The `--at` time is stored in UTC internally; it is displayed in local time when listing
 - Each reminder fires exactly once — use recurring cron triggers for repeating events
 - The `--channel` flag (default: `internal`) sets the `ATLAS_TRIGGER_CHANNEL` environment variable for the spawned session
+- Session context (`trigger_name`, `session_key`) is captured automatically from the environment when a reminder is created
