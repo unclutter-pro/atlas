@@ -5,7 +5,7 @@ description: Install system packages, Python libs, or JS/TS modules. Use when yo
 
 # Installing Dependencies
 
-You have **no root or sudo access**. Use the tools below to install what you need.
+You have **no root or sudo access**. Everything outside `~/` (`/home/agent/`) is lost on container restart. Use the tools below to install what you need.
 
 | What | How | Example |
 |------|-----|---------|
