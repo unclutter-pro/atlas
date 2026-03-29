@@ -22,7 +22,7 @@ emit_section "$MEMORY" "long-term-memory"
 
 # Show recent journal entries (titles only)
 if [ -d "$MEMORY_DIR/journal" ]; then
-  JOURNALS=$(ls -1 "$MEMORY_DIR/journal/"*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$' | sort -r | head -7)
+  JOURNALS=$(ls -1 "$MEMORY_DIR/journal/"*.md 2>/dev/null | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}\.md$' | sort -r | head -7 || true)
   if [ -n "$JOURNALS" ]; then
     echo "<recent-journals>"
     for j in $JOURNALS; do
