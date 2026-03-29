@@ -1661,13 +1661,80 @@ api.post("/chat/messages", async (c) => {
   });
 });
 
-api.delete("/chat/messages", (c) => {
+api.delete("/chat/messages", async (c) => {
   // Reset web-chat session (like Signal /new):
-  // 1. Delete session entry so next message creates a fresh session
+  // 1. Find existing session
+  const session = db
+    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default' LIMIT 1")
+    .get() as { session_id: string } | null;
+
+  let farewellSent = false;
+  if (session) {
+    // Load farewell prompt (same as Signal /new)
+    const today = new Date().toISOString().slice(0, 10);
+    let farewell: string;
+    try {
+      farewell = readFileSync("/atlas/app/prompts/trigger-channel-signal-farewell.md", "utf-8")
+        .replace(/{{today}}/g, today)
+        .replace(/Signal/g, "chat"); // Adapt channel reference
+    } catch {
+      farewell =
+        `<session-ending reason="user-requested-new-session">\n` +
+        `The user started a new chat. This session is being retired.\n\n` +
+        `Save important context to memory/journal/${today}.md (create or append):\n` +
+        `- Summary of this conversation's key topics\n` +
+        `- Decisions made and tasks created/completed\n` +
+        `- Open questions or commitments\n` +
+        `- Context the next session should know\n\n` +
+        `Update memory/MEMORY.md only for genuinely new long-term information.\n\n` +
+        `IMPORTANT: Do NOT send any messages. Save to memory silently.\n` +
+        `</session-ending>`;
+    }
+
+    const socketPath = `/tmp/claudec-${session.session_id}.sock`;
+    if (existsSync(socketPath)) {
+      // Session is running — inject farewell via IPC socket
+      try {
+        const { createConnection: netConnect } = await import("net");
+        await new Promise<void>((resolve, reject) => {
+          const sock = netConnect(socketPath);
+          sock.setTimeout(10_000);
+          sock.on("connect", () => {
+            sock.write(JSON.stringify({ action: "send", text: farewell, submit: true }) + "\n");
+            sock.end();
+            farewellSent = true;
+            resolve();
+          });
+          sock.on("error", reject);
+          sock.on("timeout", () => { sock.destroy(); reject(new Error("timeout")); });
+        });
+      } catch {
+        // IPC injection failed — proceed with cleanup anyway
+      }
+    } else {
+      // Session not running — resume it with farewell
+      try {
+        const env = { ...process.env, ATLAS_TRIGGER: "web-chat", ATLAS_TRIGGER_CHANNEL: "web", ATLAS_TRIGGER_SESSION_KEY: "_default" };
+        delete env.CLAUDECODE;
+        const proc = Bun.spawn(
+          ["/atlas/app/triggers/trigger-runner", "--direct", farewell, "--channel", "web", "--resume", session.session_id],
+          { stdout: "ignore", stderr: "ignore", env },
+        );
+        // Wait up to 60s for farewell to complete (non-blocking for the caller)
+        setTimeout(() => { try { proc.kill(); } catch {} }, 60_000);
+        farewellSent = true;
+      } catch {
+        // Resume failed — proceed with cleanup
+      }
+    }
+  }
+
+  // 2. Delete session entry so next message creates a fresh session (immediately — don't wait for farewell to finish)
   db.prepare("DELETE FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default'").run();
-  // 2. Clear web channel user messages
+  // 3. Clear web channel user messages
   db.prepare("DELETE FROM messages WHERE channel='web'").run();
-  return c.json({ ok: true });
+
+  return c.json({ ok: true, farewellSent });
 });
 
 api.get("/chat/messages", (c) => {
