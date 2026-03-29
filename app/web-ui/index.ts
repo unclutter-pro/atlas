@@ -1661,6 +1661,15 @@ api.post("/chat/messages", async (c) => {
   });
 });
 
+api.delete("/chat/messages", (c) => {
+  // Reset web-chat session (like Signal /new):
+  // 1. Delete session entry so next message creates a fresh session
+  db.prepare("DELETE FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default'").run();
+  // 2. Clear web channel user messages
+  db.prepare("DELETE FROM messages WHERE channel='web'").run();
+  return c.json({ ok: true });
+});
+
 api.get("/chat/messages", (c) => {
   // User messages from DB
   const dbMessages = db
