@@ -1,44 +1,35 @@
 ---
 name: dependencies
-description: How to install packages persistently in the container. Use when you need to install system packages, pip packages, or npm tools.
+description: How to install packages in the container. Use Nix for system packages (no root needed), pip for Python, bun for JS/TS.
 ---
 
 # Installing Dependencies
 
-You run inside a Docker container. Packages installed at runtime are lost on container restart.
-To make installations persistent, use the `user-extensions.sh` script.
+You run inside a Docker container with **Nix** as the package manager. No root/sudo needed.
 
-## Persistent Installation
+## System Packages (via Nix)
 
-Edit `~/user-extensions.sh` to add your install commands:
+Nix is installed in single-user mode. Install packages directly:
 
 ```bash
-#!/bin/bash
-# Runs on every container start
-
-apt-get update && apt-get install -y signal-cli jq
-pip install some-package
-npm install -g some-tool
+nix-env -iA nixpkgs.<package>
 ```
 
-This script runs during container init (Phase 7), before services start.
-
-## Runtime (Temporary) Installation
-
-For quick testing, install directly:
+Examples:
 ```bash
-apt-get update && apt-get install -y <package>
-pip install <package>
-bun add <package>          # in the relevant project directory
+nix-env -iA nixpkgs.signal-cli
+nix-env -iA nixpkgs.imagemagick
+nix-env -iA nixpkgs.yt-dlp
 ```
 
-These installs vanish on restart. If you confirm the package is needed, add it to `user-extensions.sh`.
+Search for packages: `nix-env -qaP | grep <name>` or check https://search.nixos.org/packages
 
-## Bun Packages
+Nix packages persist across container restarts when `/nix` is mounted as a volume.
 
-For JavaScript/TypeScript dependencies:
-- Project-local: `cd /some/project && bun add <package>`
-- The workspace itself uses Bun — `bun add` works for scripts you write
+To remove a package:
+```bash
+nix-env -e <package>
+```
 
 ## Python Packages
 
@@ -46,15 +37,17 @@ For JavaScript/TypeScript dependencies:
 pip install <package>
 ```
 
-## System Packages
+Note: pip installs go to `/home/agent/.local` and persist if the home volume is mounted.
 
-```bash
-apt-get update && apt-get install -y <package>
-```
+## Bun / Node.js Packages
+
+For JavaScript/TypeScript dependencies:
+- Project-local: `cd /some/project && bun add <package>`
+- Global: `bun add -g <package>`
 
 ## Important
 
-- Always add persistent installs to `user-extensions.sh`, not just install them at runtime
-- Configuration files outside the persisted volumes (`/home/atlas/`) are lost on restart — e.g. changes to `/etc/`, `/opt/`, or other system paths. If you need persistent config changes, add the corresponding commands to `user-extensions.sh`
+- **Use `nix-env`** for system packages — do NOT use `apt-get` (requires root, which is not available)
+- Nix packages are stored in `/nix` — mount it as a volume for persistence
 - The container has no Docker daemon — you cannot run `docker` commands
-- Pre-installed: Bun, Node.js, Python, git, sqlite3, curl, jq
+- Pre-installed: Bun, Node.js, Python, git, sqlite3, curl, jq, ripgrep, ffmpeg, pandoc, typst

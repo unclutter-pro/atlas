@@ -348,14 +348,14 @@ else
   # Create empty template
   cat > "$WORKSPACE/user-extensions.sh" << 'EXTENSIONS'
 #!/bin/bash
-# Agent User Extensions
-# This script runs on every container start.
-# Use it to install custom tools, e.g.:
+# User Extensions — runs on every container start.
+# Use for custom setup, e.g.:
 #
-# apt-get install -y signal-cli
-# pip install some-package
+# nix-env -iA nixpkgs.signal-cli    # system packages (no root needed)
+# pip install some-package           # python packages
+# git config --global user.name "…"  # configuration
 #
-# Changes to this file take effect on next container restart.
+# Changes take effect on next container restart.
 EXTENSIONS
   echo "  Created user-extensions.sh template"
 fi

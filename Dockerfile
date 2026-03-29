@@ -77,8 +77,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && npm install -g @anthropic-ai/claude-code \
   && claude --version
 
-ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
+ENV PATH="/home/agent/.nix-profile/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
+ENV NIX_PATH="nixpkgs=channel:nixpkgs-unstable"
+
+# Install Nix package manager (single-user, no daemon) for agent user.
+# Allows non-root package installation at runtime without sudo.
+RUN mkdir -p /nix && chown agent:agent /nix \
+  && su -s /bin/bash agent -c "curl -L https://nixos.org/nix/install | sh -s -- --no-daemon" \
+  && ln -s /home/agent/.nix-profile/bin/nix-env /usr/local/bin/nix-env \
+  && ln -s /home/agent/.nix-profile/bin/nix /usr/local/bin/nix
 
 # Create directory structure
 # /home/agent — agent-owned workspace (mounted as volume)
@@ -132,7 +140,7 @@ RUN chmod +x /atlas/app/entrypoint.sh \
 WORKDIR /home/agent
 EXPOSE 8080
 
-# Run as non-root agent user. sudo is available for privileged operations
-# (e.g. installing packages via user-extensions.sh, chown in entrypoint).
+# Run as non-root agent user. Nix handles package installs without root.
+# sudo is available as fallback for Docker Compose (blocked in K8s by securityContext).
 USER agent
 ENTRYPOINT ["/atlas/app/entrypoint.sh"]
