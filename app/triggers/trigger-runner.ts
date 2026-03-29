@@ -484,11 +484,13 @@ export function readUsageReportingConfig(): UsageReportingConfig {
     include_tokens: false,
   };
 
+  // 1. Try config.yml files
   const candidates = [
     `${HOME}/config.yml`,
     `${APP_DIR}/defaults/config.yml`,
   ];
 
+  let result = { ...defaults };
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
     try {
@@ -496,18 +498,34 @@ export function readUsageReportingConfig(): UsageReportingConfig {
       const config = yaml.load(raw) as Record<string, unknown> | null;
       const section = config?.usage_reporting as Partial<UsageReportingConfig> | undefined;
       if (section) {
-        return {
+        result = {
           enabled: section.enabled ?? defaults.enabled,
           webhook_url: section.webhook_url ?? defaults.webhook_url,
           webhook_secret: section.webhook_secret ?? defaults.webhook_secret,
           include_tokens: section.include_tokens ?? defaults.include_tokens,
         };
+        break;
       }
     } catch {
       continue;
     }
   }
-  return defaults;
+
+  // 2. Environment variables override config.yml (highest priority)
+  if (process.env.ATLAS_USAGE_ENABLED !== undefined) {
+    result.enabled = process.env.ATLAS_USAGE_ENABLED === "true";
+  }
+  if (process.env.ATLAS_USAGE_WEBHOOK_URL) {
+    result.webhook_url = process.env.ATLAS_USAGE_WEBHOOK_URL;
+  }
+  if (process.env.ATLAS_USAGE_WEBHOOK_SECRET) {
+    result.webhook_secret = process.env.ATLAS_USAGE_WEBHOOK_SECRET;
+  }
+  if (process.env.ATLAS_USAGE_INCLUDE_TOKENS !== undefined) {
+    result.include_tokens = process.env.ATLAS_USAGE_INCLUDE_TOKENS === "true";
+  }
+
+  return result;
 }
 
 /**
@@ -521,32 +539,35 @@ export async function sendUsageWebhook(
 ): Promise<void> {
   if (!config.enabled || !config.webhook_url) return;
 
+  // Payload keys match Unclutter's /api/usage/session expected fields (camelCase)
   const payload: Record<string, unknown> = {
     event: "session.completed",
-    session_id: data.sessionId,
-    trigger_name: data.triggerName,
-    started_at: data.startedAt,
-    ended_at: data.endedAt,
-    duration_ms: data.durationMs,
-    duration_seconds: Math.round(data.durationMs / 1000),
-    num_turns: data.numTurns,
-    is_error: data.isError,
+    sessionId: data.sessionId,
+    triggerName: data.triggerName,
+    startedAt: data.startedAt,
+    endedAt: data.endedAt,
+    durationMs: data.durationMs,
+    numTurns: data.numTurns,
+    isError: data.isError,
     timestamp: new Date().toISOString(),
   };
 
   if (config.include_tokens) {
-    payload.input_tokens = data.inputTokens;
-    payload.output_tokens = data.outputTokens;
-    payload.cache_read_tokens = data.cacheReadTokens;
-    payload.cache_creation_tokens = data.cacheCreationTokens;
-    payload.cost_usd = data.costUsd;
+    payload.metadata = {
+      inputTokens: data.inputTokens,
+      outputTokens: data.outputTokens,
+      cacheReadTokens: data.cacheReadTokens,
+      cacheCreationTokens: data.cacheCreationTokens,
+      costUsd: data.costUsd,
+    };
   }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
   if (config.webhook_secret) {
-    headers["X-Webhook-Secret"] = config.webhook_secret;
+    // x-atlas-secret: used by Unclutter's authenticateAtlasRequest() to identify the container
+    headers["x-atlas-secret"] = config.webhook_secret;
   }
 
   try {
