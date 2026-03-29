@@ -5,7 +5,7 @@ description: How to install packages in the container. Use Nix for system packag
 
 # Installing Dependencies
 
-You run inside a Docker container with **Nix** as the package manager. No root/sudo needed.
+You run inside a Docker container **without root or sudo access**. Use **Nix** as the package manager.
 
 ## System Packages (via Nix)
 
