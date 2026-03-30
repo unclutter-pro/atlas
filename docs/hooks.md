@@ -27,14 +27,6 @@ Outputs XML-wrapped sections:
 
 Runs after Claude finishes a response.
 
-### Path Lock Cleanup
-
-Releases any path locks held by the current PID (crash-safe cleanup):
-
-```xml
-<system-notice>Released 1 path lock(s) for PID 1234.</system-notice>
-```
-
 ### Journal Reminder (Trigger Sessions Only)
 
 For trigger sessions (`ATLAS_TRIGGER` is set), the stop hook checks if a journal file for today exists in `memory/journal/`. If no file matching `YYYY-MM-DD*.md` is found, it outputs a `<system-notice>` reminding the session to write a journal entry before ending.

@@ -15,7 +15,7 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 │                      ▼               ▼                                 │
 │               ┌──────────────────────────────────────────┐            │
 │               │          atlas.db (SQLite)                │            │
-│               │  triggers │ trigger_sessions │ path_locks  │            │
+│               │  triggers │ trigger_sessions              │            │
 │               └──────────────────────────────────────────┘            │
 │                                                                        │
 │  ┌────────────┐                                                        │
@@ -31,7 +31,7 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 |-----------|------|---------|---------------|
 | **nginx** | 8080 | Reverse proxy to web-ui | [web-ui.md](web-ui.md) |
 | **web-ui** | 3000 | Hono.js + HTMX dashboard | [web-ui.md](web-ui.md) |
-| **atlas-mcp** | stdio | MCP server for path locking tools | [inbox-mcp.md](inbox-mcp.md) |
+| **atlas-mcp** | stdio | MCP server | [inbox-mcp.md](inbox-mcp.md) |
 | **supercronic** | — | Cron job runner | [Triggers.md](Triggers.md) |
 
 ## Data Flow
@@ -39,17 +39,16 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 1. **Event arrives** — Cron fires, webhook POSTs, or message sent
 2. **Trigger session** — `trigger.sh` spawns a Claude session via `trigger-runner` (native binary)
 3. **Trigger handles** — Processes the event, responds directly or delegates
-4. **Delegation** — For complex work: `TeamCreate` + `path_lock` + `Agent` teammates
+4. **Delegation** — For complex work: `TeamCreate` + `Agent` teammates
 5. **Parallel execution** — Teammates work independently on non-overlapping paths
 6. **Coordination** — Trigger monitors teammates via `SendMessage`, synthesizes results
-7. **Cleanup** — Path locks released, team shut down
+7. **Cleanup** — Team shut down
 
 ## Session Types
 
 ### Trigger Session (Project Manager)
 - **Spawned by**: `trigger.sh` per event via `trigger-runner` (compiled Bun binary)
 - **System prompt**: SOUL + IDENTITY + trigger-system-prompt + channel-specific prompt
-- **MCP tools**: `path_lock`, `path_unlock`, `path_lock_status`
 - **Purpose**: User communication, task planning, memory management, team coordination
 - **Lifecycle**: Persistent sessions survive container restarts (resume via SDK) and are auto-recovered when stale (see [watcher.md](watcher.md))
 
@@ -72,13 +71,7 @@ See [memory.md](memory.md) for the full memory system documentation.
 
 ## Parallel Execution
 
-Teammates can work in parallel on non-overlapping paths. The trigger session manages this directly:
-
-1. Call `path_lock(path)` before spawning a file-modifying teammate
-2. Spawn teammate via `Agent(team_name=..., ...)`
-3. Call `path_unlock(path)` after the teammate completes
-
-Path conflicts are checked bidirectionally: a lock on `/home/agent/projects/app` blocks both its ancestors and descendants.
+Teammates can work in parallel on non-overlapping paths. The trigger session manages this by spawning teammates via `Agent(team_name=..., ...)` on separate directories.
 
 ## Filesystem Layout
 
@@ -96,7 +89,7 @@ Hooks inject context at lifecycle events:
 | Hook | Runs When | Purpose |
 |------|-----------|---------|
 | session-start.sh | Every session starts | Load memory (all sessions) |
-| stop.sh | After response | Journal reminder (trigger), path lock cleanup |
+| stop.sh | After response | Journal reminder (trigger sessions) |
 | pre-compact-*.sh | Before compaction | Prompt memory flush |
 | SubagentStop | Agent teammate finishes | Quality gate (prompt-type review) |
 
@@ -104,7 +97,7 @@ See [hooks.md](hooks.md) for details.
 
 ## Detailed Documentation
 
-- [inbox-mcp.md](inbox-mcp.md) — Database schema, MCP tools, path locking
+- [inbox-mcp.md](inbox-mcp.md) — Database schema, MCP tools
 - [hooks.md](hooks.md) — Lifecycle hook system
 - [memory.md](memory.md) — Memory and search system
 - [web-ui.md](web-ui.md) — Dashboard and API

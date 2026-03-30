@@ -3,17 +3,7 @@
 # Completion check is handled by the prompt hook in settings.json (sonnet model)
 set -euo pipefail
 
-DB="$HOME/.index/atlas.db"
-
-# --- 1. Release path locks held by this session's PID ---
-if [ -f "$DB" ]; then
-  RELEASED=$(sqlite3 "$DB" "DELETE FROM path_locks WHERE pid=$$; SELECT changes();" 2>/dev/null || echo "0")
-  if [ "$RELEASED" -gt 0 ]; then
-    echo "<system-notice>Released $RELEASED path lock(s) for PID $$.</system-notice>"
-  fi
-fi
-
-# --- 2. Trigger sessions: remind to write a journal if today's entry doesn't exist ---
+# --- 1. Trigger sessions: remind to write a journal if today's entry doesn't exist ---
 if [ -n "${ATLAS_TRIGGER:-}" ]; then
   TODAY=$(date +%Y-%m-%d)
   JOURNAL_DIR="$HOME/memory/journal"

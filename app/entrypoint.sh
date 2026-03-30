@@ -7,11 +7,6 @@ set -e
 # Uses CHOWN capability (granted in pod securityContext) — no sudo needed
 chown -R agent:agent /home/agent
 
-# Clean stale state from previous container run (new PID namespace = all stale)
-if [ -f "/home/agent/.index/atlas.db" ]; then
-  sqlite3 "/home/agent/.index/atlas.db" "DELETE FROM path_locks;" 2>/dev/null || true
-fi
-
 # Resolve agent display name: AGENT_NAME env > config.yml agent.name > "Atlas"
 if [ -z "${AGENT_NAME:-}" ]; then
   if [ -f "/home/agent/config.yml" ]; then

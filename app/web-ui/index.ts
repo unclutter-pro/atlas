@@ -370,9 +370,6 @@ app.get("/healthz", (c) => {
 
 // ============ DASHBOARD ============
 app.get("/", (c) => {
-  // Active path locks
-  const activeLocks = (db.prepare("SELECT COUNT(*) as c FROM path_locks").get() as any)?.c || 0;
-
   // Inbox message count
   const inboxTotal = (db.prepare("SELECT COUNT(*) as c FROM messages").get() as any)?.c || 0;
 
@@ -389,10 +386,6 @@ app.get("/", (c) => {
   const html = `
     <h1>Dashboard</h1>
     <div class="grid">
-      <div class="stat">
-        <div class="num" style="color:${activeLocks > 0 ? "#4caf50" : "#999"}">${activeLocks}</div>
-        <div class="label">Active Locks</div>
-      </div>
       <div class="stat"><div class="num">${inboxTotal}</div><div class="label">Inbox</div></div>
     </div>
 

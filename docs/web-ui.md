@@ -121,4 +121,4 @@ Monospace font stack: SF Mono, Cascadia Code, Consolas
 
 ## Session Status
 
-The dashboard shows active worker count and path lock status from the database, reflecting real-time task execution state.
+The dashboard shows session status from the database, reflecting real-time task execution state.

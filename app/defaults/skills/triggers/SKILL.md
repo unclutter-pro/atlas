@@ -604,9 +604,7 @@ Agent(subagent_type="general-purpose", model="sonnet", prompt="Review critical i
 
 # Complex multi-step work — agent team
 TeamCreate(team_name="deploy-review")
-path_lock("/home/atlas/projects/myapp")
 Agent(team_name="deploy-review", name="developer", model="sonnet", prompt="...")
-path_unlock("/home/atlas/projects/myapp")
 TeamDelete()
 ```
 

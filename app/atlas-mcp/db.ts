@@ -49,16 +49,8 @@ function createTables(database: Database): void {
     );
   `);
 
-  // Path locks: filesystem locking for parallel execution safety
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS path_locks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id INTEGER NOT NULL UNIQUE,
-      locked_path TEXT NOT NULL,
-      pid INTEGER,
-      locked_at TEXT DEFAULT (datetime('now'))
-    );
-  `);
+  // Drop path_locks table if it exists (feature removed)
+  database.exec(`DROP TABLE IF EXISTS path_locks`);
 
   // Reminders: one-time scheduled events that fire a Claude session
   database.exec(`
@@ -342,33 +334,6 @@ function migrateSchema(database: Database): void {
     database.exec("DROP TABLE tasks");
   }
 
-  // --- v3 migration: Remove FK from path_locks (locks now keyed by PID, not task) ---
-  const plInfo = database.prepare(
-    "SELECT sql FROM sqlite_master WHERE type='table' AND name='path_locks'"
-  ).get() as { sql: string } | undefined;
-
-  if (plInfo?.sql?.includes("FOREIGN KEY")) {
-    database.exec("BEGIN");
-    try {
-      database.exec(`
-        ALTER TABLE path_locks RENAME TO _path_locks_v2;
-        CREATE TABLE path_locks (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          task_id INTEGER NOT NULL UNIQUE,
-          locked_path TEXT NOT NULL,
-          pid INTEGER,
-          locked_at TEXT DEFAULT (datetime('now'))
-        );
-        INSERT INTO path_locks (id, task_id, locked_path, pid, locked_at)
-          SELECT id, task_id, locked_path, pid, locked_at FROM _path_locks_v2;
-        DROP TABLE _path_locks_v2;
-      `);
-      database.exec("COMMIT");
-    } catch (e) {
-      database.exec("ROLLBACK");
-      throw e;
-    }
-  }
 }
 
 export function initDb(): Database {

@@ -15,7 +15,7 @@ Containerized autonomous agent system powered by Claude Code. Made to enable com
 Trigger Event → trigger.sh → trigger-runner (native binary) → Trigger Session (PM role)
                                                                           ↓
                                                          Simple: respond directly via CLI tools
-                                                         Complex: TeamCreate + path_lock + Agent(teammates)
+                                                         Complex: TeamCreate + Agent(teammates)
                                                                           ↓
                                                          Teammates work in parallel on non-overlapping paths
 ```
@@ -33,8 +33,6 @@ Trigger Event → trigger.sh → trigger-runner (native binary) → Trigger Sess
 ## Documentation
 
 - [docs/Architecture.md](docs/Architecture.md) — Component overview
-- [docs/inbox-mcp.md](docs/inbox-mcp.md) — Database schema and MCP tools (path locking)
-- [docs/task-runner.md](docs/task-runner.md) — Path locking for parallel agent work
 - [docs/hooks.md](docs/hooks.md) — Lifecycle hooks
 - [docs/watcher.md](docs/watcher.md) — Trigger concurrency and IPC injection
 - [docs/memory.md](docs/memory.md) — Memory and search

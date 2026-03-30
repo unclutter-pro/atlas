@@ -69,10 +69,6 @@ The stale threshold is configurable via `STALE_SESSION_THRESHOLD` env var (defau
 - **Persistent sessions**: No hard timeout — they can run for hours (teams, complex tasks). Stale detection handles hung sessions.
 - **Ephemeral sessions**: `TRIGGER_TIMEOUT` env var (default: 3600s / 1 hour).
 
-## Path-Level Parallelism
-
-Within a single trigger session, agent teammates can work in parallel on non-overlapping paths using the `path_lock` / `path_unlock` MCP tools. See [task-runner.md](task-runner.md) for details.
-
 ## Log Files
 
 - `/atlas/logs/trigger-<name>.log` — Per-trigger session output

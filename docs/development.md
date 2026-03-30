@@ -48,7 +48,7 @@ docker compose exec atlas supervisorctl status
 Services managed by supervisord:
 - `nginx` — Reverse proxy (port 8080)
 - `web-ui` — Dashboard (port 3000)
-- `atlas-mcp` — Path locking MCP server (stdio)
+- `atlas-mcp` — MCP server (stdio)
 - `playwright-mcp` — Playwright browser automation (port 8931)
 - `supercronic` — Cron runner
 

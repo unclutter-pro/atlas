@@ -22,10 +22,10 @@ Event arrives (cron / webhook / manual)
        ┌───┘        └───┐
        ▼                ▼
 ┌──────────────┐  ┌──────────────────────────────────────┐
-│ Respond      │  │ TeamCreate + path_lock + Agent(...)   │
+│ Respond      │  │ TeamCreate + Agent(...)               │
 │ directly     │  │ → teammates work in parallel          │
 │ (CLI tools,  │  │ → trigger coordinates via SendMessage │
-│  MCP action) │  │ → path_unlock when done               │
+│  MCP action) │  │                                       │
 └──────────────┘  └──────────────────────────────────────┘
 ```
 
@@ -35,7 +35,7 @@ Event arrives (cron / webhook / manual)
 |---|---|
 | **Role** | Project manager, user communication, team coordination |
 | **System prompt** | SOUL + IDENTITY + trigger-system-prompt + channel prompt |
-| **MCP tools** | `path_lock/unlock/status` |
+| **MCP tools** | — |
 | **Spawned by** | `trigger.sh` per event |
 | **Session persistence** | Configurable per trigger (ephemeral or persistent) |
 
@@ -227,12 +227,10 @@ Agent(subagent_type="general-purpose", model="sonnet", prompt="<detailed task>")
 ### Complex multi-step tasks
 ```
 1. TeamCreate(team_name="<descriptive-name>")
-2. path_lock("/home/agent/projects/...")  ← if file-modifying work
-3. Agent(team_name=..., name="developer", model="sonnet")
-4. Agent(team_name=..., name="task-reviewer", model="haiku")  ← optional review
-5. Coordinate via SendMessage
-6. path_unlock(...)
-7. TeamDelete()
+2. Agent(team_name=..., name="developer", model="sonnet")
+3. Agent(team_name=..., name="task-reviewer", model="haiku")  ← optional review
+4. Coordinate via SendMessage
+5. TeamDelete()
 ```
 
 See `app/prompts/trigger-system-prompt.md` for the full delegation guidelines.
@@ -358,8 +356,8 @@ When cron triggers are created, updated, or deleted, the crontab is automaticall
                    │                   │
                    ▼                   ▼
               ┌─────────┐    ┌────────────────────┐
-              │  Done   │    │ path_lock + Agent  │
-              └─────────┘    │ teammates work in  │
+              │  Done   │    │ Agent teammates    │
+              └─────────┘    │ work in            │
                              │ parallel           │
                              └────────────────────┘
 ```

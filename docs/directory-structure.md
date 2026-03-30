@@ -23,15 +23,14 @@ app/
 │   └── skills/                # System skills (symlinked into .claude/skills/)
 ├── hooks/                      # Claude Code lifecycle hooks
 │   ├── session-start.sh       # Loads memory into context (all sessions)
-│   ├── stop.sh                # Path lock cleanup + journal reminder (trigger sessions)
+│   ├── stop.sh                # Journal reminder (trigger sessions)
 │   ├── pre-compact-auto.sh    # Memory flush before compaction
 │   ├── pre-compact-manual.sh  # Memory flush on manual compaction
 │   ├── subagent-stop.sh       # Quality gate script (legacy, kept for reference)
 │   └── generate-settings.ts  # Generates ~/.claude/settings.json with hooks config
-├── atlas-mcp/                  # MCP server (path locking tools)
+├── atlas-mcp/                  # MCP server
 │   ├── index.ts               # Main MCP server
-│   ├── db.ts                  # Database initialization, schema, migrations
-│   └── locks.ts               # Path locking module
+│   └── db.ts                  # Database initialization, schema, migrations
 ├── web-ui/                     # Hono.js dashboard
 │   └── index.ts               # Web server
 ├── triggers/                   # Trigger runner scripts
@@ -97,12 +96,12 @@ home/
 | `app/triggers/trigger-runner` | Native binary: trigger session launcher (injects system prompt, model, MCP) |
 | `app/triggers/trigger.sh` | Thin shell wrapper: delegates to trigger-runner binary |
 | `app/hooks/session-start.sh` | Loads memory context on session start |
-| `app/hooks/stop.sh` | Path lock cleanup and journal reminder |
-| `app/atlas-mcp/index.ts` | MCP server with path locking tools |
+| `app/hooks/stop.sh` | Journal reminder (trigger sessions) |
+| `app/atlas-mcp/index.ts` | MCP server |
 | `app/web-ui/index.ts` | Hono.js dashboard server |
 | `app/defaults/agents/` | System agent specs (developer, reviewer, etc.) |
 | `app/defaults/skills/` | System skills (symlinked into `.claude/skills/`) |
-| `/home/agent/.index/atlas.db` | SQLite database (messages, triggers, sessions, path_locks) |
+| `/home/agent/.index/atlas.db` | SQLite database (messages, triggers, sessions) |
 | `/home/agent/memory/MEMORY.md` | Long-term memory storage |
 | `/home/agent/IDENTITY.md` | Agent identity/personality |
 | `/home/agent/config.yml` | Runtime configuration |
