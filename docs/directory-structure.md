@@ -28,7 +28,7 @@ app/
 │   ├── pre-compact-manual.sh  # Memory flush on manual compaction
 │   ├── subagent-stop.sh       # Quality gate script (legacy, kept for reference)
 │   └── generate-settings.ts  # Generates ~/.claude/settings.json with hooks config
-├── atlas-mcp/                  # Database module
+├── lib/                        # Shared libraries (DB, config, auth)
 │   └── db.ts                  # Database initialization, schema, migrations
 ├── web-ui/                     # Hono.js dashboard
 │   └── index.ts               # Web server
@@ -96,7 +96,7 @@ home/
 | `app/triggers/trigger.sh` | Thin shell wrapper: delegates to trigger-runner binary |
 | `app/hooks/session-start.sh` | Loads memory context on session start |
 | `app/hooks/stop.sh` | Journal reminder (trigger sessions) |
-| `app/atlas-mcp/db.ts` | Database initialization, schema, migrations |
+| `app/lib/atlas-db.ts` | Database initialization, schema, migrations |
 | `app/web-ui/index.ts` | Hono.js dashboard server |
 | `app/defaults/agents/` | System agent specs (developer, reviewer, etc.) |
 | `app/defaults/skills/` | System skills (symlinked into `.claude/skills/`) |

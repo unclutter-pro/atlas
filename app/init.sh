@@ -294,7 +294,7 @@ if [ ! -f "$DB" ]; then
 fi
 
 # Always run canonical schema init + migrations (idempotent)
-bun -e "import { initDb } from '/atlas/app/atlas-mcp/db'; initDb();" || {
+bun -e "import { initDb } from '/atlas/app/lib/atlas-db'; initDb();" || {
   echo "  ⚠ Database init via bun failed (non-fatal)"
 }
 

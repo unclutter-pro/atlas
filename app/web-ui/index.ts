@@ -13,7 +13,7 @@ import {
 } from "fs";
 import { join, resolve, relative } from "path";
 import { homedir } from "os";
-import { getDb } from "../atlas-mcp/db";
+import { getDb } from "../lib/atlas-db";
 import { apiKeyAuth } from "../lib/api-auth";
 import { resolveConfig, redactConfig, getConfigSources } from "../lib/config";
 import { pauseAtlas, resumeAtlas, stopAllSessions, getControlStatus, isAtlasPaused } from "../lib/kill-switch";
