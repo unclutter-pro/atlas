@@ -395,8 +395,6 @@ bun run /atlas/app/triggers/sync-crontab.ts || echo "  ⚠ Crontab sync failed (
 
 # ── Phase 10: Start Services ──
 echo "[$(date)] Phase 10: Starting services"
-supervisorctl start atlas-mcp || true
-sleep 1
 supervisorctl start web-ui || true
 
 # Check pause state before starting cron

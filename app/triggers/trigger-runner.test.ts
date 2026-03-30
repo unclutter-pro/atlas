@@ -311,16 +311,9 @@ models:
 // ---------------------------------------------------------------------------
 
 describe("getMcpServers", () => {
-  test("returns work server", () => {
+  test("returns empty object by default (no user MCP config)", () => {
     const servers = getMcpServers();
-    expect(servers).toHaveProperty("work");
-    expect(servers).not.toHaveProperty("memory");
-  });
-
-  test("work server uses bun command", () => {
-    const servers = getMcpServers();
-    expect(servers.work.command).toBe("bun");
-    expect((servers.work.args as string[]).some((a) => a.includes("atlas-mcp"))).toBe(true);
+    expect(Object.keys(servers).length).toBe(0);
   });
 
   test("does not include URL-based servers", () => {

@@ -151,15 +151,11 @@ const settings: Record<string, unknown> = {
 mkdirSync(HOME + "/.claude", { recursive: true });
 writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n");
 
-// Generate trigger MCP config: base .mcp.json + atlas-mcp
+// Generate trigger MCP config from base .mcp.json
 const MCP_BASE_PATH = "/atlas/app/.mcp.json";
 const MCP_TRIGGER_PATH = HOME + "/.mcp-trigger.json";
 try {
   const baseMcp = JSON.parse(readFileSync(MCP_BASE_PATH, "utf-8"));
-  baseMcp.mcpServers.work = {
-    command: "bun",
-    args: ["run", "/atlas/app/atlas-mcp/index.ts"],
-  };
   writeFileSync(MCP_TRIGGER_PATH, JSON.stringify(baseMcp, null, 2) + "\n");
   console.log("Trigger MCP config generated: " + MCP_TRIGGER_PATH);
 } catch (e) {

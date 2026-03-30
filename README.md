@@ -70,11 +70,10 @@ Atlas runs entirely in a single Docker container managed by supervisord:
 |-----------|------|---------|
 | **nginx** | 8080 | Reverse proxy to web-ui |
 | **web-ui** | 3000 | Hono.js + HTMX dashboard |
-| **atlas-mcp** | stdio | MCP server for Claude's work management tools |
 | **watcher** | — | inotifywait loop, resumes Claude on `.wake` |
 | **supercronic** | — | Cron job runner |
 
-See [docs/Architecture.md](docs/Architecture.md) for component overview, [docs/atlas-mcp.md](docs/inbox-mcp.md) for MCP tools, and [docs/memory.md](docs/memory.md) for memory system.
+See [docs/Architecture.md](docs/Architecture.md) for component overview and [docs/memory.md](docs/memory.md) for memory system.
 
 ## Triggers
 
@@ -112,7 +111,7 @@ atlas/
 │   │   ├── stop.sh               # Checks inbox, continues or sleeps
 │   │   ├── pre-compact-auto.sh   # Memory flush before compaction
 │   │   └── subagent-stop.sh      # Quality gate for team results
-│   ├── atlas-mcp/                # MCP server (work management tools)
+│   ├── atlas-mcp/                # Database module (schema, migrations)
 │   ├── web-ui/                   # Hono.js + HTMX dashboard
 │   ├── triggers/                 # Trigger runner scripts
 │   │   ├── trigger.sh            # Generic trigger runner
@@ -204,7 +203,7 @@ Claude has access to these tools via the inbox-mcp server:
 **Memory:**
 Memory is handled via specialized sub-agents (`memory-searcher`, `memory-writer`) that use grep, glob, and file reads directly — no external MCP server needed.
 
-See [docs/atlas-mcp.md](docs/atlas-mcp.md) for work management tools, [docs/memory.md](docs/memory.md) for memory system, and [docs/hooks.md](docs/hooks.md) for lifecycle hooks.
+See [docs/memory.md](docs/memory.md) for memory system and [docs/hooks.md](docs/hooks.md) for lifecycle hooks.
 
 ## Logs
 
@@ -235,7 +234,6 @@ See [docs/development.md](docs/development.md) for more development commands.
 ## Documentation
 
 - [docs/Architecture.md](docs/Architecture.md) — Component overview
-- [docs/atlas-mcp.md](docs/atlas-mcp.md) — Work management tools system
 - [docs/hooks.md](docs/hooks.md) — Lifecycle hooks
 - [docs/watcher.md](docs/watcher.md) — Event-driven wake system
 - [docs/memory.md](docs/memory.md) — Memory and search

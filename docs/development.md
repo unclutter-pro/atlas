@@ -36,7 +36,6 @@ docker compose logs -f atlas
 # Inside container
 docker compose exec atlas tail -f /atlas/logs/init.log
 docker compose exec atlas tail -f /atlas/logs/trigger-<name>.log
-docker compose exec atlas tail -f /atlas/logs/atlas-mcp.log
 ```
 
 ## Service Status
@@ -48,8 +47,6 @@ docker compose exec atlas supervisorctl status
 Services managed by supervisord:
 - `nginx` — Reverse proxy (port 8080)
 - `web-ui` — Dashboard (port 3000)
-- `atlas-mcp` — MCP server (stdio)
-- `playwright-mcp` — Playwright browser automation (port 8931)
 - `supercronic` — Cron runner
 
 ## Rebuild After Code Changes

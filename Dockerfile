@@ -126,7 +126,6 @@ RUN chmod +x /atlas/app/entrypoint.sh \
   && chmod +x /atlas/app/triggers/trigger-runner \
   && chmod +x /atlas/app/bin/* \
   && cd /atlas/app/lib && bun install \
-  && cd /atlas/app/atlas-mcp && bun install \
   && cd /atlas/app/triggers && bun install \
   && cd /atlas/app/integrations/whatsapp && bun install \
   && cd /atlas/app/web-ui && bun install \

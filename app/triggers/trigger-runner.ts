@@ -404,18 +404,13 @@ export function resolveModel(
 
 /**
  * Returns the MCP servers config object for the query() call.
- * Merges system servers (work) with user servers from:
+ * Merges user servers from:
  *   1. ~/.atlas-mcp/user.json (Atlas-managed user config)
  *   2. ~/.mcp.json (standard Claude MCP config)
  * Only stdio-based servers are included (URL-based cause silent exit issues with --mcp-config).
  */
 export function getMcpServers(): Record<string, Record<string, unknown>> {
-  const servers: Record<string, Record<string, unknown>> = {
-    work: {
-      command: "bun",
-      args: ["run", "/atlas/app/atlas-mcp/index.ts"],
-    },
-  };
+  const servers: Record<string, Record<string, unknown>> = {};
 
   // Load user MCP servers from config files
   const userConfigPaths = [
@@ -900,7 +895,7 @@ function buildInjectMessage(
 
 /**
  * Open (or create) the database, ensuring required tables exist.
- * Does NOT run migrations — that's handled by atlas-mcp on startup.
+ * Does NOT run migrations — that's handled by init.sh on startup.
  * We use a simple open-only approach here.
  */
 function openDb(): Database {

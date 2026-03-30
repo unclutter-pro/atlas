@@ -7,12 +7,12 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 ```
 ┌─────────────────── Docker Container (supervisord) ────────────────────┐
 │                                                                        │
-│  ┌─────────┐   ┌──────────┐   ┌──────────┐                           │
-│  │  nginx   │──▸│  web-ui  │   │ atlas-mcp│                           │
-│  │  :8080   │   │  :3000   │   │  (stdio) │                           │
-│  └─────────┘   └──────────┘   └──────────┘                           │
-│                      │               │                                 │
-│                      ▼               ▼                                 │
+│  ┌─────────┐   ┌──────────┐                                          │
+│  │  nginx   │──▸│  web-ui  │                                          │
+│  │  :8080   │   │  :3000   │                                          │
+│  └─────────┘   └──────────┘                                          │
+│                      │                                                 │
+│                      ▼                                                 │
 │               ┌──────────────────────────────────────────┐            │
 │               │          atlas.db (SQLite)                │            │
 │               │  triggers │ trigger_sessions              │            │
@@ -31,7 +31,6 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 |-----------|------|---------|---------------|
 | **nginx** | 8080 | Reverse proxy to web-ui | [web-ui.md](web-ui.md) |
 | **web-ui** | 3000 | Hono.js + HTMX dashboard | [web-ui.md](web-ui.md) |
-| **atlas-mcp** | stdio | MCP server | [inbox-mcp.md](inbox-mcp.md) |
 | **supercronic** | — | Cron job runner | [Triggers.md](Triggers.md) |
 
 ## Data Flow
@@ -97,7 +96,6 @@ See [hooks.md](hooks.md) for details.
 
 ## Detailed Documentation
 
-- [inbox-mcp.md](inbox-mcp.md) — Database schema, MCP tools
 - [hooks.md](hooks.md) — Lifecycle hook system
 - [memory.md](memory.md) — Memory and search system
 - [web-ui.md](web-ui.md) — Dashboard and API
