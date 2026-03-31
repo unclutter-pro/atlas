@@ -41,6 +41,8 @@ from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
 
+import html2text
+
 # --- Paths ---
 CONFIG_PATH = os.environ["HOME"] + "/config.yml"
 RUNTIME_CONFIG_PATH = os.environ["HOME"] + "/.atlas-runtime-config.json"
@@ -350,21 +352,13 @@ def update_thread(db, thread_id, msg):
 
 
 def _html_to_text(html):
-    """Convert HTML to readable plaintext, stripping tags and style/script blocks."""
-    # Remove style and script blocks entirely
-    text = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    # Convert <br> and block elements to newlines
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</(p|div|tr|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
-    # Strip remaining tags
-    text = re.sub(r"<[^>]+>", "", text)
-    # Decode common HTML entities
-    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
-    # Collapse excessive whitespace but keep line structure
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    """Convert HTML to clean Markdown using html2text."""
+    h = html2text.HTML2Text()
+    h.body_width = 0          # Don't wrap lines
+    h.ignore_images = True     # Skip inline image references
+    h.ignore_emphasis = False  # Keep bold/italic as markdown
+    h.protect_links = True     # Keep URLs intact
+    return h.handle(html).strip()
 
 
 def get_body(msg):

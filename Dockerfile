@@ -74,7 +74,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
   && npm cache clean --force \
   # --- Python packages (used by messaging addons for config parsing) ---
-  && pip install --break-system-packages pyyaml \
+  && pip install --break-system-packages pyyaml html2text \
   # --- Claude Code CLI ---
   && npm install -g @anthropic-ai/claude-code \
   && claude --version \
