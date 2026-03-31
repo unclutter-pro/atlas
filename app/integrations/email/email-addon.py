@@ -196,6 +196,7 @@ def get_email_db(config):
             recipient       TEXT NOT NULL DEFAULT '',
             subject         TEXT NOT NULL DEFAULT '',
             body            TEXT NOT NULL DEFAULT '',
+            body_html       TEXT NOT NULL DEFAULT '',
             headers_json    TEXT NOT NULL DEFAULT '{}',
             inbox_msg_id    INTEGER,
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -210,6 +211,12 @@ def get_email_db(config):
         CREATE INDEX IF NOT EXISTS idx_emails_thread ON emails(thread_id);
         CREATE INDEX IF NOT EXISTS idx_emails_direction ON emails(direction);
     """)
+
+    # Migration: add body_html column for existing databases
+    try:
+        db.execute("SELECT body_html FROM emails LIMIT 0")
+    except sqlite3.OperationalError:
+        db.execute("ALTER TABLE emails ADD COLUMN body_html TEXT NOT NULL DEFAULT ''")
 
     return db
 
@@ -362,11 +369,12 @@ def _html_to_text(html):
 
 
 def get_body(msg):
-    """Extract plaintext body from email message.
+    """Extract email body as Markdown text and raw HTML.
 
-    Prefers text/plain but falls back to HTML if the plaintext part is
-    suspiciously short (some clients send a truncated preview as text/plain
-    while the full content is only in the HTML part).
+    Returns (markdown_body, raw_html) tuple. Prefers text/plain but falls
+    back to HTML→Markdown if the plaintext part is suspiciously short
+    (some clients send a truncated preview as text/plain while the full
+    content is only in the HTML part).
     """
     plain_body = None
     html_body = None
@@ -398,11 +406,11 @@ def get_body(msg):
             if payload:
                 decoded = payload.decode(charset, errors="replace")
                 if msg.get_content_type() == "text/html":
-                    return _html_to_text(decoded)
-                return decoded
+                    return _html_to_text(decoded), decoded
+                return decoded, ""
         except Exception:
             pass
-        return ""
+        return "", ""
 
     # If we have both, use plain unless it looks truncated
     if plain_body and html_body:
@@ -410,13 +418,13 @@ def get_body(msg):
         # If plaintext is much shorter than HTML text, the client likely
         # sent a preview-only plaintext part — use the HTML version instead
         if len(plain_body.strip()) < len(html_text.strip()) * 0.5 and len(plain_body.strip()) < 500:
-            return html_text
-        return plain_body
+            return html_text, html_body
+        return plain_body, html_body
     if plain_body:
-        return plain_body
+        return plain_body, html_body or ""
     if html_body:
-        return _html_to_text(html_body)
-    return ""
+        return _html_to_text(html_body), html_body
+    return "", ""
 
 
 def extract_attachments(msg, thread_id):
@@ -587,7 +595,7 @@ def _fetch_new_emails(mail, db, config):
 
         sender = msg.get("From", "unknown")
         subject = msg.get("Subject", "(no subject)")
-        body = get_body(msg)
+        body, body_html = get_body(msg)
         thread_id = extract_thread_id(msg, db)
         message_id_hdr = msg.get("Message-ID", "").strip()
 
@@ -605,9 +613,9 @@ def _fetch_new_emails(mail, db, config):
         # 2. Store email in email DB
         _, sender_addr = emaillib.utils.parseaddr(sender)
         db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, subject, body)
-            VALUES (?, ?, 'in', ?, ?, ?)
-        """, (thread_id, message_id_hdr, sender_addr, subject, body[:8000]))
+            INSERT INTO emails (thread_id, message_id, direction, sender, subject, body, body_html)
+            VALUES (?, ?, 'in', ?, ?, ?, ?)
+        """, (thread_id, message_id_hdr, sender_addr, subject, body[:8000], body_html[:50000]))
 
         # 2b. Save as searchable file
         save_email_file(thread_id, sender, subject, msg.get("Date", ""), body, attachments)
@@ -1059,10 +1067,30 @@ def cmd_threads(config, limit=20):
     db.close()
 
 
+# --- Format a single email as Markdown ---
+
+def _format_email_md(direction, sender, recipient, subject, date, body, email_id=None):
+    """Format a single email as clean Markdown."""
+    arrow = "→" if direction == "out" else "←"
+    who = f"**To:** {recipient}" if direction == "out" else f"**From:** {sender}"
+    lines = []
+    if email_id is not None:
+        lines.append(f"### {arrow} #{email_id} — {subject}")
+    else:
+        lines.append(f"### {arrow} {subject}")
+    lines.append("")
+    lines.append(f"{who}  ")
+    lines.append(f"**Date:** {date}  ")
+    lines.append("")
+    lines.append(body or "*(empty)*")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # --- THREAD detail command ---
 
-def cmd_thread_detail(config, thread_id):
-    """Show detail for a specific thread."""
+def cmd_thread_detail(config, thread_id, raw=False):
+    """Show all emails in a thread as Markdown (or raw HTML with --raw)."""
     db = get_email_db(config)
 
     thread = db.execute("SELECT * FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
@@ -1072,25 +1100,76 @@ def cmd_thread_detail(config, thread_id):
         sys.exit(1)
 
     cols = [d[0] for d in db.execute("SELECT * FROM threads LIMIT 0").description]
-    data = dict(zip(cols, thread))
-    data["references_chain"] = json.loads(data["references_chain"])
-    data["participants"] = json.loads(data["participants"])
+    tdata = dict(zip(cols, thread))
 
-    print(json.dumps(data, indent=2))
-
-    # Show emails in thread
     emails = db.execute("""
-        SELECT direction, sender, subject, created_at, body
+        SELECT id, direction, sender, recipient, subject, created_at, body, body_html
         FROM emails WHERE thread_id = ? ORDER BY created_at
     """, (thread_id,)).fetchall()
 
-    if emails:
-        print(f"\n--- Messages ({len(emails)}) ---")
-        for e in emails:
-            direction = "→" if e[0] == "out" else "←"
-            print(f"\n{direction} {e[1]} ({e[3]})")
-            print(f"  Subject: {e[2]}")
-            print(f"  {e[4][:200]}{'...' if len(e[4] or '') > 200 else ''}")
+    # Thread header
+    participants = json.loads(tdata["participants"])
+    print(f"# {tdata['subject']}")
+    print(f"")
+    print(f"**Thread:** {thread_id}  ")
+    print(f"**Messages:** {tdata['message_count']}  ")
+    print(f"**Participants:** {', '.join(participants)}  ")
+    print(f"**Last updated:** {tdata['updated_at']}")
+    print("")
+
+    if not emails:
+        print("*(no messages)*")
+        db.close()
+        return
+
+    # Print each email
+    for e in emails:
+        eid, direction, sender, recipient, subject, date, body, body_html = e
+        if raw and body_html:
+            print(f"<!-- Email #{eid} from {sender} ({date}) -->")
+            print(body_html)
+            print("")
+        else:
+            print(_format_email_md(direction, sender, recipient, subject, date, body, email_id=eid))
+        print("---")
+        print("")
+
+    db.close()
+
+
+# --- READ single email command ---
+
+def cmd_read_email(config, email_id, raw=False):
+    """Read a single email by its ID."""
+    db = get_email_db(config)
+
+    email = db.execute("""
+        SELECT id, thread_id, direction, sender, recipient, subject, created_at, body, body_html
+        FROM emails WHERE id = ?
+    """, (email_id,)).fetchone()
+
+    if not email:
+        print(f"Email #{email_id} not found.", file=sys.stderr)
+        db.close()
+        sys.exit(1)
+
+    eid, thread_id, direction, sender, recipient, subject, date, body, body_html = email
+
+    if raw and body_html:
+        print(body_html)
+    else:
+        print(f"# {subject}")
+        print("")
+        arrow = "→ Sent" if direction == "out" else "← Received"
+        print(f"**{arrow}**  ")
+        if direction == "out":
+            print(f"**To:** {recipient}  ")
+        else:
+            print(f"**From:** {sender}  ")
+        print(f"**Date:** {date}  ")
+        print(f"**Thread:** {thread_id}  ")
+        print("")
+        print(body or "*(empty)*")
 
     db.close()
 
@@ -1108,7 +1187,10 @@ Examples:
   email-addon.py send alice@x.com "Subject" "Body text"
   email-addon.py reply <thread_id> "Reply body"
   email-addon.py threads              # List all threads
-  email-addon.py thread <thread_id>   # Thread detail
+  email-addon.py thread <thread_id>   # Thread detail (Markdown)
+  email-addon.py thread <id> --raw    # Thread detail (raw HTML)
+  email-addon.py read <email_id>      # Read single email (Markdown)
+  email-addon.py read <id> --raw      # Read single email (raw HTML)
         """,
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1137,8 +1219,14 @@ Examples:
     p_threads.add_argument("--limit", type=int, default=20, help="Max threads to show")
 
     # thread detail
-    p_thread = sub.add_parser("thread", help="Show thread detail")
+    p_thread = sub.add_parser("thread", help="Show full thread (Markdown or --raw HTML)")
     p_thread.add_argument("thread_id", help="Thread ID")
+    p_thread.add_argument("--raw", action="store_true", help="Output raw HTML instead of Markdown")
+
+    # read single email
+    p_read = sub.add_parser("read", help="Read a single email by ID (Markdown or --raw HTML)")
+    p_read.add_argument("email_id", type=int, help="Email ID (shown as #N in thread view)")
+    p_read.add_argument("--raw", action="store_true", help="Output raw HTML instead of Markdown")
 
     args = parser.parse_args()
     config = load_config()
@@ -1161,7 +1249,10 @@ Examples:
         cmd_threads(config, limit=args.limit)
 
     elif args.command == "thread":
-        cmd_thread_detail(config, args.thread_id)
+        cmd_thread_detail(config, args.thread_id, raw=args.raw)
+
+    elif args.command == "read":
+        cmd_read_email(config, args.email_id, raw=args.raw)
 
 
 if __name__ == "__main__":
