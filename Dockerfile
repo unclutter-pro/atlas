@@ -30,7 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Berlin
 
 # ---- Single mega-install layer ----
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
   curl wget git jq ripgrep \
   supervisor \
   nginx \
