@@ -7,7 +7,7 @@ agent:
 
 models:
   main: sonnet # Main Claude Code session model
-  trigger: opus # Trigger sessions (PM/team lead) — needs strong reasoning
+  trigger: sonnet # Trigger sessions (PM/team lead) — needs strong reasoning
   cron: sonnet # Cron/scheduled trigger sessions
   subagent_review: sonnet # SubagentStop quality gate (prompt hook)
   hooks: haiku # Default model for other prompt/agent hooks
