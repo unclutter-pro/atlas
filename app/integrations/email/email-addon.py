@@ -355,7 +355,7 @@ def _html_to_text(html):
     """Convert HTML to clean Markdown using html2text."""
     h = html2text.HTML2Text()
     h.body_width = 0          # Don't wrap lines
-    h.ignore_images = True     # Skip inline image references
+    h.ignore_images = False    # Keep inline images as ![alt](url)
     h.ignore_emphasis = False  # Keep bold/italic as markdown
     h.protect_links = True     # Keep URLs intact
     return h.handle(html).strip()
