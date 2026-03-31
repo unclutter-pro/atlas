@@ -349,21 +349,79 @@ def update_thread(db, thread_id, msg):
     }
 
 
+def _html_to_text(html):
+    """Convert HTML to readable plaintext, stripping tags and style/script blocks."""
+    # Remove style and script blocks entirely
+    text = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # Convert <br> and block elements to newlines
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</(p|div|tr|li|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+    # Strip remaining tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Decode common HTML entities
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    # Collapse excessive whitespace but keep line structure
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def get_body(msg):
-    """Extract plaintext body from email message."""
+    """Extract plaintext body from email message.
+
+    Prefers text/plain but falls back to HTML if the plaintext part is
+    suspiciously short (some clients send a truncated preview as text/plain
+    while the full content is only in the HTML part).
+    """
+    plain_body = None
+    html_body = None
+
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                charset = part.get_content_charset() or "utf-8"
-                return part.get_payload(decode=True).decode(charset, errors="replace")
-        for part in msg.walk():
-            if part.get_content_type() == "text/html":
-                charset = part.get_content_charset() or "utf-8"
-                html = part.get_payload(decode=True).decode(charset, errors="replace")
-                return re.sub(r"<[^>]+>", "", html)
+            ct = part.get_content_type()
+            # Skip multipart containers and attachments
+            if part.get_content_maintype() == "multipart":
+                continue
+            if part.get("Content-Disposition", "").startswith("attachment"):
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                payload = part.get_payload(decode=True)
+                if not payload:
+                    continue
+                decoded = payload.decode(charset, errors="replace")
+            except Exception:
+                continue
+            if ct == "text/plain" and plain_body is None:
+                plain_body = decoded
+            elif ct == "text/html" and html_body is None:
+                html_body = decoded
     else:
         charset = msg.get_content_charset() or "utf-8"
-        return msg.get_payload(decode=True).decode(charset, errors="replace")
+        try:
+            payload = msg.get_payload(decode=True)
+            if payload:
+                decoded = payload.decode(charset, errors="replace")
+                if msg.get_content_type() == "text/html":
+                    return _html_to_text(decoded)
+                return decoded
+        except Exception:
+            pass
+        return ""
+
+    # If we have both, use plain unless it looks truncated
+    if plain_body and html_body:
+        html_text = _html_to_text(html_body)
+        # If plaintext is much shorter than HTML text, the client likely
+        # sent a preview-only plaintext part — use the HTML version instead
+        if len(plain_body.strip()) < len(html_text.strip()) * 0.5 and len(plain_body.strip()) < 500:
+            return html_text
+        return plain_body
+    if plain_body:
+        return plain_body
+    if html_body:
+        return _html_to_text(html_body)
     return ""
 
 
