@@ -1,6 +1,6 @@
 ---
 name: skills-guide
-description: How to create, structure, and maintain skills. Use when creating a new skill, improving an existing one, or deciding whether something should be a skill.
+description: How to create, structure, and maintain skills. Use when creating a new skill, improving an existing one, or deciding whether something should be a skill. Also trigger when recurring workflows, repeated multi-step processes, or consistent procedures are identified that could be captured as a reusable skill.
 ---
 
 # Skills Guide
