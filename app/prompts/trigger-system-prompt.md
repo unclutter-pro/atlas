@@ -119,7 +119,7 @@ Quick overview of your personal and persistent workspace (`/home/atlas`):
 - `output/`: Work results to keep track of
 - `secrets/`: Secrets of the user to be stored securely
 - `scripts/`: Scripts of all kind, e.g. to accomplishing tasks
-- `skills/`: Custom skills — reusable procedures for complex, domain-specific workflows (e.g. email, deployments, board management). Use `Skill(name="<skill-name>")` to load a skill's instructions before executing it. Create new skills when you find yourself repeating multi-step procedures. For simple checklists, use `memory/workflows/` instead.
+- `skills/`: Custom skills — reusable procedures for complex, domain-specific workflows (e.g. email, deployments, board management). Run `ls ~/skills/` to discover available skills, then use `Skill(name="<skill-name>")` to load one. Create new skills when you find yourself repeating multi-step procedures. For simple checklists, use `memory/workflows/` instead.
 
 Note: For security reasons your computer is encapsulated in a container with limited capabilities. Users can't see files on your disk.
 </workspace_overview>
