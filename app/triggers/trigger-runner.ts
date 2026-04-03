@@ -21,6 +21,7 @@ import type { SDKResultMessage, SDKUserMessage } from "@anthropic-ai/claude-agen
 import { Database } from "bun:sqlite";
 import { createHash } from "crypto";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from "fs";
+import os from "node:os";
 import { createConnection, createServer } from "net";
 import type { Server } from "net";
 import { join, dirname } from "path";
@@ -378,6 +379,22 @@ export function buildSystemPrompt(channel: string, options?: {
       // Directory doesn't exist or isn't readable — silently skip
     }
   }
+
+  // Inject dynamic environment info
+  const arch = os.arch();
+  const osRelease = (() => {
+    try {
+      const content = readFileSync("/etc/os-release", "utf8");
+      const pretty = content.match(/^PRETTY_NAME="?(.+?)"?$/m);
+      return pretty?.[1] ?? `${os.type()} ${os.release()}`;
+    } catch {
+      return `${os.type()} ${os.release()}`;
+    }
+  })();
+
+  systemPrompt = systemPrompt
+    .replace("{{OS_INFO}}", osRelease)
+    .replace("{{ARCH}}", arch);
 
   return systemPrompt;
 }
