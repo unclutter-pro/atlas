@@ -1,46 +1,11 @@
-# Claude Code System Prompt (v2.1.88)
-
-Captured via API proxy interception on 2026-04-03. This is the full system prompt that Claude Code sends to the Anthropic API on every request.
-
-## Structure
-
-The system prompt is sent as 3 blocks:
-
-| Block | Size | Cache | Content |
-|-------|------|-------|---------|
-| 1 | 83 chars | no | Billing/version header |
-| 2 | 62 chars | ephemeral | Agent SDK identifier |
-| 3 | 26,607 chars | ephemeral | Main system prompt |
-
-**Total: ~26,752 chars** (~6,700 tokens estimated)
-
-Additionally, 29 tools are defined (listed in [tools section](#tools)).
-
-## Request Metadata
-
-```json
-{
-  "model": "claude-sonnet-4-20250514",
-  "max_tokens": 32000,
-  "tools_count": 29
-}
-```
-
-## Block 1: Billing Header (83 chars)
-
-```
 x-anthropic-billing-header: cc_version=2.1.88.cfc; cc_entrypoint=sdk-ts; cch=00000;
-```
 
-## Block 2: Agent SDK Identifier (62 chars)
+--- BLOCK SEPARATOR ---
 
-```
 You are a Claude agent, built on Anthropic's Claude Agent SDK.
-```
 
-## Block 3: Main System Prompt (26,607 chars)
+--- BLOCK SEPARATOR ---
 
-```
 
 You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -253,77 +218,16 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 
 # Environment
-You have been invoked in the following environment:
+You have been invoked in the following environment: 
  - Primary working directory: /home/agent
   - Is a git repository: false
  - Platform: linux
  - Shell: bash
  - OS Version: Linux 6.8.0-90-generic
- - You are powered by the model named Sonnet 4. The exact model ID is claude-sonnet-4-20250514.
- - Assistant knowledge cutoff is January 2025.
+ - You are powered by the model named Opus 4.6. The exact model ID is claude-opus-4-6.
+ - Assistant knowledge cutoff is May 2025.
  - The most recent Claude model family is Claude 4.5/4.6. Model IDs — Opus 4.6: 'claude-opus-4-6', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.
  - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).
  - Fast mode for Claude Code uses the same Claude Opus 4.6 model with faster output. It does NOT switch to a different model. It can be toggled with /fast.
 
 When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.
-```
-
-## Tools (29 total)
-
-Built-in tools provided by Claude Code:
-
-| Tool | Purpose |
-|------|---------|
-| Agent | Launch subagents for complex tasks |
-| AskUserQuestion | Ask user for input |
-| Bash | Execute shell commands |
-| CronCreate | Create cron jobs |
-| CronDelete | Delete cron jobs |
-| CronList | List cron jobs |
-| Edit | Edit files (string replacement) |
-| EnterPlanMode | Switch to planning mode |
-| EnterWorktree | Enter git worktree |
-| ExitPlanMode | Exit planning mode |
-| ExitWorktree | Exit git worktree |
-| Glob | Search for files by pattern |
-| Grep | Search file contents |
-| NotebookEdit | Edit Jupyter notebooks |
-| Read | Read files |
-| SendMessage | Send messages to teammates |
-| Skill | Execute skills |
-| TaskOutput | Read background task output |
-| TaskStop | Stop background tasks |
-| TeamCreate | Create agent teams |
-| TeamDelete | Delete agent teams |
-| TodoWrite | Track task progress |
-| WebFetch | Fetch web pages |
-| WebSearch | Search the web |
-| Write | Write files |
-
-MCP tools (from connected integrations):
-- `mcp__claude_ai_Cloudflare_Developer_Platform__authenticate`
-- `mcp__claude_ai_Gmail__authenticate`
-- `mcp__claude_ai_Google_Calendar__authenticate`
-- `mcp__claude_ai_Stripe__authenticate`
-
-## Key Observations for Atlas
-
-### What we can remove/replace
-1. **Memory system** (~4,500 chars) — We have our own memory system in `~/memory/`. The built-in auto-memory uses a different structure (MEMORY.md index + individual files with frontmatter). We should replace this entirely.
-2. **Security boundaries for general dev** — The "Executing actions with care" section is designed for interactive developer use. Atlas operates autonomously with pre-granted permissions, so most confirmation requirements don't apply.
-3. **TodoWrite guidance** — We use our own task tracking. The built-in TodoWrite instructions can be simplified.
-4. **Help/feedback section** — References to Claude Code GitHub issues aren't relevant.
-5. **Emoji restriction** — We already handle this in SOUL.md.
-
-### What we should keep/adapt
-1. **Tool usage guidelines** — The "Use dedicated tools over Bash" guidance is good practice.
-2. **Output efficiency** — "Go straight to the point" aligns with our SOUL.md.
-3. **Code quality rules** — "Don't add features beyond what was asked", YAGNI principles, security vulnerability awareness.
-4. **Agent/subagent guidance** — When to use Explore vs direct Grep/Glob.
-
-### What we should add (not in Claude Code)
-1. **Multi-company context switching** — Atlas serves 3 companies.
-2. **Signal/messaging integration** — Communication style for real-time chat.
-3. **Delegation patterns** — Our team/agent orchestration system.
-4. **Proactive behavior** — Reminders, cron jobs, webhooks.
-5. **Memory cross-referencing** — Our Obsidian-style wikilinks system.
