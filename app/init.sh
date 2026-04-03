@@ -38,7 +38,6 @@ mkdir -p "$WORKSPACE/memory/projects" \
          "$WORKSPACE/memory/workflows" \
          "$WORKSPACE/.index" \
          "$WORKSPACE/projects" \
-         "$WORKSPACE/skills" \
          "$WORKSPACE/agents" \
          "$WORKSPACE/mcps" \
          "$WORKSPACE/triggers" \
@@ -209,29 +208,13 @@ if [ ! -f "$WORKSPACE/SOUL.md" ]; then
   echo "  Created default SOUL.md"
 fi
 
-# Migrate old flat skill files → directory structure
-for old_skill in "$WORKSPACE"/skills/*.md; do
-  [ -f "$old_skill" ] || continue
-  OLD_NAME=$(basename "$old_skill" .md)
-  if [ -d "$WORKSPACE/skills/$OLD_NAME" ]; then
-    rm "$old_skill"
-    echo "  Migrated skill: removed old $OLD_NAME.md (replaced by $OLD_NAME/SKILL.md)"
-  fi
-done
-
-# Remove stale system skill copies (now linked from app)
-for skill_name in dependencies playwright triggers agent-browser browser; do
-  [ -d "$WORKSPACE/skills/$skill_name" ] && rm -rf "$WORKSPACE/skills/$skill_name" \
-    && echo "  Cleaned up stale system skill: $skill_name"
-done
-
 # Install default skills from external directory (e.g. ConfigMap mount)
 if [ -n "${ATLAS_DEFAULT_SKILLS_DIR:-}" ] && [ -d "$ATLAS_DEFAULT_SKILLS_DIR" ]; then
   for f in "$ATLAS_DEFAULT_SKILLS_DIR"/*.md; do
     [ -f "$f" ] || continue
     _skill_name=$(basename "$f" .md)
-    mkdir -p "$WORKSPACE/skills/$_skill_name"
-    cp "$f" "$WORKSPACE/skills/$_skill_name/SKILL.md"
+    mkdir -p "$HOME/.claude/skills/$_skill_name"
+    cp "$f" "$HOME/.claude/skills/$_skill_name/SKILL.md"
     echo "  Installed default skill: $_skill_name"
   done
 fi
@@ -386,17 +369,24 @@ fi
 echo "[$(date)] Phase 8: Claude Code settings + discovery links"
 bun run /atlas/app/hooks/generate-settings.ts || echo "  ⚠ Settings generation failed (non-fatal)"
 
-# Skills: merged real directory with per-skill symlinks
-# System skills (from image) + agent-created skills (from home/skills/)
-rm -rf "$HOME/.claude/skills"
+# Skills: user-created skills live directly in ~/.claude/skills/
+# System default skills are in /etc/claude-code/.claude/skills/ (from Dockerfile)
 mkdir -p "$HOME/.claude/skills"
-for d in /atlas/app/defaults/skills/*/; do
-  [ -d "$d" ] && ln -sfn "$d" "$HOME/.claude/skills/$(basename $d)"
-done
-for d in "$HOME/skills/"*/; do
-  [ -d "$d" ] && ln -sfn "$d" "$HOME/.claude/skills/$(basename $d)"
-done
-echo "  Skills discovery dir rebuilt: $HOME/.claude/skills/"
+
+# Migrate legacy ~/skills/ directories → ~/.claude/skills/
+if [ -d "$HOME/skills" ]; then
+  for d in "$HOME/skills/"*/; do
+    [ -d "$d" ] || continue
+    skill_name=$(basename "$d")
+    if [ ! -d "$HOME/.claude/skills/$skill_name" ]; then
+      cp -r "$d" "$HOME/.claude/skills/$skill_name"
+      echo "  Migrated skill: $skill_name → ~/.claude/skills/"
+    fi
+  done
+  # Remove old ~/skills/ dir if possible
+  rm -rf "$HOME/skills" 2>/dev/null || true
+fi
+echo "  Skills directory: $HOME/.claude/skills/"
 
 # Agents: merged directory with system defaults + user agents
 # System agent specs (from image) are copied as defaults, user agents override

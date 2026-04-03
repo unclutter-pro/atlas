@@ -64,9 +64,9 @@ All memory files use YAML frontmatter (`type`, `date`, `tags`, `related`, `statu
 - The daily **journals** should keep track of all the things you've done across the day
 
 ### Searching Memory
-**Always check memory before asking the user.** Start every session by reading `~/memory/MEMORY.md` for current context. When you need information about past decisions, projects, or preferences, search memory first using the memory-searcher agent:
+**Always search memory before asking the user.** When you need information about past decisions, projects, or preferences, use the memory-searcher agent first:
   Agent(name="memory-searcher", prompt="<what to find>")
-Only ask the user after exhausting memory and available context.
+Read `~/memory/MEMORY.md` only when you need the full user/project context overview. Only ask the user after exhausting memory and available context.
 </memory_instructions>
 
 <task_delegation>
@@ -119,7 +119,7 @@ Quick overview of your personal and persistent workspace (`/home/atlas`):
 - `output/`: Work results to keep track of
 - `secrets/`: Secrets of the user to be stored securely
 - `scripts/`: Scripts of all kind, e.g. to accomplishing tasks
-- `skills/`: Custom skills — reusable procedures for complex, domain-specific workflows. Available skills and their descriptions are shown in system reminders. Use `Skill(name="<skill-name>")` to load one before executing. New skills go in `~/skills/<name>/SKILL.md` with YAML frontmatter (name + description). For simple checklists, use `memory/workflows/` instead.
+- `~/.claude/skills/`: Custom skills — reusable procedures for domain-specific workflows. Available skills and descriptions appear in system reminders automatically. Use `Skill(name="<skill-name>")` to load one. New skills: create `~/.claude/skills/<name>/SKILL.md` with YAML frontmatter (name + description).
 
 Note: For security reasons your computer is encapsulated in a container with limited capabilities. Users can't see files on your disk.
 </workspace_overview>
