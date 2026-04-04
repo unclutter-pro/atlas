@@ -140,11 +140,9 @@ def main():
         try:
             sock = connect_socket(SOCKET_PATH)
             log("Connected to signal-cli daemon, listening for messages")
-            # Brief pause to reduce the startup race: signal-cli daemon may emit
-            # queued messages immediately on socket connection before we enter
-            # the read loop.  A small sleep ensures the recv buffer is populated
-            # before we start processing so no lines are missed due to buffering.
-            time.sleep(1)
+            # Note: startup race (daemon fetching queued messages before the
+            # listener connects) is handled by signal-daemon-catchup.py, which
+            # runs a one-shot receive BEFORE entering daemon mode.
             listen(sock)
             sock.close()
         except Exception as e:
