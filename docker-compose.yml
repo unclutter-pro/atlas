@@ -5,10 +5,6 @@ services:
     build: .
     container_name: atlas
     restart: unless-stopped
-    cap_add:
-      - SYS_ADMIN          # User namespace creation for nix chroot store
-    security_opt:
-      - apparmor:unconfined # Required for user namespace syscalls
     volumes:
       - ./volume:/home/agent
       - ./logs:/atlas/logs

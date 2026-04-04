@@ -86,8 +86,7 @@ ENV HOME=/home/agent
 ENV NIX_PATH="nixpkgs=channel:nixpkgs-unstable"
 
 # Install Nix package manager (single-user, no daemon) for agent user.
-# At runtime, nix uses its built-in chroot store (~/.local/share/nix/root)
-# via user namespaces — packages persist automatically in the home volume.
+# Allows non-root package installation at runtime without sudo.
 RUN mkdir -p /nix && chown agent:agent /nix \
   && su -s /bin/bash agent -c "curl -L https://nixos.org/nix/install | sh -s -- --no-daemon" \
   && ln -s /home/agent/.nix-profile/bin/nix-env /usr/local/bin/nix-env \
