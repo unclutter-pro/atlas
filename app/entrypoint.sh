@@ -17,5 +17,21 @@ if [ -z "${AGENT_NAME:-}" ]; then
 fi
 export AGENT_NAME="${AGENT_NAME:-Atlas}"
 
+# ── Persist Nix store in workspace ──
+# /nix is a symlink to ~/.nix (set up in Dockerfile).
+# On first boot, seed from /nix-base (base image packages).
+# On subsequent boots, ~/.nix already has all installed packages.
+if [ -d /nix-base ] && [ ! -d /home/agent/.nix/store ]; then
+  echo "Seeding nix store from base image..."
+  mkdir -p /home/agent/.nix
+  cp -a /nix-base/* /home/agent/.nix/
+  chown -R agent:agent /home/agent/.nix 2>/dev/null || true
+fi
+# Ensure symlink exists (overlay reset may restore /nix as directory)
+if [ ! -L /nix ] && [ -d /home/agent/.nix/store ]; then
+  rm -rf /nix 2>/dev/null
+  ln -s /home/agent/.nix /nix
+fi
+
 # Start supervisord directly as agent — all env vars are inherited naturally
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/atlas.conf
