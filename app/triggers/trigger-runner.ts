@@ -392,9 +392,10 @@ export function buildSystemPrompt(channel: string, options?: {
     }
   })();
 
-  systemPrompt = systemPrompt
-    .replace("{{OS_INFO}}", osRelease)
-    .replace("{{ARCH}}", arch);
+  systemPrompt = safePlaceholderReplace(systemPrompt, {
+    "{{OS_INFO}}": osRelease,
+    "{{ARCH}}": arch,
+  });
 
   return systemPrompt;
 }
