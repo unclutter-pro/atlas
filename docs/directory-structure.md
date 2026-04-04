@@ -72,8 +72,6 @@ home/
 │   │   └── YYYY-MM-DD.md
 │   └── projects/              # Project-specific notes
 ├── projects/                   # Working directories
-├── skills/                     # Atlas-created skills
-├── agents/                     # Atlas-created agent specs
 ├── triggers/                   # Custom trigger prompts
 │   └── <trigger-name>/
 │       └── prompt.md          # Prompt fallback if DB prompt is empty

@@ -247,6 +247,11 @@ email threads
 
 # Show thread detail (participants, message history)
 email thread <thread_id>
+email thread <thread_id> --raw    # Output raw HTML instead of Markdown
+
+# Read a single email by ID
+email read <email_id>
+email read <email_id> --raw       # Output raw HTML instead of Markdown
 
 # Poll IMAP for new emails (background)
 email poll --once
@@ -336,4 +341,6 @@ signal history +49170123
 email reply <thread_id> "Reply body"
 email send alice@x.com "Subject" "Body"
 email threads
+email thread <thread_id> [--raw]
+email read <email_id> [--raw]
 ```
