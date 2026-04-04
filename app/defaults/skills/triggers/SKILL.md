@@ -284,7 +284,7 @@ Please respond directly using `signal send "{{sender}}" "..."`.
 Create `~/supervisor.d/signal.conf` (replace number with your own):
 ```ini
 [program:signal-daemon]
-command=python3 /atlas/app/integrations/signal/signal-daemon-catchup.py
+command=python3 /atlas/app/integrations/signal/signal-daemon-start.py
 environment=SIGNAL_NUMBER="+491701234567"
 autostart=true
 autorestart=true

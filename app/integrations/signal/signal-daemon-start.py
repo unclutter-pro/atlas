@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Signal startup catch-up: receive pending messages BEFORE daemon mode.
+Signal daemon start: receive pending messages, then enter daemon mode.
 
-Runs a one-shot signal-cli receive to grab any messages that arrived while
-the daemon was down. Processes them via 'signal incoming' so they get stored,
-triggered, and receive read receipts. Then execs into daemon mode.
+On startup, runs a one-shot signal-cli receive to grab any messages that
+arrived while the daemon was down. Processes them via 'signal incoming' so
+they get stored, triggered, and receive read receipts. Then execs into
+signal-cli daemon mode for ongoing message reception.
 
-This prevents the race condition where the daemon fetches messages from
+This prevents the race condition where the daemon would fetch messages from
 Signal's server before the listener is connected to the Unix socket.
 
 Environment variables:

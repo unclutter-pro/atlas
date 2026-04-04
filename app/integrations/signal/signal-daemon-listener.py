@@ -141,7 +141,7 @@ def main():
             sock = connect_socket(SOCKET_PATH)
             log("Connected to signal-cli daemon, listening for messages")
             # Note: startup race (daemon fetching queued messages before the
-            # listener connects) is handled by signal-daemon-catchup.py, which
+            # listener connects) is handled by signal-daemon-start.py, which
             # runs a one-shot receive BEFORE entering daemon mode.
             listen(sock)
             sock.close()
