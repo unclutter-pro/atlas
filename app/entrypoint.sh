@@ -17,13 +17,5 @@ if [ -z "${AGENT_NAME:-}" ]; then
 fi
 export AGENT_NAME="${AGENT_NAME:-Atlas}"
 
-# ── Restore Nix store from persistent backup ──
-# /nix/store on the container overlay resets on restart, losing user-installed
-# packages. Restore from ~/.nix (persisted by init.sh after user-extensions).
-if [ -d /home/agent/.nix/store ]; then
-  echo "Restoring nix packages from persistent backup..."
-  cp -an /home/agent/.nix/* /nix/ 2>/dev/null || true
-fi
-
 # Start supervisord directly as agent — all env vars are inherited naturally
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/atlas.conf

@@ -364,15 +364,6 @@ EXTENSIONS
   echo "  Created user-extensions.sh template"
 fi
 
-# ── Persist Nix store to workspace ──
-# Snapshot /nix (including user-installed packages from user-extensions.sh)
-# to ~/.nix so they survive container overlay resets.
-if [ -d /nix/store ] && command -v nix-env &>/dev/null; then
-  echo "  Persisting nix store to ~/.nix..."
-  mkdir -p "$WORKSPACE/.nix"
-  cp -au /nix/* "$WORKSPACE/.nix/" 2>/dev/null || true
-fi
-
 # ── Phase 8: Claude Code Settings + Discovery Links ──
 # Regenerated on every start to pick up model changes from config.yml
 echo "[$(date)] Phase 8: Claude Code settings + discovery links"
