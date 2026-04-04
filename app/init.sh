@@ -373,6 +373,14 @@ bun run /atlas/app/hooks/generate-settings.ts || echo "  ⚠ Settings generation
 # System default skills are in /etc/claude-code/.claude/skills/ (from Dockerfile)
 mkdir -p "$HOME/.claude/skills"
 
+# Clean up broken symlinks left from previous boot cycles (pre-97f3603 legacy)
+for link in "$HOME/.claude/skills/"*; do
+  if [ -L "$link" ] && [ ! -e "$link" ]; then
+    echo "  Removed broken skill symlink: $(basename "$link")"
+    rm -f "$link"
+  fi
+done
+
 # Migrate legacy ~/skills/ directories → ~/.claude/skills/
 if [ -d "$HOME/skills" ]; then
   for d in "$HOME/skills/"*/; do
