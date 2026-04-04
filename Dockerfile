@@ -87,14 +87,13 @@ ENV NIX_PATH="nixpkgs=channel:nixpkgs-unstable"
 
 # Install Nix package manager (single-user, no daemon) for agent user.
 # Allows non-root package installation at runtime without sudo.
-# After install, stash /nix content and replace with symlink to persistent home.
-# Entrypoint seeds ~/.nix on first boot; subsequent boots reuse persisted store.
+# Base image content is stashed to /nix-base; entrypoint + init.sh persist
+# user-installed packages via ~/.nix across container restarts.
 RUN mkdir -p /nix && chown agent:agent /nix \
   && su -s /bin/bash agent -c "curl -L https://nixos.org/nix/install | sh -s -- --no-daemon" \
   && ln -s /home/agent/.nix-profile/bin/nix-env /usr/local/bin/nix-env \
   && ln -s /home/agent/.nix-profile/bin/nix /usr/local/bin/nix \
-  && cp -a /nix /nix-base \
-  && rm -rf /nix && ln -s /home/agent/.nix /nix
+  && cp -a /nix /nix-base
 
 # Create directory structure
 # /home/agent — agent-owned workspace (mounted as volume)
