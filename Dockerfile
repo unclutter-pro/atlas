@@ -91,7 +91,6 @@ ENV NIX_PATH="nixpkgs=channel:nixpkgs-unstable"
 # user-installed packages via ~/.nix across container restarts.
 RUN mkdir -p /nix && chown agent:agent /nix \
   && su -s /bin/bash agent -c "curl -L https://nixos.org/nix/install | sh -s -- --no-daemon" \
-  && ln -s /home/agent/.nix-profile/bin/nix-env /usr/local/bin/nix-env \
   && ln -s /home/agent/.nix-profile/bin/nix /usr/local/bin/nix \
   && cp -a /nix /nix-base
 
@@ -114,6 +113,7 @@ RUN mkdir -p /atlas/app /atlas/logs \
 
 # Copy application code (root-owned — agent should not modify system code)
 COPY app/ /atlas/app/
+RUN cp /atlas/app/nix-env-wrapper.sh /usr/local/bin/nix-env && chmod +x /usr/local/bin/nix-env
 
 # Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/
