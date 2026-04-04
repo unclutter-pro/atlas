@@ -113,7 +113,6 @@ RUN mkdir -p /atlas/app /atlas/logs \
 
 # Copy application code (root-owned — agent should not modify system code)
 COPY app/ /atlas/app/
-RUN cp /atlas/app/nix-env-wrapper.sh /usr/local/bin/nix-env && chmod +x /usr/local/bin/nix-env
 
 # Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/
@@ -126,7 +125,8 @@ COPY app/nginx.conf /etc/nginx/sites-available/atlas
 COPY --from=trigger-builder /build/triggers/trigger-runner /atlas/app/triggers/trigger-runner
 
 # Set permissions, install bun deps, configure nginx/supervisor (single layer)
-RUN chmod +x /atlas/app/entrypoint.sh \
+RUN cp /atlas/app/nix-env-wrapper.sh /usr/local/bin/nix-env \
+  && chmod +x /atlas/app/entrypoint.sh \
   && chmod +x /atlas/app/init.sh \
   && chmod +x /atlas/app/hooks/*.sh \
   && chmod +x /atlas/app/triggers/cron/*.sh \
