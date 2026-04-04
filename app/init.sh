@@ -343,6 +343,41 @@ WCPROMPT
   echo "  Created web-chat trigger prompt"
 fi
 
+# ── Phase 6b: Nix Profile Repair ──
+# Container restarts wipe /nix/store overlay entries while nix profile
+# symlinks in ~/  persist, leaving broken profile chains.
+# Detect and reset broken profiles so nix-env works in user-extensions.sh.
+echo "[$(date)] Phase 6b: Nix profile repair"
+NIX_PROFILE_DIR="$HOME/.local/state/nix/profiles"
+if [ -d "$NIX_PROFILE_DIR" ]; then
+  PROFILE_TARGET=$(readlink -f "$NIX_PROFILE_DIR/profile" 2>/dev/null)
+  if [ -n "$PROFILE_TARGET" ] && [ ! -e "$PROFILE_TARGET" ]; then
+    echo "  Broken nix profile detected (target: $PROFILE_TARGET)"
+    # Find the most recent valid profile link
+    REPAIRED=false
+    for link in $(ls -t "$NIX_PROFILE_DIR"/profile-*-link 2>/dev/null); do
+      TARGET=$(readlink -f "$link" 2>/dev/null)
+      if [ -n "$TARGET" ] && [ -e "$TARGET" ]; then
+        ln -sf "$(basename "$link")" "$NIX_PROFILE_DIR/profile"
+        echo "  Repaired: profile -> $(basename "$link") ($TARGET)"
+        REPAIRED=true
+        break
+      fi
+    done
+    if [ "$REPAIRED" = false ]; then
+      # All profile links are broken — remove them so nix-env starts fresh
+      echo "  All profile generations broken, resetting..."
+      rm -f "$NIX_PROFILE_DIR"/profile "$NIX_PROFILE_DIR"/profile-*-link
+    fi
+  fi
+  # Same for channels profile
+  CHAN_TARGET=$(readlink -f "$NIX_PROFILE_DIR/channels" 2>/dev/null)
+  if [ -n "$CHAN_TARGET" ] && [ ! -e "$CHAN_TARGET" ]; then
+    echo "  Broken nix channels profile, resetting..."
+    rm -f "$NIX_PROFILE_DIR"/channels "$NIX_PROFILE_DIR"/channels-*-link
+  fi
+fi
+
 # ── Phase 7: User Extensions ──
 echo "[$(date)] Phase 7: User extensions"
 if [ -f "$WORKSPACE/user-extensions.sh" ]; then
@@ -355,9 +390,14 @@ else
 # User Extensions — runs on every container start.
 # Use for custom setup, e.g.:
 #
-# nix-env -iA nixpkgs.signal-cli    # system packages (no root needed)
+# nix-env -iA nixpkgs.signal-cli    # system packages (packages from base image reinstall instantly)
 # pip install some-package           # python packages
 # git config --global user.name "…"  # configuration
+#
+# NOTE: nix-env creates profile links that break on container restart.
+# Init repairs broken profiles automatically, but you should keep your
+# nix-env install commands here so they re-run on each boot (~instant
+# when packages are already in the base image's /nix/store).
 #
 # Changes take effect on next container restart.
 EXTENSIONS
