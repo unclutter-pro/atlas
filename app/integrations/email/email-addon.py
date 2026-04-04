@@ -531,15 +531,14 @@ def is_whitelisted(sender, whitelist):
 
 def write_to_atlas_inbox(sender, content, thread_id):
     """Write email to the main Atlas inbox. Returns message ID."""
-    atlas_db = sqlite3.connect(ATLAS_DB_PATH)
-    atlas_db.execute("PRAGMA busy_timeout=5000")
-    cursor = atlas_db.execute(
-        "INSERT INTO messages (channel, sender, content) VALUES (?, ?, ?)",
-        ("email", sender, content),
-    )
-    msg_id = cursor.lastrowid
-    atlas_db.commit()
-    atlas_db.close()
+    with sqlite3.connect(ATLAS_DB_PATH) as atlas_db:
+        atlas_db.execute("PRAGMA busy_timeout=5000")
+        cursor = atlas_db.execute(
+            "INSERT INTO messages (channel, sender, content) VALUES (?, ?, ?)",
+            ("email", sender, content),
+        )
+        msg_id = cursor.lastrowid
+        atlas_db.commit()
     # Touch .wake so main session picks up the message even if trigger.sh fails
     Path(WAKE_PATH).touch()
     return msg_id
@@ -628,7 +627,8 @@ def _fetch_new_emails(mail, db, config):
         inbox_msg_id = write_to_atlas_inbox(sender, inbox_content, thread_id)
 
         # Update email record with inbox msg id
-        db.execute("UPDATE emails SET inbox_msg_id = ? WHERE rowid = last_insert_rowid()", (inbox_msg_id,))
+        db.execute("UPDATE emails SET inbox_msg_id = ? WHERE thread_id = ? AND message_id = ?",
+                   (inbox_msg_id, thread_id, message_id_hdr))
 
         print(f"[{datetime.now()}] Email from {sender}: {subject[:60]} "
               f"(thread={thread_id}, inbox={inbox_msg_id})")
