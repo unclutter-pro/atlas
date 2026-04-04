@@ -101,7 +101,6 @@ RUN mkdir -p /atlas/app /atlas/logs \
   /home/agent/memory/journal \
   /home/agent/.index \
   /home/agent/projects \
-  /home/agent/agents \
   /home/agent/mcps \
   /home/agent/triggers \
   /home/agent/secrets \
@@ -113,8 +112,9 @@ RUN mkdir -p /atlas/app /atlas/logs \
 # Copy application code (root-owned — agent should not modify system code)
 COPY app/ /atlas/app/
 
-# Install default skills as system-level policy (SDK reads /etc/claude-code/.claude/skills/)
+# Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/
+COPY app/defaults/agents/ /etc/claude-code/.claude/agents/
 COPY .claude/settings.json /atlas/app/.claude/settings.json
 COPY supervisord.conf /etc/supervisor/conf.d/atlas.conf
 COPY app/nginx.conf /etc/nginx/sites-available/atlas

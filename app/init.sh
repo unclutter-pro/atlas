@@ -221,10 +221,10 @@ fi
 
 # Install default agents from external directory (e.g. ConfigMap mount)
 if [ -n "${ATLAS_DEFAULT_AGENTS_DIR:-}" ] && [ -d "$ATLAS_DEFAULT_AGENTS_DIR" ]; then
-  mkdir -p "$WORKSPACE/agents"
+  mkdir -p "$HOME/.claude/agents"
   for f in "$ATLAS_DEFAULT_AGENTS_DIR"/*.md; do
     [ -f "$f" ] || continue
-    cp "$f" "$WORKSPACE/agents/$(basename "$f")"
+    cp "$f" "$HOME/.claude/agents/$(basename "$f")"
     echo "  Installed default agent: $(basename "$f" .md)"
   done
 fi
@@ -379,7 +379,7 @@ if [ -d "$HOME/skills" ]; then
     [ -d "$d" ] || continue
     skill_name=$(basename "$d")
     if [ ! -d "$HOME/.claude/skills/$skill_name" ]; then
-      cp -r "$d" "$HOME/.claude/skills/$skill_name"
+      mv "$d" "$HOME/.claude/skills/$skill_name"
       echo "  Migrated skill: $skill_name → ~/.claude/skills/"
     fi
   done
@@ -388,17 +388,24 @@ if [ -d "$HOME/skills" ]; then
 fi
 echo "  Skills directory: $HOME/.claude/skills/"
 
-# Agents: merged directory with system defaults + user agents
-# System agent specs (from image) are copied as defaults, user agents override
-rm -rf "$HOME/.claude/agents"
+# Skills: user-created agents live directly in ~/.claude/agents/
+# System default skills are in /etc/claude-code/.claude/agents/ (from Dockerfile)
 mkdir -p "$HOME/.claude/agents"
-for f in /atlas/app/defaults/agents/*.md; do
-  [ -f "$f" ] && ln -sfn "$f" "$HOME/.claude/agents/$(basename $f)"
-done
-for f in "$HOME/agents/"*.md; do
-  [ -f "$f" ] && ln -sfn "$f" "$HOME/.claude/agents/$(basename $f)"
-done
-echo "  Agents discovery dir rebuilt: $HOME/.claude/agents/"
+
+# Migrate legacy ~/agents/ files → ~/.claude/agents/
+if [ -d "$HOME/agents" ]; then
+  for f in "$HOME/agents/"*.md; do
+    [ -f "$f" ] || continue
+    agent_file=$(basename "$f")
+    if [ ! -f "$HOME/.claude/agents/$agent_file" ]; then
+      mv "$f" "$HOME/.claude/agents/$agent_file"
+      echo "  Migrated agent: ${agent_file%.md} → ~/.claude/agents/"
+    fi
+  done
+  # Remove old ~/agents/ dir if possible
+  rm -rf "$HOME/agents" 2>/dev/null || true
+fi
+echo "  Skills directory: $HOME/.claude/agents/"
 
 # ── Phase 9: Sync Crontab from Triggers ──
 echo "[$(date)] Phase 9: Crontab sync"
