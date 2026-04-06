@@ -91,16 +91,22 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse
 
-ENV PATH="/home/agent/.nix-profile/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
+ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
-ENV NIX_PATH="nixpkgs=channel:nixpkgs-unstable"
+# nix-portable stores its Nix store + profile inside NP_LOCATION (persisted home dir)
+ENV NP_LOCATION=/home/agent/.nix-portable
 
-# Install Nix package manager (single-user, no daemon) for agent user.
-# Allows non-root package installation at runtime without sudo.
-RUN mkdir -p /nix && chown agent:agent /nix \
-  && su -s /bin/bash agent -c "curl -L https://nixos.org/nix/install | sh -s -- --no-daemon" \
-  && ln -s /home/agent/.nix-profile/bin/nix-env /usr/local/bin/nix-env \
-  && ln -s /home/agent/.nix-profile/bin/nix /usr/local/bin/nix
+# Install nix-portable — single static binary, no /nix mount or root needed.
+# Stores everything under $NP_LOCATION (~/.nix-portable), which persists across restarts.
+RUN ARCH=$(uname -m) \
+  && curl -fsSL "https://github.com/DavHau/nix-portable/releases/latest/download/nix-portable-${ARCH}" \
+    -o /usr/local/bin/nix-portable \
+  && chmod +x /usr/local/bin/nix-portable \
+  # Create wrapper scripts so `nix` and `nix-env` work as drop-in commands
+  && printf '#!/bin/sh\nexec nix-portable nix "$@"\n' > /usr/local/bin/nix \
+  && printf '#!/bin/sh\nexec nix-portable nix-env "$@"\n' > /usr/local/bin/nix-env \
+  && printf '#!/bin/sh\nexec nix-portable nix-shell "$@"\n' > /usr/local/bin/nix-shell \
+  && chmod +x /usr/local/bin/nix /usr/local/bin/nix-env /usr/local/bin/nix-shell
 
 # Create directory structure
 # /home/agent — agent-owned workspace (mounted as volume)
@@ -155,7 +161,7 @@ RUN chmod +x /atlas/app/entrypoint.sh \
 WORKDIR /home/agent
 EXPOSE 8080
 
-# Run as non-root agent user. Nix handles package installs without root.
+# Run as non-root agent user. nix-portable handles package installs without root.
 # sudo is available as fallback for Docker Compose (blocked in K8s by securityContext).
 USER agent
 ENTRYPOINT ["/atlas/app/entrypoint.sh"]
