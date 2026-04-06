@@ -22,7 +22,14 @@ RUN ARCH=$(uname -m) && \
   bun build --compile --target=${BUN_TARGET} trigger-runner.ts --outfile trigger-runner
 
 # ============================================================
-# Stage 2: Main application image
+# Stage 2: Extract Chromium from Debian (Ubuntu only has snap stub)
+# ============================================================
+FROM debian:trixie-slim AS chromium-stage
+RUN apt-get update && apt-get install -y --no-install-recommends chromium \
+  && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# Stage 3: Main application image
 # ============================================================
 FROM ubuntu:24.04
 
@@ -41,7 +48,13 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   unzip xz-utils sudo \
   ffmpeg \
   pandoc libreoffice imagemagick \
-  gnupg \
+  # Chromium runtime dependencies (shared libs needed by the Debian binary)
+  libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+  libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+  libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 libx11-6 \
+  libxcb1 libxext6 libdbus-1-3 libatspi2.0-0t64 libx11-xcb1 \
+  libfontconfig1 libfreetype6 libharfbuzz0b libglib2.0-0t64 \
+  fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
   && useradd -m -s /bin/bash -G sudo agent \
@@ -69,16 +82,9 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && curl -fsSL "https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-${TYPST_ARCH}-unknown-linux-musl.tar.xz" \
     | tar -xJ --strip-components=1 -C /usr/local/bin "typst-${TYPST_ARCH}-unknown-linux-musl/typst" \
   && chmod +x /usr/local/bin/typst \
-  # --- Chromium from Debian (Ubuntu 24.04 only ships a snap stub) ---
-  # Add Debian Trixie repo temporarily to install real chromium binary
-  && curl -fsSL https://ftp-master.debian.org/keys/archive-key-13.asc \
-    | gpg --dearmor -o /etc/apt/trusted.gpg.d/debian-archive.gpg \
-  && echo "deb http://deb.debian.org/debian trixie main" > /etc/apt/sources.list.d/debian-chromium.list \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends -t trixie chromium \
-  && rm /etc/apt/sources.list.d/debian-chromium.list /etc/apt/trusted.gpg.d/debian-archive.gpg \
-  && apt-get update \
-  && ln -sf /usr/bin/chromium /usr/local/bin/chromium-browser \
+  # --- Symlink Chromium (copied from Debian stage below) ---
+  && ln -sf /usr/lib/chromium/chromium /usr/local/bin/chromium \
+  && ln -sf /usr/lib/chromium/chromium /usr/local/bin/chromium-browser \
   # --- npm globals ---
   && npm install -g agent-browser \
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
@@ -91,16 +97,26 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse
 
-ENV PATH="/home/agent/.nix-profile/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
-ENV HOME=/home/agent
-ENV NIX_PATH="nixpkgs=channel:nixpkgs-unstable"
+# Copy Chromium binary + libs from Debian stage (avoids mixing Debian/Ubuntu repos)
+COPY --from=chromium-stage /usr/lib/chromium/ /usr/lib/chromium/
 
-# Install Nix package manager (single-user, no daemon) for agent user.
-# Allows non-root package installation at runtime without sudo.
-RUN mkdir -p /nix && chown agent:agent /nix \
-  && su -s /bin/bash agent -c "curl -L https://nixos.org/nix/install | sh -s -- --no-daemon" \
-  && ln -s /home/agent/.nix-profile/bin/nix-env /usr/local/bin/nix-env \
-  && ln -s /home/agent/.nix-profile/bin/nix /usr/local/bin/nix
+ENV PATH="/atlas/app/bin:/home/agent/bin:${PATH}"
+ENV HOME=/home/agent
+# nix-portable stores its Nix store + profile inside NP_LOCATION (persisted home dir)
+ENV NP_LOCATION=/home/agent/.nix-portable
+
+# Install nix-portable — single static binary, no /nix mount or root needed.
+# Stores everything under $NP_LOCATION (~/.nix-portable), which persists across restarts.
+# Binaries installed via nix-portable must be run through it (e.g. `nix-portable nix run nixpkgs#tool`).
+RUN ARCH=$(uname -m) \
+  && curl -fsSL "https://github.com/DavHau/nix-portable/releases/latest/download/nix-portable-${ARCH}" \
+    -o /usr/local/bin/nix-portable \
+  && chmod +x /usr/local/bin/nix-portable \
+  # Create wrapper scripts so `nix` and `nix-env` work as drop-in commands
+  && printf '#!/bin/sh\nexec nix-portable nix "$@"\n' > /usr/local/bin/nix \
+  && printf '#!/bin/sh\nexec nix-portable nix-env "$@"\n' > /usr/local/bin/nix-env \
+  && printf '#!/bin/sh\nexec nix-portable nix-shell "$@"\n' > /usr/local/bin/nix-shell \
+  && chmod +x /usr/local/bin/nix /usr/local/bin/nix-env /usr/local/bin/nix-shell
 
 # Create directory structure
 # /home/agent — agent-owned workspace (mounted as volume)
@@ -155,7 +171,7 @@ RUN chmod +x /atlas/app/entrypoint.sh \
 WORKDIR /home/agent
 EXPOSE 8080
 
-# Run as non-root agent user. Nix handles package installs without root.
+# Run as non-root agent user. nix-portable handles package installs without root.
 # sudo is available as fallback for Docker Compose (blocked in K8s by securityContext).
 USER agent
 ENTRYPOINT ["/atlas/app/entrypoint.sh"]
