@@ -26,7 +26,14 @@ RUN ARCH=$(uname -m) && \
 # ============================================================
 FROM debian:trixie-slim AS chromium-stage
 RUN apt-get update && apt-get install -y --no-install-recommends chromium \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  # Collect Debian-specific libs that Ubuntu doesn't ship (different sonames).
+  # These get copied alongside /usr/lib/chromium/ into the Ubuntu stage.
+  && MULTIARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+  && mkdir -p /chromium-extra-libs \
+  && cp -L /usr/lib/${MULTIARCH}/libopenh264.so.* /chromium-extra-libs/ \
+  && cp -L /usr/lib/${MULTIARCH}/libFLAC.so.* /chromium-extra-libs/ \
+  && cp -L /usr/lib/${MULTIARCH}/libjpeg.so.* /chromium-extra-libs/
 
 # ============================================================
 # Stage 3: Main application image
@@ -53,7 +60,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
   libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 libx11-6 \
   libxcb1 libxext6 libdbus-1-3 libatspi2.0-0t64 libx11-xcb1 \
-  libfontconfig1 libfreetype6 libharfbuzz0b libglib2.0-0t64 \
+  libfontconfig1 libfreetype6 libharfbuzz0b libharfbuzz-subset0 \
+  libglib2.0-0t64 libxnvctrl0 libminizip1t64 \
   fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
@@ -99,6 +107,10 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 # Copy Chromium binary + libs from Debian stage (avoids mixing Debian/Ubuntu repos)
 COPY --from=chromium-stage /usr/lib/chromium/ /usr/lib/chromium/
+# Copy Debian-specific shared libs (libopenh264.so.8, libFLAC.so.14, libjpeg.so.62)
+# that Ubuntu either doesn't ship or has incompatible sonames.
+COPY --from=chromium-stage /chromium-extra-libs/ /usr/lib/chromium/lib/
+ENV LD_LIBRARY_PATH="/usr/lib/chromium/lib"
 
 ENV PATH="/home/agent/.nix-profile/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
