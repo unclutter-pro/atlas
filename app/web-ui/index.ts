@@ -841,12 +841,13 @@ app.get("/chat/conversation", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
+    // Check socket independently — agent may be running before/after JSONL file is written
+    isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate, not real user text
       assistantMsgs = all.filter(m => m.type !== "user-text");
-      isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     }
   }
 
@@ -1744,12 +1745,13 @@ api.get("/chat/messages", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
+    // Check socket independently — agent may be running before/after JSONL file is written
+    isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate
       assistantMsgs = all.filter(m => m.type !== "user-text");
-      isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     }
   }
 
@@ -1836,11 +1838,12 @@ api.get("/chat/stream", (c) => {
             let assistantMsgs: ParsedMessage[] = [];
             let isRunning = false;
             if (session) {
+              // Check socket independently — agent may be running before/after JSONL file is written
+              isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
               const filePath = findSessionFile(session.session_id);
               if (filePath) {
                 const all = parseSessionMessages(filePath);
                 assistantMsgs = all.filter(m => m.type !== "user-text");
-                isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
               }
             }
 
