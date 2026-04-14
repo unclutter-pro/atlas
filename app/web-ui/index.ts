@@ -841,12 +841,13 @@ app.get("/chat/conversation", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
+    // Check socket independently — agent may be running before/after JSONL file is written
+    isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate, not real user text
       assistantMsgs = all.filter(m => m.type !== "user-text");
-      isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     }
   }
 
@@ -1744,12 +1745,13 @@ api.get("/chat/messages", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
+    // Check socket independently — agent may be running before/after JSONL file is written
+    isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate
       assistantMsgs = all.filter(m => m.type !== "user-text");
-      isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     }
   }
 
@@ -1836,11 +1838,12 @@ api.get("/chat/stream", (c) => {
             let assistantMsgs: ParsedMessage[] = [];
             let isRunning = false;
             if (session) {
+              // Check socket independently — agent may be running before/after JSONL file is written
+              isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
               const filePath = findSessionFile(session.session_id);
               if (filePath) {
                 const all = parseSessionMessages(filePath);
                 assistantMsgs = all.filter(m => m.type !== "user-text");
-                isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
               }
             }
 
@@ -1929,7 +1932,10 @@ api.get("/chat/stream", (c) => {
             if (wasRunning && !isAgentRunning) {
               send("agent_ended", {});
               wasRunning = isAgentRunning;
-              controller.close();
+              // Delay close so the client has time to receive and process
+              // agent_ended before the connection drops. Without this, the event
+              // can be lost if the TCP buffer flushes at the same time as close.
+              setTimeout(() => { try { controller.close(); } catch {} }, 1500);
               return;
             }
 

@@ -822,8 +822,8 @@ export function getSessionIdleSeconds(sessionId: string, homeDir?: string): numb
   }
 }
 
-/** Default: 30 minutes of no JSONL activity = stale */
-const STALE_SESSION_THRESHOLD_S = parseInt(process.env.STALE_SESSION_THRESHOLD ?? "1800", 10);
+/** Default: 10 minutes of no JSONL activity = stale (was 30min, reduced for faster frozen session detection) */
+const STALE_SESSION_THRESHOLD_S = parseInt(process.env.STALE_SESSION_THRESHOLD ?? "600", 10);
 
 /**
  * Kill a running Claude session by finding and terminating the process owning its socket.
@@ -1186,35 +1186,62 @@ export async function main(): Promise<void> {
         const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
 
         // 1. Try custom socket first (most reliable — message channel managed)
-        const socketInjected = await trySocketInject(customSocketPath, injectMsg, channel, sessionKey);
-        if (socketInjected) {
-          log.log(`Injected via custom socket into session ${existingSession} (key=${sessionKey})`);
-          process.exit(0);
-        }
+        // Pre-check: skip injection entirely if session is clearly stale
+        // (custom socket may still be alive but session frozen)
+        if (idleSeconds >= STALE_SESSION_THRESHOLD_S) {
+          log.log(`Session ${existingSession} is stale (idle ${Math.round(idleSeconds)}s) — killing before injection`);
+          killSessionProcess(existingSession);
+          staleRecovery = true;
+        } else {
+          const socketInjected = await trySocketInject(customSocketPath, injectMsg, channel, sessionKey);
+          if (socketInjected) {
+            // Verify session is processing — check if JSONL has new activity within timeout
+            const jsonlPath = findSessionJsonl(existingSession);
+            const mtimeBefore = jsonlPath ? statSync(jsonlPath).mtimeMs : 0;
 
-        // 2. Fall back to Claude IPC with post-injection verification
-        if (claudeSocketAlive) {
-          const injected = await tryIpcInject(existingSession, injectMsg);
-          if (injected) {
-            // Verify session is still alive after injection — race condition guard:
-            // the session may have ended between socket check and injection,
-            // causing the message to be accepted but never processed.
-            await Bun.sleep(300);
-            if (existsSync(claudeSocketPath)) {
-              log.log(`Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`);
+            // Brief wait for session to start processing
+            await Bun.sleep(2000);
+
+            const mtimeAfter = jsonlPath ? (() => { try { return statSync(jsonlPath).mtimeMs; } catch { return 0; } })() : 0;
+
+            if (mtimeAfter > mtimeBefore) {
+              // Session is actively responding
+              log.log(`Injected via custom socket into session ${existingSession} (key=${sessionKey})`);
               process.exit(0);
             }
-            // Session died right after injection — message likely lost
-            log.log(`Session ${existingSession} died after IPC injection — message may be lost, will resume`);
-            db.prepare(
-              "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
-            ).run(triggerName, sessionKey);
-            existingSession = null;
-          } else {
-            log.log(`Both injection methods failed for ${existingSession}, will resume`);
+
+            // Session accepted injection but is frozen — kill and resume
+            log.log(`Session ${existingSession} accepted socket injection but appears frozen (no JSONL activity) — killing`);
+            killSessionProcess(existingSession);
+            staleRecovery = true;
           }
         }
-        // No sockets available — fall through to resume
+
+        if (!staleRecovery) {
+          // 2. Fall back to Claude IPC with post-injection verification
+          if (claudeSocketAlive) {
+            const injected = await tryIpcInject(existingSession, injectMsg);
+            if (injected) {
+              // Verify session is still alive after injection — race condition guard:
+              // the session may have ended between socket check and injection,
+              // causing the message to be accepted but never processed.
+              await Bun.sleep(300);
+              if (existsSync(claudeSocketPath)) {
+                log.log(`Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`);
+                process.exit(0);
+              }
+              // Session died right after injection — message likely lost
+              log.log(`Session ${existingSession} died after IPC injection — message may be lost, will resume`);
+              db.prepare(
+                "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+              ).run(triggerName, sessionKey);
+              existingSession = null;
+            } else {
+              log.log(`Both injection methods failed for ${existingSession}, will resume`);
+            }
+          }
+          // No sockets available — fall through to resume
+        }
       }
     }
   }
