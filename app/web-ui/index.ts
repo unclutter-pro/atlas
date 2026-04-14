@@ -1932,7 +1932,10 @@ api.get("/chat/stream", (c) => {
             if (wasRunning && !isAgentRunning) {
               send("agent_ended", {});
               wasRunning = isAgentRunning;
-              controller.close();
+              // Delay close so the client has time to receive and process
+              // agent_ended before the connection drops. Without this, the event
+              // can be lost if the TCP buffer flushes at the same time as close.
+              setTimeout(() => { try { controller.close(); } catch {} }, 1500);
               return;
             }
 
