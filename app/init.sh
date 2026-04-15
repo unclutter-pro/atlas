@@ -488,22 +488,11 @@ stderr_logfile_maxbytes=1MB
 stderr_logfile_backups=1
 SUPEOF
 
-  # Add email-handler trigger (idempotent)
+  # Add email-handler trigger (idempotent).
+  # prompt uses {{payload}} so the trigger-runner injects the email JSON;
+  # the channel system prompt (trigger-channel-email.md) provides all behavioral context.
   if [ -f "$DB" ]; then
-    sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, prompt, session_mode) VALUES ('email-handler', 'webhook', 'Email conversations (IMAP)', 'email', '', 'persistent');" 2>/dev/null || true
-  fi
-
-  # Write default trigger prompt if missing
-  if [ ! -f "$WORKSPACE/triggers/email-handler/prompt.md" ]; then
-    cat > "$WORKSPACE/triggers/email-handler/prompt.md" << 'PROMEOF'
-New email received:
-
-{{payload}}
-
-The payload contains inbox_message_id, sender, subject, body, thread_id, and date.
-Reply directly: email reply <thread_id> "your message"
-Always reply in the language the sender used.
-PROMEOF
+    sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, prompt, session_mode) VALUES ('email-handler', 'webhook', 'Email conversations (IMAP)', 'email', '{{payload}}', 'persistent');" 2>/dev/null || true
   fi
   echo "  Email poller provisioned (will start with supervisord in Phase 10)"
 else
