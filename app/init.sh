@@ -438,6 +438,78 @@ echo "  Skills directory: $HOME/.claude/agents/"
 echo "[$(date)] Phase 9: Crontab sync"
 bun run /atlas/app/triggers/sync-crontab.ts || echo "  ⚠ Crontab sync failed (non-fatal)"
 
+# ── Phase 9b: Auto-setup email poller (if email is configured) ──
+# Check runtime config + config.yml for imap_host. If set, provision the
+# email-poller supervisord service and email-handler trigger automatically.
+# This handles pod restarts where the runtime config already exists.
+echo "[$(date)] Phase 9b: Email poller setup"
+_imap_host=""
+# Check runtime config first (higher priority)
+if [ -f "$WORKSPACE/.atlas-runtime-config.json" ]; then
+  _imap_host=$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('$WORKSPACE/.atlas-runtime-config.json'))
+    print(d.get('email', {}).get('imap_host', ''))
+except: pass
+" 2>/dev/null || true)
+fi
+# Fall back to config.yml
+if [ -z "$_imap_host" ] && [ -f "$WORKSPACE/config.yml" ]; then
+  _imap_host=$(python3 -c "
+import sys
+try:
+    import yaml
+    d = yaml.safe_load(open('$WORKSPACE/config.yml')) or {}
+    print(d.get('email', {}).get('imap_host', ''))
+except: pass
+" 2>/dev/null || true)
+fi
+# Also check env var override
+if [ -z "$_imap_host" ] && [ -n "${ATLAS_EMAIL_IMAP_HOST:-}" ]; then
+  _imap_host="$ATLAS_EMAIL_IMAP_HOST"
+fi
+
+if [ -n "$_imap_host" ]; then
+  echo "  Email configured (host=$_imap_host) — provisioning email-poller"
+  mkdir -p "$WORKSPACE/supervisor.d" "$WORKSPACE/triggers/email-handler"
+
+  # Write supervisor conf (idempotent)
+  cat > "$WORKSPACE/supervisor.d/email-poller.conf" << 'SUPEOF'
+[program:email-poller]
+command=/atlas/app/bin/email poll
+autostart=true
+autorestart=true
+stdout_logfile=/atlas/logs/email-poller.log
+stderr_logfile=/atlas/logs/email-poller-error.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+stderr_logfile_maxbytes=1MB
+stderr_logfile_backups=1
+SUPEOF
+
+  # Add email-handler trigger (idempotent)
+  if [ -f "$DB" ]; then
+    sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, prompt, session_mode) VALUES ('email-handler', 'webhook', 'Email conversations (IMAP)', 'email', '', 'persistent');" 2>/dev/null || true
+  fi
+
+  # Write default trigger prompt if missing
+  if [ ! -f "$WORKSPACE/triggers/email-handler/prompt.md" ]; then
+    cat > "$WORKSPACE/triggers/email-handler/prompt.md" << 'PROMEOF'
+New email received:
+
+{{payload}}
+
+The payload contains inbox_message_id, sender, subject, body, thread_id, and date.
+Reply directly: email reply <thread_id> "your message"
+Always reply in the language the sender used.
+PROMEOF
+  fi
+  echo "  Email poller provisioned (will start with supervisord in Phase 10)"
+else
+  echo "  Email not configured — skipping email-poller setup"
+fi
+
 # ── Phase 10: Start Services ──
 echo "[$(date)] Phase 10: Starting services"
 supervisorctl start web-ui || true
