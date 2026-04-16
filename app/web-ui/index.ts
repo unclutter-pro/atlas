@@ -362,7 +362,29 @@ app.get("/healthz", (c) => {
   try {
     const row = db.prepare("SELECT 1 AS ok").get() as { ok: number } | null;
     if (row?.ok !== 1) throw new Error("unexpected query result");
-    return c.json({ status: "ok" }, 200);
+
+    // Email integration status
+    const config = resolveConfig(WS);
+    const emailConfigured = !!config.email?.imap_host;
+    let emailPollerRunning = false;
+    if (emailConfigured) {
+      try {
+        // supervisorctl status <name> exits non-zero when not RUNNING, but never throws —
+        // stdout contains "RUNNING" only when the process is actively up.
+        const result = Bun.spawnSync(["supervisorctl", "status", "email-poller"]);
+        emailPollerRunning = result.stdout.toString().includes("RUNNING");
+      } catch {
+        // supervisorctl not available or poller not registered — treat as not running
+      }
+    }
+
+    return c.json({
+      status: "ok",
+      email: {
+        configured: emailConfigured,
+        poller_running: emailPollerRunning,
+      },
+    }, 200);
   } catch {
     return c.json({ status: "error" }, 503);
   }
