@@ -95,6 +95,10 @@ const settings: Record<string, unknown> = {
       "TaskUpdate",
       "TaskList",
       "TaskGet",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "EnterWorktree",
+      "AskUserQuestion",
     ],
   },
   hooks: {
