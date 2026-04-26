@@ -3,6 +3,8 @@
 # ============================================================
 FROM oven/bun:1 AS trigger-builder
 
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # Copy package files and install dependencies
