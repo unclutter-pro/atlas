@@ -81,12 +81,13 @@ const WORKSPACE = HOME;
 // In compiled Bun binaries, import.meta.url points to a virtual FS (/$bunfs/...),
 // so the SDK cannot auto-resolve cli.js. We resolve it explicitly here.
 function resolveClaudeCodePath(): string | undefined {
-  // 1. SDK's bundled cli.js (preferred — version-matched)
+  // 1. SDK's bundled cli.js (older SDK versions ship this)
   const sdkCli = `${APP_DIR}/triggers/node_modules/@anthropic-ai/claude-agent-sdk/cli.js`;
   if (existsSync(sdkCli)) return sdkCli;
-  // 2. Native binary installed globally
-  const nativeBin = "/usr/local/bin/claude";
-  if (existsSync(nativeBin)) return nativeBin;
+  // 2. Native binary installed globally (check common paths)
+  for (const bin of ["/usr/local/bin/claude", "/usr/bin/claude"]) {
+    if (existsSync(bin)) return bin;
+  }
   // 3. Let the SDK resolve it (works when not compiled)
   return undefined;
 }
