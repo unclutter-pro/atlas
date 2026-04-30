@@ -10,17 +10,22 @@ First, discover which sessions ran in the last 24 hours:
 sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup
 ```
 
-This outputs a lightweight index with session file paths. For each **main session** (not subagents), spawn a `session-analyzer` subagent:
+This outputs a lightweight index with session file paths. For each **main session** (not subagents):
+
+1. **Pre-process** the session via `sessions --session <path>` — this strips tool inputs/outputs, truncates long messages, and produces a condensed conversation transcript (~5-15k tokens instead of 500k+ raw)
+2. **Spawn a `session-analyzer` subagent** with the pre-processed text as input:
 
 ```
-Agent(subagent_type="session-analyzer", prompt="Analyze the session at: <path>")
+# First, extract the session
+result=$(sessions --session <path>)
+
+# Then pass to subagent
+Agent(subagent_type="session-analyzer", prompt="Analyze this session transcript:\n\n$result")
 ```
 
-Launch subagents **in parallel** for all main sessions (send them all in one message). Wait for all results.
+Launch subagents **in parallel** for all main sessions (send them all in one message). Wait for all results, then synthesize.
 
-The `session-analyzer` agent is a Sonnet-based specialist that reads the full JSONL file and returns a structured summary covering: decisions, learnings, user corrections, new entities, changed facts, preferences, and open items. It's thorough — long sessions with many topics get proportionally detailed summaries.
-
-After receiving all summaries, synthesize them into a unified view. If a summary seems too thin for a large session (check turn count from the `--list` output), read the JSONL file yourself to fill gaps.
+The `session-analyzer` agent returns a structured summary covering: decisions, learnings, user corrections, new entities, changed facts, preferences, and open items.
 
 For subagent session files (type=sub), skip individual analysis — they're covered through the main session context.
 

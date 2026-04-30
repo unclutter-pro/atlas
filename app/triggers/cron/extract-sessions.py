@@ -332,11 +332,27 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--list", action="store_true",
                         help="List session files with metadata only (no content extraction)")
+    parser.add_argument("--session", type=str, default=None,
+                        help="Extract a single session file (pre-processed for subagent analysis)")
     parser.add_argument("--exclude-trigger", action="append", default=[],
                         help="Exclude sessions from specific triggers (repeatable, e.g. --exclude-trigger dreaming)")
     args = parser.parse_args()
 
     max_chars = args.max_tokens * CHARS_PER_TOKEN
+
+    # --session mode: extract a single session file (pre-processed for subagent)
+    if args.session:
+        path = Path(args.session)
+        if not path.exists():
+            print(f"Session file not found: {path}", file=sys.stderr)
+            sys.exit(1)
+        session = parse_session(path)
+        if "error" in session:
+            print(f"Error parsing session: {session['error']}", file=sys.stderr)
+            sys.exit(1)
+        print(format_session_full(session))
+        sys.exit(0)
+
     files = find_session_files(args.hours, exclude_triggers=args.exclude_trigger)
 
     if not files:
