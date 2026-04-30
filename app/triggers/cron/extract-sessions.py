@@ -261,11 +261,38 @@ def format_session_condensed(session: dict) -> str:
     return f"- **{sid}**: {first_user or '(no user text)'} | Tools: {tools_str}\n"
 
 
+def format_session_index(session: dict, path: Path) -> str:
+    """Format a session as a one-line index entry with path (for --list mode)."""
+    if "error" in session or session["turn_count"] == 0:
+        return ""
+
+    sid = session["session_id"][:8]
+    tag = "sub" if session["is_subagent"] else "main"
+    turns = session["turn_count"]
+    time_range = ""
+    if session["first_ts"] and session["last_ts"]:
+        time_range = f"{session['first_ts'][:19]} → {session['last_ts'][:19]}"
+
+    top_tools = sorted(session["tool_counts"].items(), key=lambda x: -x[1])[:5]
+    tools_str = ", ".join(f"{n}({c})" for n, c in top_tools) if top_tools else "none"
+
+    # First user message as context
+    first_user = ""
+    for role, text, _ in session["turns"]:
+        if role == "user" and text:
+            first_user = text[:120].replace("\n", " ").strip()
+            break
+
+    return f"{tag} | {sid} | {turns} turns | {time_range} | {tools_str} | {first_user} | {path}\n"
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Extract recent sessions for dreaming")
     parser.add_argument("--hours", type=int, default=DEFAULT_HOURS)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    parser.add_argument("--list", action="store_true",
+                        help="List session files with metadata only (no content extraction)")
     args = parser.parse_args()
 
     max_chars = args.max_tokens * CHARS_PER_TOKEN
@@ -273,6 +300,19 @@ def main():
 
     if not files:
         print(f"No session files found in the last {args.hours} hours.")
+        sys.exit(0)
+
+    # --list mode: lightweight index of sessions with file paths
+    if args.list:
+        print(f"# Sessions from last {args.hours}h ({len(files)} files)\n")
+        print("type | id | turns | time | tools | context | path")
+        print("--- | --- | --- | --- | --- | --- | ---")
+        for f in files:
+            session = parse_session(f)
+            if session.get("turn_count", 0) > 0:
+                line = format_session_index(session, f)
+                if line:
+                    print(line, end="")
         sys.exit(0)
 
     sessions = [parse_session(f) for f in files]

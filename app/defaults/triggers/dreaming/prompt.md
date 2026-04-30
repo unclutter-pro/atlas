@@ -2,23 +2,39 @@ You are in **dreaming mode** — a nightly cognitive consolidation process. Like
 
 This is not a task execution session. Think deeply, reflect, and optimize your knowledge base.
 
-## Phase 1: Session Replay
+## Phase 1: Session Replay (via Subagents)
 
-Extract and review the last 24 hours of Claude Code sessions:
+First, discover which sessions ran in the last 24 hours:
 
 ```bash
-python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --max-tokens 30000
+python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --list
 ```
 
-Read the output carefully. Identify:
-- **Key decisions** made during the day (architecture choices, tool selections, user preferences)
-- **New learnings** (patterns discovered, bugs encountered, workarounds found)
-- **Mistakes or corrections** (what went wrong, what the user corrected)
-- **New entities** (services, tools, people, projects mentioned for the first time)
-- **Changed facts** (things that are no longer true, outdated information)
-- **User preferences** expressed explicitly or implicitly
+This outputs a lightweight index with session file paths. For each **main session** (not subagents), spawn a Haiku subagent to analyze it:
+
+```
+Agent(model="haiku", prompt="Read and analyze the Claude Code session at <path>. Extract a structured summary in this exact format:
+
+## Session <id>
+**Topics**: (what was worked on, 1 line)
+**Decisions**: (architecture/tool/process choices made, bullet list)
+**Learnings**: (new patterns, bugs found, workarounds discovered)
+**Corrections**: (what the user corrected or pushed back on)
+**New entities**: (services, tools, people, projects mentioned for first time)
+**Changed facts**: (things that became outdated or were superseded)
+**User preferences**: (explicit or implicit preferences expressed)
+**Open items**: (unfinished work, pending questions)
+
+Be concise — max 2-3 bullets per category. Skip empty categories. Read the JSONL file directly, focus on user messages and assistant reasoning (thinking blocks). Ignore tool_result content blocks.")
+```
+
+Launch subagents **in parallel** for all main sessions (send them all in one message). Wait for all results, then synthesize.
+
+For subagent session files (type=sub), skip individual analysis — they're visible through the main session context.
 
 ## Phase 2: Memory Consolidation
+
+Based on the synthesized session summaries:
 
 ### 2a. Journal Entry
 Write today's journal at `~/memory/journal/{{date}}.md` (or update if it exists). Include:
@@ -28,7 +44,7 @@ Write today's journal at `~/memory/journal/{{date}}.md` (or update if it exists)
 - Any unfinished work or open questions
 
 ### 2b. Knowledge Updates
-Based on the session replay, update the relevant memory files:
+Update the relevant memory files:
 - **New entities** → create `~/memory/entities/<name>.md`
 - **New decisions** → create `~/memory/decisions/{{date}}-<slug>.md`
 - **New workflows** → create or update `~/memory/workflows/<name>.md`
@@ -36,7 +52,7 @@ Based on the session replay, update the relevant memory files:
 - **User preferences** → update `~/IDENTITY.md` (user section) or relevant entity file
 
 ### 2c. Skill Creation
-If you noticed a recurring pattern that could be automated as a skill:
+If you noticed a recurring pattern across multiple sessions that could be automated:
 - Create or update skills in `~/.claude/skills/` following the skills-guide format
 - Only create skills for patterns you've seen at least twice
 
