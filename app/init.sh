@@ -311,18 +311,7 @@ else
   echo "  Database ready (schema + migrations applied)"
 fi
 
-# Ensure memory-cleanup trigger exists (idempotent)
-sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (
-  'memory-cleanup', 'cron', 'Daily memory file cleanup and organization', 'internal', '0 7 * * *', '', 'ephemeral');" || echo "  ⚠ memory-cleanup trigger insert failed (non-fatal)"
-
-# Create/update memory-cleanup trigger prompt
-mkdir -p "$WORKSPACE/triggers/memory-cleanup"
-if [ ! -f "$WORKSPACE/triggers/memory-cleanup/prompt.md" ]; then
-  cp /atlas/app/defaults/triggers/memory-cleanup/prompt.md "$WORKSPACE/triggers/memory-cleanup/prompt.md"
-  echo "  Created memory-cleanup trigger prompt"
-fi
-
-# Ensure dreaming trigger exists (nightly memory consolidation)
+# Ensure dreaming trigger exists (nightly memory consolidation — replaces legacy memory-cleanup)
 sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (
   'dreaming', 'cron', 'Nightly cognitive consolidation — session replay, memory cleanup, knowledge updates', 'internal', '0 3 * * *', '', 'ephemeral');" || echo "  ⚠ dreaming trigger insert failed (non-fatal)"
 

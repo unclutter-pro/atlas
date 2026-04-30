@@ -292,14 +292,6 @@ Prompt:         Run a system health check (disk, memory, services).
 
 ## Built-in Triggers
 
-### Memory Cleanup (Cron)
-
-Daily housekeeping for the memory filesystem. Validates frontmatter, enforces size limits on MEMORY.md, checks for broken wikilinks, and archives expired entries.
-
-- **Schedule:** `0 7 * * *` (daily at 07:00)
-- **Session Mode:** ephemeral
-- **Default prompt:** `app/defaults/triggers/memory-cleanup/prompt.md`
-
 ### Dreaming (Cron)
 
 Nightly cognitive consolidation — inspired by how memory consolidation works during sleep. Runs a multi-phase process:
