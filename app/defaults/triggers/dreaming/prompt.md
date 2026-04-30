@@ -52,9 +52,10 @@ Update the relevant memory files:
 - **User preferences** → update `~/IDENTITY.md` (user section) or relevant entity file
 
 ### 2c. Skill Creation
-If you noticed a recurring pattern across multiple sessions that could be automated:
+Skills are for **tool-specific knowledge** — when a particular tool or service must be operated in a specific, non-obvious way (e.g. kubeseal with certain flags, an API with a particular auth flow, a CLI with required argument patterns). If you noticed such a pattern across sessions:
 - Create or update skills in `~/.claude/skills/` following the skills-guide format
 - Only create skills for patterns you've seen at least twice
+- Don't create skills for general workflows or processes — those belong in `~/memory/workflows/`
 
 ## Phase 3: Memory Hygiene
 
