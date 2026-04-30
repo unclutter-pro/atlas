@@ -311,6 +311,9 @@ else
   echo "  Database ready (schema + migrations applied)"
 fi
 
+# Migration: remove legacy memory-cleanup trigger (replaced by dreaming)
+sqlite3 "$DB" "DELETE FROM triggers WHERE name = 'memory-cleanup';" 2>/dev/null || true
+
 # Ensure dreaming trigger exists (nightly memory consolidation — replaces legacy memory-cleanup)
 sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (
   'dreaming', 'cron', 'Nightly cognitive consolidation — session replay, memory cleanup, knowledge updates', 'internal', '0 3 * * *', '', 'ephemeral');" || echo "  ⚠ dreaming trigger insert failed (non-fatal)"
