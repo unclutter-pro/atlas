@@ -322,6 +322,17 @@ if [ ! -f "$WORKSPACE/triggers/memory-cleanup/prompt.md" ]; then
   echo "  Created memory-cleanup trigger prompt"
 fi
 
+# Ensure dreaming trigger exists (nightly memory consolidation)
+sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (
+  'dreaming', 'cron', 'Nightly cognitive consolidation — session replay, memory cleanup, knowledge updates', 'internal', '0 3 * * *', '', 'ephemeral');" || echo "  ⚠ dreaming trigger insert failed (non-fatal)"
+
+# Create dreaming trigger prompt
+mkdir -p "$WORKSPACE/triggers/dreaming"
+if [ ! -f "$WORKSPACE/triggers/dreaming/prompt.md" ]; then
+  cp /atlas/app/defaults/triggers/dreaming/prompt.md "$WORKSPACE/triggers/dreaming/prompt.md"
+  echo "  Created dreaming trigger prompt"
+fi
+
 # Ensure web-chat trigger exists (idempotent migration)
 sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, prompt, session_mode) VALUES (
   'web-chat', 'manual', 'Web UI chat message handler', 'web', '', 'persistent');" || echo "  ⚠ web-chat trigger insert failed (non-fatal)"
