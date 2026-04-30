@@ -7,30 +7,22 @@ This is not a task execution session. Think deeply, reflect, and optimize your k
 First, discover which sessions ran in the last 24 hours:
 
 ```bash
-python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup
+sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup
 ```
 
-This outputs a lightweight index with session file paths. For each **main session** (not subagents), spawn a Haiku subagent to analyze it:
+This outputs a lightweight index with session file paths. For each **main session** (not subagents), spawn a `session-analyzer` subagent:
 
 ```
-Agent(model="haiku", prompt="Read and analyze the Claude Code session at <path>. Extract a structured summary in this exact format:
-
-## Session <id>
-**Topics**: (what was worked on, 1 line)
-**Decisions**: (architecture/tool/process choices made, bullet list)
-**Learnings**: (new patterns, bugs found, workarounds discovered)
-**Corrections**: (what the user corrected or pushed back on)
-**New entities**: (services, tools, people, projects mentioned for first time)
-**Changed facts**: (things that became outdated or were superseded)
-**User preferences**: (explicit or implicit preferences expressed)
-**Open items**: (unfinished work, pending questions)
-
-Be concise — max 2-3 bullets per category. Skip empty categories. Read the JSONL file directly, focus on user messages and assistant reasoning (thinking blocks). Ignore tool_result content blocks.")
+Agent(subagent_type="session-analyzer", prompt="Analyze the session at: <path>")
 ```
 
-Launch subagents **in parallel** for all main sessions (send them all in one message). Wait for all results, then synthesize.
+Launch subagents **in parallel** for all main sessions (send them all in one message). Wait for all results.
 
-For subagent session files (type=sub), skip individual analysis — they're visible through the main session context.
+The `session-analyzer` agent is a Sonnet-based specialist that reads the full JSONL file and returns a structured summary covering: decisions, learnings, user corrections, new entities, changed facts, preferences, and open items. It's thorough — long sessions with many topics get proportionally detailed summaries.
+
+After receiving all summaries, synthesize them into a unified view. If a summary seems too thin for a large session (check turn count from the `--list` output), read the JSONL file yourself to fill gaps.
+
+For subagent session files (type=sub), skip individual analysis — they're covered through the main session context.
 
 ## Phase 2: Memory Consolidation
 
