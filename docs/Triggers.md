@@ -290,6 +290,30 @@ Prompt:         Run a system health check (disk, memory, services).
                 Otherwise, silently succeed.
 ```
 
+## Built-in Triggers
+
+### Dreaming (Cron)
+
+Nightly cognitive consolidation — inspired by how memory consolidation works during sleep. Runs a multi-phase process:
+
+1. **Session Replay** — Extracts the last 24h of Claude Code sessions using `extract-sessions.py`, identifying key decisions, learnings, mistakes, and new entities
+2. **Memory Consolidation** — Writes journal entries, creates/updates entity and decision files, discovers workflow patterns
+3. **Memory Hygiene** — Cleans redundancies, resolves broken wikilinks, archives stale entries, validates frontmatter
+4. **External Verification** — Checks current state of external resources (open PRs, deployments, task status)
+5. **Skill Creation** — Can create new skills from recurring patterns observed across sessions
+6. **Beads Hygiene** — Closes completed tasks, flags stale items, runs `bd doctor`
+
+- **Schedule:** `0 3 * * *` (daily at 03:00)
+- **Session Mode:** ephemeral
+- **Default prompt:** `app/defaults/triggers/dreaming/prompt.md`
+- **Session extractor:** `app/triggers/cron/extract-sessions.py`
+
+The session extractor (`extract-sessions.py`) parses JSONL session files, filtering out system messages and tool results to produce a condensed conversation summary within a configurable token budget:
+
+```bash
+python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --max-tokens 30000
+```
+
 ## Managing Triggers
 
 ### Web-UI

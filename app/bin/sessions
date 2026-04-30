@@ -1,0 +1,2 @@
+#!/bin/bash
+exec python3 /atlas/app/triggers/cron/extract-sessions.py "$@"
