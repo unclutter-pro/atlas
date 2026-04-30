@@ -33,9 +33,44 @@ ASSISTANT_MSG_LIMIT = 400
 MAX_TURNS_PER_SESSION = 40
 
 
-def find_session_files(hours: int) -> list[Path]:
-    """Find all JSONL session files modified within the last N hours."""
+def get_excluded_session_ids(exclude_triggers: list[str]) -> set[str]:
+    """Get session IDs associated with specific triggers (to exclude them)."""
+    if not exclude_triggers:
+        return set()
+
+    db_path = Path.home() / ".index" / "atlas.db"
+    if not db_path.exists():
+        return set()
+
+    excluded = set()
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        placeholders = ",".join("?" for _ in exclude_triggers)
+        # Check both trigger_sessions (persistent) and session_metrics (all)
+        for table, col in [("trigger_sessions", "session_id"), ("session_metrics", "session_id")]:
+            try:
+                rows = conn.execute(
+                    f"SELECT {col} FROM {table} WHERE trigger_name IN ({placeholders})",
+                    exclude_triggers,
+                ).fetchall()
+                excluded.update(row[0] for row in rows if row[0])
+            except Exception:
+                pass
+        conn.close()
+    except Exception:
+        pass
+    return excluded
+
+
+def find_session_files(hours: int, exclude_triggers: list[str] | None = None) -> list[Path]:
+    """Find all JSONL session files modified within the last N hours.
+
+    Optionally excludes sessions belonging to specific triggers (e.g. 'dreaming')
+    to prevent the dreaming process from analyzing its own previous runs.
+    """
     cutoff = time.time() - (hours * 3600)
+    excluded_ids = get_excluded_session_ids(exclude_triggers or [])
     files = []
 
     for project_dir in CLAUDE_PROJECTS_DIR.iterdir():
@@ -43,6 +78,10 @@ def find_session_files(hours: int) -> list[Path]:
             continue
         for f in project_dir.glob("*.jsonl"):
             if f.stat().st_mtime >= cutoff:
+                # Check if session ID is excluded
+                session_id = f.stem
+                if session_id in excluded_ids:
+                    continue
                 files.append(f)
         subagents_dir = project_dir / "subagents"
         if subagents_dir.exists():
@@ -293,10 +332,12 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--list", action="store_true",
                         help="List session files with metadata only (no content extraction)")
+    parser.add_argument("--exclude-trigger", action="append", default=[],
+                        help="Exclude sessions from specific triggers (repeatable, e.g. --exclude-trigger dreaming)")
     args = parser.parse_args()
 
     max_chars = args.max_tokens * CHARS_PER_TOKEN
-    files = find_session_files(args.hours)
+    files = find_session_files(args.hours, exclude_triggers=args.exclude_trigger)
 
     if not files:
         print(f"No session files found in the last {args.hours} hours.")
