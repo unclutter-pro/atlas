@@ -83,13 +83,14 @@ Skills are for **tool-specific knowledge** — when a particular tool or service
 
 ## Phase 4: External State Verification
 
-Check external resources that were relevant during the day's work. Use your judgment on what to verify — examples:
-- Open PRs on GitHub repos that were discussed → `gh pr list --repo <repo> --state open`
-- Deployment status of services that were modified
-- Any pending issues or tasks → `bd stale` and `bd orphans`
-- Beads task hygiene → close tasks that are done, flag stale ones
+Cross-check memory against external reality. The goal is **documentation accuracy** — ensure what's written in memory files actually matches the current state of the world.
 
-Update memory files with current state if anything changed.
+For any external resources referenced in today's sessions, verify that your memory documentation is correct:
+- Query current state (e.g. `gh pr list`, API calls, status checks)
+- Compare against what memory files claim
+- Fix any drift — update memory to reflect reality, not the other way around
+
+This is not monitoring. Don't check if things are "working" — check if your *records* about them are still true.
 
 ## Phase 5: Beads Hygiene
 
