@@ -1435,7 +1435,6 @@ export async function main(): Promise<void> {
       autoMemoryEnabled: false,
       cwd: HOME,
       ...(resumeId ? { resume: resumeId } : {}),
-      ...(sessionMode === "ephemeral" ? { persistSession: false } : {}),
       ...(CLAUDE_CODE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH } : {}),
     };
 
