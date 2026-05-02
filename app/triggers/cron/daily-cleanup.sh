@@ -14,4 +14,12 @@ SQL
   echo "[$(date)] DB pruned (30-day retention, 90-day metrics)"
 fi
 
+# Prune old JSONL session files (>7 days)
+# Dreaming runs at 03:00 and analyzes recent sessions, so by 06:00 they're consolidated.
+CLAUDE_DIR="$HOME/.claude/projects"
+if [ -d "$CLAUDE_DIR" ]; then
+  DELETED=$(find "$CLAUDE_DIR" -name "*.jsonl" -mtime +7 -delete -print 2>/dev/null | wc -l)
+  echo "[$(date)] JSONL pruned: $DELETED files older than 7 days removed"
+fi
+
 echo "[$(date)] Daily cleanup done" >> /atlas/logs/cleanup.log
