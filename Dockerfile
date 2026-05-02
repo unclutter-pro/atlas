@@ -93,6 +93,12 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && npm i -g @llamaindex/liteparse \
   # --- Beads (bd) — AI-native task management ---
   && npm i -g @beads/bd@0.63.3 \
+  # --- RTK (Rust Token Killer) — CLI proxy for 60-90% token savings ---
+  && RTK_VERSION="0.38.0" \
+  && if [ "$ARCH" = "arm64" ]; then RTK_ARCH="aarch64-unknown-linux-gnu"; else RTK_ARCH="x86_64-unknown-linux-musl"; fi \
+  && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_ARCH}.tar.gz" \
+  | tar -xz -C /usr/local/bin rtk \
+  && chmod +x /usr/local/bin/rtk \
   # --- Homebrew — installed directly into agent home dir for persistence ---
   && mkdir -p /home/agent/.homebrew \
   && curl -fsSL https://github.com/Homebrew/brew/tarball/master \
