@@ -137,6 +137,14 @@ const settings: Record<string, unknown> = {
         ],
       },
     ],
+    PreToolUse: [
+      {
+        matcher: "Bash",
+        hooks: [
+          { type: "command", command: "rtk hook claude" },
+        ],
+      },
+    ],
     SubagentStop: [
       {
         hooks: [
