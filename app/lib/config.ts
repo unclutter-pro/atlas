@@ -121,7 +121,7 @@ export type ConfigSource = "env" | "runtime" | "file" | "default";
 
 const DEFAULTS: AtlasConfig = {
   agent: { name: "Atlas", email: "" },
-  models: { main: "sonnet", trigger: "opus", cron: "sonnet", subagent_review: "sonnet", hooks: "haiku" },
+  models: { main: "sonnet", trigger: "sonnet", cron: "sonnet", subagent_review: "sonnet", hooks: "haiku" },
   memory: { load_memory_md: true, load_journal_days: 7 },
   signal: { number: "", history_turns: 20, whitelist: [] },
   email: {

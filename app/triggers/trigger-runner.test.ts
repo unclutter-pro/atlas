@@ -278,9 +278,10 @@ models:
   test("falls back to default model when config missing", () => {
     const emptyDir = makeTempDir();
     process.env.HOME = emptyDir;
-    // Default for trigger is "opus" from built-in defaults
+    // Default for trigger is "sonnet" from built-in defaults — escalate to opus only
+    // explicitly via config or per-trigger override.
     const model = resolveModel("", "trigger");
-    expect(model).toBe("opus");
+    expect(model).toBe("sonnet");
     rmSync(emptyDir, { recursive: true, force: true });
   });
 
@@ -299,9 +300,9 @@ models:
     const badDir = makeTempDir();
     writeFileSync(join(badDir, "config.yml"), "{ this is: not valid: yaml: [");
     process.env.HOME = badDir;
-    // Malformed YAML => falls back to defaults; trigger default is "opus"
+    // Malformed YAML => falls back to defaults; trigger default is "sonnet"
     const model = resolveModel("", "trigger");
-    expect(model).toBe("opus");
+    expect(model).toBe("sonnet");
     rmSync(badDir, { recursive: true, force: true });
   });
 });

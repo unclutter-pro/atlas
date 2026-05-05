@@ -418,7 +418,7 @@ export function resolveModel(
   const homeDir = process.env.HOME ?? "/home/agent";
   const config = resolveConfig(homeDir);
   const models = config.models as Record<string, string>;
-  return models[triggerType] ?? models["trigger"] ?? "opus";
+  return models[triggerType] ?? models["trigger"] ?? "sonnet";
 }
 
 /**

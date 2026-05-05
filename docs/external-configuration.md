@@ -38,7 +38,7 @@ All config.yml values can be overridden via `ATLAS_*` environment variables.
 
 | Variable | config.yml path | Default |
 |---|---|---|
-| `ATLAS_MODEL_TRIGGER` | `models.trigger` | `"opus"` |
+| `ATLAS_MODEL_TRIGGER` | `models.trigger` | `"sonnet"` |
 | `ATLAS_MODEL_CRON` | `models.cron` | `"sonnet"` |
 | `ATLAS_MODEL_SUBAGENT_REVIEW` | `models.subagent_review` | `"sonnet"` |
 | `ATLAS_MODEL_HOOKS` | `models.hooks` | `"haiku"` |
