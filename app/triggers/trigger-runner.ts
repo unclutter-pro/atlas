@@ -95,6 +95,32 @@ function resolveClaudeCodePath(): string | undefined {
 const CLAUDE_CODE_PATH = resolveClaudeCodePath();
 
 // ---------------------------------------------------------------------------
+// Tool policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Built-in Claude Code tools we never want a trigger session to see or use.
+ *
+ * settings.json `permissions.deny` only blocks execution — the model is still
+ * told the tool exists, which leaks into the system prompt. `disallowedTools`
+ * on the SDK query options removes the tool from the disclosure entirely.
+ *
+ * Keep in sync with the deny list in app/hooks/generate-settings.ts.
+ */
+const DISALLOWED_BUILTIN_TOOLS = [
+  // Cron management — exposed via dedicated trigger commands, not LLM tools
+  "CronCreate", "CronDelete", "CronList",
+  // Plan mode is a Claude Code interactive UX concept; trigger sessions are headless
+  "EnterPlanMode", "ExitPlanMode",
+  // Worktrees are managed by the harness, not by the agent
+  "EnterWorktree",
+  // Atlas tracks tasks via Beads, never via Claude Code's built-ins
+  "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+  // No interactive user-question loop in trigger sessions
+  "AskUserQuestion",
+];
+
+// ---------------------------------------------------------------------------
 // Message Channel (AsyncIterable + IPC socket for message injection)
 // ---------------------------------------------------------------------------
 
@@ -990,7 +1016,7 @@ export async function runDirect(
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     autoMemoryEnabled: false,
-    disallowedTools: ["CronCreate", "CronDelete", "CronList"],
+    disallowedTools: DISALLOWED_BUILTIN_TOOLS,
     cwd: HOME,
     ...(resumeId ? { resume: resumeId } : { persistSession: false }),
     ...(CLAUDE_CODE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH } : {}),
@@ -1433,6 +1459,7 @@ export async function main(): Promise<void> {
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       autoMemoryEnabled: false,
+      disallowedTools: DISALLOWED_BUILTIN_TOOLS,
       cwd: HOME,
       ...(resumeId ? { resume: resumeId } : {}),
       ...(CLAUDE_CODE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH } : {}),
