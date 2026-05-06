@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { sqliteToIso, isAgentTurnActive } from "./index";
+import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning } from "./index";
 
 describe("sqliteToIso", () => {
   test("converts SQLite UTC timestamp to ISO with Z", () => {
@@ -138,5 +138,21 @@ describe("isAgentTurnActive", () => {
     ];
     writeFileSync(path, lines.join("\n"));
     expect(isAgentTurnActive(path)).toBe(false);
+  });
+});
+
+describe("isClaudeProcessRunning", () => {
+  test("returns false for empty session ID", () => {
+    expect(isClaudeProcessRunning("")).toBe(false);
+  });
+
+  test("returns false for a session ID that is definitely not running", () => {
+    const fakeSession = "00000000-0000-0000-0000-deadbeefdead";
+    expect(isClaudeProcessRunning(fakeSession)).toBe(false);
+  });
+
+  test("does not throw on /proc absence (e.g. macOS dev environment)", () => {
+    // Just call it — readdir failures should swallow and return false
+    expect(() => isClaudeProcessRunning("any-session-id")).not.toThrow();
   });
 });

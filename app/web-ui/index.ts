@@ -314,13 +314,48 @@ function parseSessionMessages(filePath: string): ParsedMessage[] {
 }
 
 /**
+ * Check if a Claude Code process is currently running for the given session ID.
+ *
+ * Why we can't use the IPC socket (`/tmp/claudec-<id>.sock`): customer Atlas
+ * deployments invoke `/usr/bin/claude` directly — no `claudec` wrapper, no
+ * socket file. So the previous `existsSync(socketPath)` check never returned
+ * true on customer pods, which meant `isAgentRunning` was always false and
+ * the SSE `agent_started`/`agent_ended` events never fired. The chat frontend
+ * relied entirely on its 120s safety timeout to clear the typing indicator.
+ *
+ * Detect the active process by scanning `/proc/<pid>/cmdline` for the session
+ * UUID — `claude --resume <id>` puts the UUID in argv. UUIDs are unique
+ * enough that a substring match is reliable.
+ */
+export function isClaudeProcessRunning(sessionId: string): boolean {
+  if (!sessionId) return false;
+  let procDirs: string[];
+  try {
+    procDirs = readdirSync("/proc");
+  } catch {
+    return false; // not a Linux /proc filesystem
+  }
+  for (const dir of procDirs) {
+    // Skip non-pid entries (kernel threads, version, etc.)
+    if (!/^\d+$/.test(dir)) continue;
+    try {
+      const cmdline = readFileSync(`/proc/${dir}/cmdline`, "utf-8");
+      if (cmdline.includes(sessionId)) return true;
+    } catch {
+      // Process exited between readdir and read — skip
+    }
+  }
+  return false;
+}
+
+/**
  * Determine whether a Claude Code session is currently mid-turn (i.e. the
  * agent owes a response) based on the JSONL tail.
  *
- * Why this is needed: `claudec` keeps its IPC socket alive for the entire
- * chat lifetime — not just per-turn. So a socket-existence check tells us
- * the process is up, not whether it's currently producing a response. Result:
- * the chat UI's typing indicator stays on forever after the agent finishes.
+ * Used as a secondary signal alongside `isClaudeProcessRunning`. Helps when
+ * the process check has a brief gap (e.g. claude just exited but next
+ * message is queued) — if the JSONL says the last entry is `user` or an
+ * assistant `tool_use`, more work is pending.
  *
  * Rule: the agent is "working" if the last user/assistant entry is either
  *   - a `user` message (fresh prompt or tool_result waiting for response), OR
@@ -929,11 +964,12 @@ app.get("/chat/conversation", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
-    const socketAlive = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
-    // Socket alone is insufficient — claudec persists between turns. Combine
-    // with JSONL turn-state to detect whether the agent owes a response.
-    isRunning = socketAlive && isAgentTurnActive(filePath);
+    // Primary signal: a `claude --resume <session>` process is currently
+    // running (works for both `claudec` IPC sockets and direct invocations).
+    // Secondary signal: JSONL last entry indicates a pending turn — covers
+    // the gap between trigger fire and process startup.
+    isRunning = isClaudeProcessRunning(session.session_id) || isAgentTurnActive(filePath);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate, not real user text
@@ -1835,11 +1871,12 @@ api.get("/chat/messages", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
-    const socketAlive = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
-    // Socket alone is insufficient — claudec persists between turns. Combine
-    // with JSONL turn-state to detect whether the agent owes a response.
-    isRunning = socketAlive && isAgentTurnActive(filePath);
+    // Primary signal: a `claude --resume <session>` process is currently
+    // running (works for both `claudec` IPC sockets and direct invocations).
+    // Secondary signal: JSONL last entry indicates a pending turn — covers
+    // the gap between trigger fire and process startup.
+    isRunning = isClaudeProcessRunning(session.session_id) || isAgentTurnActive(filePath);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate
@@ -1930,12 +1967,12 @@ api.get("/chat/stream", (c) => {
             let assistantMsgs: ParsedMessage[] = [];
             let isRunning = false;
             if (session) {
-              const socketAlive = existsSync(`/tmp/claudec-${session.session_id}.sock`);
               const filePath = findSessionFile(session.session_id);
-              // Socket alone is insufficient — claudec persists between turns.
-              // Combine with JSONL turn-state to detect whether the agent owes
-              // a response (otherwise the typing indicator never clears).
-              isRunning = socketAlive && isAgentTurnActive(filePath);
+              // Primary signal: a `claude --resume <session>` process is
+              // currently running. Secondary signal: JSONL last entry shows a
+              // pending turn — covers the gap between trigger fire and
+              // process startup, plus tool_use waiting on results.
+              isRunning = isClaudeProcessRunning(session.session_id) || isAgentTurnActive(filePath);
               if (filePath) {
                 const all = parseSessionMessages(filePath);
                 assistantMsgs = all.filter(m => m.type !== "user-text");
