@@ -17,10 +17,21 @@
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKResultMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  SDKResultMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
 import { createHash } from "crypto";
-import { existsSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, mkdirSync, readdirSync, statSync } from "fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  unlinkSync,
+  readdirSync,
+  statSync,
+} from "fs";
 import os from "node:os";
 import { createConnection, createServer } from "net";
 import type { Server } from "net";
@@ -109,13 +120,23 @@ const CLAUDE_CODE_PATH = resolveClaudeCodePath();
  */
 const DISALLOWED_BUILTIN_TOOLS = [
   // Cron management — exposed via dedicated trigger commands, not LLM tools
-  "CronCreate", "CronDelete", "CronList",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  // Scheduling - we have reminder cli for that
+  "ScheduleWakeup",
   // Plan mode is a Claude Code interactive UX concept; trigger sessions are headless
-  "EnterPlanMode", "ExitPlanMode",
+  "EnterPlanMode",
+  "ExitPlanMode",
   // Worktrees are managed by the harness, not by the agent
   "EnterWorktree",
+  "ExitWorktree",
   // Atlas tracks tasks via Beads, never via Claude Code's built-ins
-  "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+  "TodoWrite",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskList",
+  "TaskGet",
   // No interactive user-question loop in trigger sessions
   "AskUserQuestion",
 ];
@@ -125,7 +146,10 @@ const DISALLOWED_BUILTIN_TOOLS = [
 // ---------------------------------------------------------------------------
 
 /** Default idle timeout: 5 minutes of no new messages → session ends */
-const IDLE_TIMEOUT_MS = parseInt(process.env.TRIGGER_IDLE_TIMEOUT ?? "300000", 10);
+const IDLE_TIMEOUT_MS = parseInt(
+  process.env.TRIGGER_IDLE_TIMEOUT ?? "300000",
+  10,
+);
 
 /** Socket message protocol: newline-delimited JSON */
 export type SocketMessage = {
@@ -144,7 +168,10 @@ export type SocketAck = {
  * Returns an AsyncGenerator that yields SDKUserMessages and a push function for injection.
  * The generator will return (end) after idleTimeoutMs of inactivity.
  */
-export function createMessageChannel(sessionId: string, idleTimeoutMs = IDLE_TIMEOUT_MS) {
+export function createMessageChannel(
+  sessionId: string,
+  idleTimeoutMs = IDLE_TIMEOUT_MS,
+) {
   type Waiter = { resolve: (msg: SDKUserMessage) => void };
   const waiters: Waiter[] = [];
   const pending: SDKUserMessage[] = [];
@@ -221,7 +248,10 @@ export function getSocketPath(triggerName: string, sessionKey: string): string {
   const candidate = `/tmp/.trigger-${triggerName}-${safeKey}.sock`;
   // Unix domain sockets have a 108-char path limit; hash long keys to stay under
   if (candidate.length > 104) {
-    const hash = createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16);
+    const hash = createHash("sha256")
+      .update(`${triggerName}-${sessionKey}`)
+      .digest("hex")
+      .slice(0, 16);
     return `/tmp/.trigger-${triggerName}-${hash}.sock`;
   }
   return candidate;
@@ -237,11 +267,13 @@ export function getSocketPath(triggerName: string, sessionKey: string): string {
 export function startSocketServer(
   socketPath: string,
   pushFn: (text: string) => void,
-  logger?: { log: (msg: string) => void }
+  logger?: { log: (msg: string) => void },
 ): Server {
   // Clean up stale socket file
   if (existsSync(socketPath)) {
-    try { unlinkSync(socketPath); } catch {}
+    try {
+      unlinkSync(socketPath);
+    } catch {}
   }
 
   const server = createServer((conn) => {
@@ -257,7 +289,9 @@ export function startSocketServer(
       try {
         const msg = JSON.parse(line) as SocketMessage;
         pushFn(msg.message);
-        logger?.log(`Socket: injected message from ${msg.channel}/${msg.sessionKey}`);
+        logger?.log(
+          `Socket: injected message from ${msg.channel}/${msg.sessionKey}`,
+        );
         const ack: SocketAck = { ok: true };
         conn.write(JSON.stringify(ack) + "\n");
       } catch (err) {
@@ -281,7 +315,7 @@ export async function trySocketInject(
   socketPath: string,
   message: string,
   channel: string,
-  sessionKey: string
+  sessionKey: string,
 ): Promise<boolean> {
   if (!existsSync(socketPath)) return false;
 
@@ -317,10 +351,14 @@ export async function trySocketInject(
  */
 export function cleanupSocket(server: Server | null, socketPath: string): void {
   if (server) {
-    try { server.close(); } catch {}
+    try {
+      server.close();
+    } catch {}
   }
   if (existsSync(socketPath)) {
-    try { unlinkSync(socketPath); } catch {}
+    try {
+      unlinkSync(socketPath);
+    } catch {}
   }
 }
 
@@ -355,10 +393,13 @@ function makeLogger(triggerName: string) {
  * - /atlas/app/prompts/trigger-channel-{channel}.md
  * - All .md files in ATLAS_PROMPT_EXTENSIONS_DIR (if set)
  */
-export function buildSystemPrompt(channel: string, options?: {
-  appDir?: string;
-  workspace?: string;
-}): string {
+export function buildSystemPrompt(
+  channel: string,
+  options?: {
+    appDir?: string;
+    workspace?: string;
+  },
+): string {
   const appDir = options?.appDir ?? APP_DIR;
   const workspace = options?.workspace ?? WORKSPACE;
   const promptDir = `${appDir}/prompts`;
@@ -394,12 +435,12 @@ export function buildSystemPrompt(channel: string, options?: {
   if (extensionsDir) {
     try {
       const files = readdirSync(extensionsDir)
-        .filter(f => f.endsWith('.md'))
+        .filter((f) => f.endsWith(".md"))
         .sort();
       for (const file of files) {
-        const content = readFileSync(join(extensionsDir, file), 'utf-8');
+        const content = readFileSync(join(extensionsDir, file), "utf-8");
         if (content.trim()) {
-          systemPrompt += '\n\n' + content.trim();
+          systemPrompt += "\n\n" + content.trim();
         }
       }
     } catch {
@@ -439,7 +480,7 @@ export function buildSystemPrompt(channel: string, options?: {
 export function resolveModel(
   _configPath: string,
   triggerType: string,
-  _extraCandidates?: string[]
+  _extraCandidates?: string[],
 ): string {
   const homeDir = process.env.HOME ?? "/home/agent";
   const config = resolveConfig(homeDir);
@@ -458,16 +499,15 @@ export function getMcpServers(): Record<string, Record<string, unknown>> {
   const servers: Record<string, Record<string, unknown>> = {};
 
   // Load user MCP servers from config files
-  const userConfigPaths = [
-    `${HOME}/.atlas-mcp/user.json`,
-    `${HOME}/.mcp.json`,
-  ];
+  const userConfigPaths = [`${HOME}/.atlas-mcp/user.json`, `${HOME}/.mcp.json`];
 
   for (const configPath of userConfigPaths) {
     if (!existsSync(configPath)) continue;
     try {
       const raw = readFileSync(configPath, "utf8");
-      const config = JSON.parse(raw) as { mcpServers?: Record<string, Record<string, unknown>> };
+      const config = JSON.parse(raw) as {
+        mcpServers?: Record<string, Record<string, unknown>>;
+      };
       if (!config.mcpServers) continue;
       for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
         // Skip URL-based servers (cause silent exit issues)
@@ -491,7 +531,7 @@ export function getMcpServers(): Record<string, Record<string, unknown>> {
  */
 export function safePlaceholderReplace(
   template: string,
-  vars: Record<string, string>
+  vars: Record<string, string>,
 ): string {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
@@ -505,10 +545,15 @@ export function safePlaceholderReplace(
  * Read a trigger's config from the SQLite database.
  * Returns null if not found or disabled.
  */
-export function readTriggerConfig(db: Database, name: string): TriggerConfig | null {
-  const row = db.prepare(
-    "SELECT id, name, type, channel, prompt, session_mode, enabled FROM triggers WHERE name = ? LIMIT 1"
-  ).get(name) as TriggerConfig | undefined;
+export function readTriggerConfig(
+  db: Database,
+  name: string,
+): TriggerConfig | null {
+  const row = db
+    .prepare(
+      "SELECT id, name, type, channel, prompt, session_mode, enabled FROM triggers WHERE name = ? LIMIT 1",
+    )
+    .get(name) as TriggerConfig | undefined;
   return row ?? null;
 }
 
@@ -525,10 +570,7 @@ export function readUsageReportingConfig(): UsageReportingConfig {
   };
 
   // 1. Try config.yml files
-  const candidates = [
-    `${HOME}/config.yml`,
-    `${APP_DIR}/defaults/config.yml`,
-  ];
+  const candidates = [`${HOME}/config.yml`, `${APP_DIR}/defaults/config.yml`];
 
   let result = { ...defaults };
   for (const candidate of candidates) {
@@ -536,7 +578,9 @@ export function readUsageReportingConfig(): UsageReportingConfig {
     try {
       const raw = readFileSync(candidate, "utf8");
       const config = yaml.load(raw) as Record<string, unknown> | null;
-      const section = config?.usage_reporting as Partial<UsageReportingConfig> | undefined;
+      const section = config?.usage_reporting as
+        | Partial<UsageReportingConfig>
+        | undefined;
       if (section) {
         result = {
           enabled: section.enabled ?? defaults.enabled,
@@ -580,7 +624,9 @@ async function deliverWebhook(
   payloadJson: string,
   secret: string | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
   if (secret) {
     // x-atlas-secret: used by Unclutter's authenticateAtlasRequest() to identify the container
     headers["x-atlas-secret"] = secret;
@@ -597,14 +643,20 @@ async function deliverWebhook(
     }
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
 /**
  * Build the webhook payload from metrics data.
  */
-function buildWebhookPayload(config: UsageReportingConfig, data: MetricsData): string {
+function buildWebhookPayload(
+  config: UsageReportingConfig,
+  data: MetricsData,
+): string {
   // Payload keys match Unclutter's /api/usage/session expected fields (camelCase)
   const payload: Record<string, unknown> = {
     event: "session.completed",
@@ -642,7 +694,11 @@ export async function sendUsageWebhook(
   if (!config.enabled || !config.webhook_url) return;
 
   const payloadJson = buildWebhookPayload(config, data);
-  const result = await deliverWebhook(config.webhook_url, payloadJson, config.webhook_secret || null);
+  const result = await deliverWebhook(
+    config.webhook_url,
+    payloadJson,
+    config.webhook_secret || null,
+  );
 
   if (result.ok) {
     log.log(`Usage webhook sent (${data.durationMs}ms session)`);
@@ -656,8 +712,13 @@ export async function sendUsageWebhook(
     try {
       db.prepare(
         `INSERT INTO webhook_queue (url, payload, secret, attempts, last_error, next_retry_at)
-         VALUES (?, ?, ?, 1, ?, datetime('now', '+2 minutes'))`
-      ).run(config.webhook_url, payloadJson, config.webhook_secret || null, result.error);
+         VALUES (?, ?, ?, 1, ?, datetime('now', '+2 minutes'))`,
+      ).run(
+        config.webhook_url,
+        payloadJson,
+        config.webhook_secret || null,
+        result.error,
+      );
     } catch {
       log.log("Failed to queue webhook for retry");
     }
@@ -674,13 +735,21 @@ export async function flushWebhookQueue(
 ): Promise<void> {
   const BACKOFF_MINUTES = [2, 10, 30, 120, 360];
 
-  let pending: Array<{ id: number; url: string; payload: string; secret: string | null; attempts: number }>;
+  let pending: Array<{
+    id: number;
+    url: string;
+    payload: string;
+    secret: string | null;
+    attempts: number;
+  }>;
   try {
-    pending = db.prepare(
-      `SELECT id, url, payload, secret, attempts FROM webhook_queue
+    pending = db
+      .prepare(
+        `SELECT id, url, payload, secret, attempts FROM webhook_queue
        WHERE attempts <= ? AND next_retry_at <= datetime('now')
-       ORDER BY created_at ASC LIMIT 20`
-    ).all(MAX_WEBHOOK_ATTEMPTS) as typeof pending;
+       ORDER BY created_at ASC LIMIT 20`,
+      )
+      .all(MAX_WEBHOOK_ATTEMPTS) as typeof pending;
   } catch {
     return; // Table may not exist yet in older DBs
   }
@@ -698,21 +767,30 @@ export async function flushWebhookQueue(
       const nextAttempt = item.attempts + 1;
       if (nextAttempt > MAX_WEBHOOK_ATTEMPTS) {
         db.prepare("DELETE FROM webhook_queue WHERE id = ?").run(item.id);
-        log.log(`Queued webhook #${item.id} failed permanently after ${item.attempts} attempts — dropped`);
+        log.log(
+          `Queued webhook #${item.id} failed permanently after ${item.attempts} attempts — dropped`,
+        );
       } else {
-        const delayMin = BACKOFF_MINUTES[Math.min(nextAttempt - 1, BACKOFF_MINUTES.length - 1)];
+        const delayMin =
+          BACKOFF_MINUTES[
+            Math.min(nextAttempt - 1, BACKOFF_MINUTES.length - 1)
+          ];
         db.prepare(
           `UPDATE webhook_queue SET attempts = ?, last_error = ?, next_retry_at = datetime('now', '+${delayMin} minutes')
-           WHERE id = ?`
+           WHERE id = ?`,
         ).run(nextAttempt, result.error, item.id);
-        log.log(`Queued webhook #${item.id} retry ${nextAttempt}/${MAX_WEBHOOK_ATTEMPTS} — next in ${delayMin}m`);
+        log.log(
+          `Queued webhook #${item.id} retry ${nextAttempt}/${MAX_WEBHOOK_ATTEMPTS} — next in ${delayMin}m`,
+        );
       }
     }
   }
 
   // Cleanup: remove entries older than 7 days regardless of status
   try {
-    db.prepare("DELETE FROM webhook_queue WHERE created_at < datetime('now', '-7 days')").run();
+    db.prepare(
+      "DELETE FROM webhook_queue WHERE created_at < datetime('now', '-7 days')",
+    ).run();
   } catch {}
 }
 
@@ -720,13 +798,15 @@ export async function flushWebhookQueue(
  * Write session metrics to the session_metrics table.
  */
 export function recordMetrics(db: Database, data: MetricsData): void {
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR IGNORE INTO session_metrics
       (session_type, session_id, trigger_name, started_at, ended_at,
        duration_ms, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, cost_usd, num_turns, is_error)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     data.sessionType,
     data.sessionId,
     data.triggerName,
@@ -739,10 +819,9 @@ export function recordMetrics(db: Database, data: MetricsData): void {
     data.cacheCreationTokens,
     data.costUsd,
     data.numTurns,
-    data.isError ? 1 : 0
+    data.isError ? 1 : 0,
   );
 }
-
 
 /**
  * Attempt to inject a message into a running Claude session via IPC socket.
@@ -750,7 +829,7 @@ export function recordMetrics(db: Database, data: MetricsData): void {
  */
 export async function tryIpcInject(
   sessionId: string,
-  message: string
+  message: string,
 ): Promise<boolean> {
   const socketPath = `/tmp/claudec-${sessionId}.sock`;
 
@@ -784,7 +863,9 @@ export function disableRemoteMcp(): void {
     if (!data.cachedGrowthBookFeatures) {
       data.cachedGrowthBookFeatures = {};
     }
-    (data.cachedGrowthBookFeatures as Record<string, unknown>).tengu_claudeai_mcp_connectors = false;
+    (
+      data.cachedGrowthBookFeatures as Record<string, unknown>
+    ).tengu_claudeai_mcp_connectors = false;
     writeFileSync(CLAUDE_JSON, JSON.stringify(data, null, 2));
   } catch {
     // Non-fatal — proceed anyway
@@ -794,7 +875,10 @@ export function disableRemoteMcp(): void {
 /**
  * Find the JSONL file for a session across all project directories.
  */
-export function findSessionJsonl(sessionId: string, homeDir?: string): string | null {
+export function findSessionJsonl(
+  sessionId: string,
+  homeDir?: string,
+): string | null {
   const base = homeDir ?? HOME;
   const projectsDir = `${base}/.claude/projects`;
 
@@ -817,7 +901,10 @@ export function findSessionJsonl(sessionId: string, homeDir?: string): string | 
  * Check if a session's JSONL file ends with a "queue-operation" entry,
  * which indicates the container was killed mid-IPC-inject (corrupted state).
  */
-export function checkCorruptedSession(sessionId: string, homeDir?: string): boolean {
+export function checkCorruptedSession(
+  sessionId: string,
+  homeDir?: string,
+): boolean {
   const jsonlPath = findSessionJsonl(sessionId, homeDir);
   if (!jsonlPath) return false;
 
@@ -837,7 +924,10 @@ export function checkCorruptedSession(sessionId: string, homeDir?: string): bool
  * Check if a session is stale (no JSONL activity for longer than threshold).
  * Returns idle seconds, or 0 if the session is fresh or JSONL not found.
  */
-export function getSessionIdleSeconds(sessionId: string, homeDir?: string): number {
+export function getSessionIdleSeconds(
+  sessionId: string,
+  homeDir?: string,
+): number {
   const jsonlPath = findSessionJsonl(sessionId, homeDir);
   if (!jsonlPath) return 0;
 
@@ -850,7 +940,10 @@ export function getSessionIdleSeconds(sessionId: string, homeDir?: string): numb
 }
 
 /** Default: 10 minutes of no JSONL activity = stale (was 30min, reduced for faster frozen session detection) */
-const STALE_SESSION_THRESHOLD_S = parseInt(process.env.STALE_SESSION_THRESHOLD ?? "600", 10);
+const STALE_SESSION_THRESHOLD_S = parseInt(
+  process.env.STALE_SESSION_THRESHOLD ?? "600",
+  10,
+);
 
 /**
  * Kill a running Claude session by finding and terminating the process owning its socket.
@@ -866,7 +959,9 @@ function killSessionProcess(sessionId: string): void {
     for (const pidStr of pids) {
       const pid = parseInt(pidStr, 10);
       if (!isNaN(pid)) {
-        try { process.kill(pid, "SIGTERM"); } catch {}
+        try {
+          process.kill(pid, "SIGTERM");
+        } catch {}
       }
     }
   } catch {
@@ -874,7 +969,9 @@ function killSessionProcess(sessionId: string): void {
   }
 
   // Clean up socket file
-  try { unlinkSync(socketPath); } catch {}
+  try {
+    unlinkSync(socketPath);
+  } catch {}
 }
 
 /**
@@ -883,7 +980,7 @@ function killSessionProcess(sessionId: string): void {
  */
 export async function runMiddlewareFilter(
   triggerName: string,
-  payload: string
+  payload: string,
 ): Promise<boolean> {
   const filterScript = `${WORKSPACE}/triggers/${triggerName}/filter.sh`;
   if (!existsSync(filterScript)) return true;
@@ -915,7 +1012,7 @@ function buildInjectMessage(
   triggerName: string,
   sessionKey: string,
   payload: string,
-  promptFallback: string
+  promptFallback: string,
 ): string {
   const candidates = [
     `${PROMPT_DIR}/trigger-${channel}-inject.md`,
@@ -967,7 +1064,7 @@ export type RunDirectOptions = {
  */
 export async function runDirect(
   prompt: string,
-  options?: RunDirectOptions
+  options?: RunDirectOptions,
 ): Promise<void> {
   const channel = options?.channel ?? "internal";
   const modelKey = options?.modelKey ?? "trigger";
@@ -1000,7 +1097,8 @@ export async function runDirect(
     }
   }
 
-  const triggerTimeout = parseInt(process.env.TRIGGER_TIMEOUT ?? "3600", 10) * 1000;
+  const triggerTimeout =
+    parseInt(process.env.TRIGGER_TIMEOUT ?? "3600", 10) * 1000;
 
   log.log(`Direct session starting (channel=${channel}, model=${model})`);
 
@@ -1019,7 +1117,9 @@ export async function runDirect(
     disallowedTools: DISALLOWED_BUILTIN_TOOLS,
     cwd: HOME,
     ...(resumeId ? { resume: resumeId } : { persistSession: false }),
-    ...(CLAUDE_CODE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH } : {}),
+    ...(CLAUDE_CODE_PATH
+      ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
+      : {}),
   };
 
   const q = query({ prompt, options: queryOptions });
@@ -1044,7 +1144,9 @@ export async function runDirect(
   }
 
   if (resultMsg && "result" in resultMsg) {
-    log.log(`Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`);
+    log.log(
+      `Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`,
+    );
   }
   log.log(`Direct session done (error=${isError})`);
 }
@@ -1056,7 +1158,9 @@ export async function runDirect(
 export async function main(): Promise<void> {
   // --- Pause guard: skip execution if Atlas is paused ---
   if (existsSync(join(HOME, ".atlas-paused"))) {
-    console.log(`[${new Date().toISOString()}] Atlas is paused, skipping trigger execution`);
+    console.log(
+      `[${new Date().toISOString()}] Atlas is paused, skipping trigger execution`,
+    );
     process.exit(0);
   }
 
@@ -1066,7 +1170,9 @@ export async function main(): Promise<void> {
   if (args[0] === "--direct") {
     const prompt = args[1];
     if (!prompt) {
-      console.error("Usage: trigger-runner.ts --direct \"<prompt>\" [--channel <channel>] [--model-key <key>] [--resume <session-id>]");
+      console.error(
+        'Usage: trigger-runner.ts --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>]',
+      );
       process.exit(1);
     }
 
@@ -1091,8 +1197,12 @@ export async function main(): Promise<void> {
   const [triggerName, payload = "", sessionKeyArg] = args;
 
   if (!triggerName) {
-    console.error("Usage: trigger-runner.ts <trigger-name> [payload] [session-key]");
-    console.error("       trigger-runner.ts --direct \"<prompt>\" [--channel <channel>]");
+    console.error(
+      "Usage: trigger-runner.ts <trigger-name> [payload] [session-key]",
+    );
+    console.error(
+      '       trigger-runner.ts --direct "<prompt>" [--channel <channel>]',
+    );
     process.exit(1);
   }
 
@@ -1100,7 +1210,9 @@ export async function main(): Promise<void> {
 
   // --- Open DB ---
   if (!existsSync(DB_PATH)) {
-    console.error(`[${new Date().toISOString()}] ERROR: Database not found: ${DB_PATH}`);
+    console.error(
+      `[${new Date().toISOString()}] ERROR: Database not found: ${DB_PATH}`,
+    );
     process.exit(1);
   }
   const db = openDb();
@@ -1115,7 +1227,9 @@ export async function main(): Promise<void> {
   // --- Read trigger config ---
   const config = readTriggerConfig(db, triggerName);
   if (!config) {
-    console.error(`[${new Date().toISOString()}] Trigger not found: ${triggerName}`);
+    console.error(
+      `[${new Date().toISOString()}] Trigger not found: ${triggerName}`,
+    );
     process.exit(1);
   }
 
@@ -1151,7 +1265,7 @@ export async function main(): Promise<void> {
 
   // --- Update trigger stats ---
   db.prepare(
-    "UPDATE triggers SET last_run = datetime('now'), run_count = run_count + 1 WHERE name = ?"
+    "UPDATE triggers SET last_run = datetime('now'), run_count = run_count + 1 WHERE name = ?",
   ).run(triggerName);
 
   // --- Persistent session: try IPC injection first ---
@@ -1163,33 +1277,40 @@ export async function main(): Promise<void> {
     if (!existsSync(projectsDir)) return false;
     try {
       for (const dir of readdirSync(projectsDir)) {
-        if (existsSync(join(projectsDir, dir, `${sessionId}.jsonl`))) return true;
+        if (existsSync(join(projectsDir, dir, `${sessionId}.jsonl`)))
+          return true;
       }
     } catch {}
     return false;
   }
 
   if (sessionMode === "persistent") {
-    const sessionRow = db.prepare(
-      "SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1"
-    ).get(triggerName, sessionKey) as { session_id: string } | undefined;
+    const sessionRow = db
+      .prepare(
+        "SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1",
+      )
+      .get(triggerName, sessionKey) as { session_id: string } | undefined;
 
     existingSession = sessionRow?.session_id ?? null;
 
     // Guard: corrupted session (killed mid-IPC-inject)
     if (existingSession && checkCorruptedSession(existingSession)) {
-      log.log(`Corrupted session ${existingSession} (ended mid-IPC-inject) — clearing, will start fresh`);
+      log.log(
+        `Corrupted session ${existingSession} (ended mid-IPC-inject) — clearing, will start fresh`,
+      );
       db.prepare(
-        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
       ).run(triggerName, sessionKey);
       existingSession = null;
     }
 
     // Guard: session file doesn't exist — clear stale session entry
     if (existingSession && !sessionFileExists(existingSession)) {
-      log.log(`Session file missing for ${existingSession} — clearing, will start fresh`);
+      log.log(
+        `Session file missing for ${existingSession} — clearing, will start fresh`,
+      );
       db.prepare(
-        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
       ).run(triggerName, sessionKey);
       existingSession = null;
     }
@@ -1203,24 +1324,39 @@ export async function main(): Promise<void> {
 
       if (idleSeconds >= STALE_SESSION_THRESHOLD_S && claudeSocketAlive) {
         // Session is running but stale — kill it, then resume with notice
-        log.log(`Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killing process`);
+        log.log(
+          `Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killing process`,
+        );
         killSessionProcess(existingSession);
         staleRecovery = true;
       } else {
         // Session might be alive — try injection
         // Prefer custom socket (goes through message channel, keeps session alive)
         // over Claude IPC (message may be queued but lost if session is ending)
-        const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
+        const injectMsg = buildInjectMessage(
+          channel,
+          triggerName,
+          sessionKey,
+          payload,
+          prompt,
+        );
 
         // 1. Try custom socket first (most reliable — message channel managed)
         // Pre-check: skip injection entirely if session is clearly stale
         // (custom socket may still be alive but session frozen)
         if (idleSeconds >= STALE_SESSION_THRESHOLD_S) {
-          log.log(`Session ${existingSession} is stale (idle ${Math.round(idleSeconds)}s) — killing before injection`);
+          log.log(
+            `Session ${existingSession} is stale (idle ${Math.round(idleSeconds)}s) — killing before injection`,
+          );
           killSessionProcess(existingSession);
           staleRecovery = true;
         } else {
-          const socketInjected = await trySocketInject(customSocketPath, injectMsg, channel, sessionKey);
+          const socketInjected = await trySocketInject(
+            customSocketPath,
+            injectMsg,
+            channel,
+            sessionKey,
+          );
           if (socketInjected) {
             // Verify session is processing — check if JSONL has new activity within timeout
             const jsonlPath = findSessionJsonl(existingSession);
@@ -1229,16 +1365,28 @@ export async function main(): Promise<void> {
             // Brief wait for session to start processing
             await Bun.sleep(2000);
 
-            const mtimeAfter = jsonlPath ? (() => { try { return statSync(jsonlPath).mtimeMs; } catch { return 0; } })() : 0;
+            const mtimeAfter = jsonlPath
+              ? (() => {
+                  try {
+                    return statSync(jsonlPath).mtimeMs;
+                  } catch {
+                    return 0;
+                  }
+                })()
+              : 0;
 
             if (mtimeAfter > mtimeBefore) {
               // Session is actively responding
-              log.log(`Injected via custom socket into session ${existingSession} (key=${sessionKey})`);
+              log.log(
+                `Injected via custom socket into session ${existingSession} (key=${sessionKey})`,
+              );
               process.exit(0);
             }
 
             // Session accepted injection but is frozen — kill and resume
-            log.log(`Session ${existingSession} accepted socket injection but appears frozen (no JSONL activity) — killing`);
+            log.log(
+              `Session ${existingSession} accepted socket injection but appears frozen (no JSONL activity) — killing`,
+            );
             killSessionProcess(existingSession);
             staleRecovery = true;
           }
@@ -1254,17 +1402,23 @@ export async function main(): Promise<void> {
               // causing the message to be accepted but never processed.
               await Bun.sleep(300);
               if (existsSync(claudeSocketPath)) {
-                log.log(`Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`);
+                log.log(
+                  `Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`,
+                );
                 process.exit(0);
               }
               // Session died right after injection — message likely lost
-              log.log(`Session ${existingSession} died after IPC injection — message may be lost, will resume`);
+              log.log(
+                `Session ${existingSession} died after IPC injection — message may be lost, will resume`,
+              );
               db.prepare(
-                "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+                "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
               ).run(triggerName, sessionKey);
               existingSession = null;
             } else {
-              log.log(`Both injection methods failed for ${existingSession}, will resume`);
+              log.log(
+                `Both injection methods failed for ${existingSession}, will resume`,
+              );
             }
           }
           // No sockets available — fall through to resume
@@ -1285,9 +1439,10 @@ export async function main(): Promise<void> {
   const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
   const flockCandidate = `/tmp/.trigger-${triggerName}-${safeKey}.flock`;
   // Keep flock paths consistent with socket paths when keys are long
-  const flockFile = flockCandidate.length > 108
-    ? `/tmp/.trigger-${triggerName}-${createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16)}.flock`
-    : flockCandidate;
+  const flockFile =
+    flockCandidate.length > 108
+      ? `/tmp/.trigger-${triggerName}-${createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16)}.flock`
+      : flockCandidate;
 
   // Acquire lock: check existing PID, wait up to 60s
   const lockAcquireStart = Date.now();
@@ -1317,59 +1472,101 @@ export async function main(): Promise<void> {
   if (!lockAcquired) {
     // Lock held — try injecting via our custom socket (session is running)
     const socketPath = getSocketPath(triggerName, sessionKey);
-    const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
-    const socketInjected = await trySocketInject(socketPath, injectMsg, channel, sessionKey);
+    const injectMsg = buildInjectMessage(
+      channel,
+      triggerName,
+      sessionKey,
+      payload,
+      prompt,
+    );
+    const socketInjected = await trySocketInject(
+      socketPath,
+      injectMsg,
+      channel,
+      sessionKey,
+    );
     if (socketInjected) {
-      log.log(`Injected via socket into running session for ${triggerName} (key=${sessionKey})`);
+      log.log(
+        `Injected via socket into running session for ${triggerName} (key=${sessionKey})`,
+      );
       process.exit(0);
     }
     // Socket not available — cannot inject, exit with warning
-    log.log(`WARNING: Lock held but socket unavailable for ${triggerName} (key=${sessionKey}) — message may be lost`);
+    log.log(
+      `WARNING: Lock held but socket unavailable for ${triggerName} (key=${sessionKey}) — message may be lost`,
+    );
     process.exit(1);
   }
 
   // Ensure lock + socket are released on exit
   const triggerSocketPath = getSocketPath(triggerName, sessionKey);
   const releaseLock = () => {
-    try { unlinkSync(flockFile); } catch {}
+    try {
+      unlinkSync(flockFile);
+    } catch {}
     // Socket cleanup is best-effort (may already be cleaned up by runQuery)
     if (existsSync(triggerSocketPath)) {
-      try { unlinkSync(triggerSocketPath); } catch {}
+      try {
+        unlinkSync(triggerSocketPath);
+      } catch {}
     }
   };
   process.on("exit", releaseLock);
-  process.on("SIGTERM", () => { releaseLock(); process.exit(0); });
-  process.on("SIGINT", () => { releaseLock(); process.exit(0); });
+  process.on("SIGTERM", () => {
+    releaseLock();
+    process.exit(0);
+  });
+  process.on("SIGINT", () => {
+    releaseLock();
+    process.exit(0);
+  });
 
   // Re-read session from DB after lock (another runner may have created one)
   if (sessionMode === "persistent" && !existingSession) {
-    const sessionRow = db.prepare(
-      "SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1"
-    ).get(triggerName, sessionKey) as { session_id: string } | undefined;
+    const sessionRow = db
+      .prepare(
+        "SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1",
+      )
+      .get(triggerName, sessionKey) as { session_id: string } | undefined;
     existingSession = sessionRow?.session_id ?? null;
     if (existingSession) {
-      log.log(`Session appeared after lock wait: ${existingSession} (key=${sessionKey})`);
+      log.log(
+        `Session appeared after lock wait: ${existingSession} (key=${sessionKey})`,
+      );
     }
   }
 
   // Guard: session file doesn't exist after lock — clear stale session entry
   if (existingSession && !sessionFileExists(existingSession)) {
-    log.log(`Session file missing for ${existingSession} after lock — will start fresh`);
+    log.log(
+      `Session file missing for ${existingSession} after lock — will start fresh`,
+    );
     db.prepare(
-      "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+      "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
     ).run(triggerName, sessionKey);
     existingSession = null;
   }
 
   // Re-check IPC socket after acquiring lock
   if (sessionMode === "persistent" && existingSession) {
-    const injectMsg = buildInjectMessage(channel, triggerName, sessionKey, payload, prompt);
+    const injectMsg = buildInjectMessage(
+      channel,
+      triggerName,
+      sessionKey,
+      payload,
+      prompt,
+    );
     // Try custom socket first (preferred — message channel managed), then Claude IPC
     const customInjected = await trySocketInject(
-      getSocketPath(triggerName, sessionKey), injectMsg, channel, sessionKey
+      getSocketPath(triggerName, sessionKey),
+      injectMsg,
+      channel,
+      sessionKey,
     );
     if (customInjected) {
-      log.log(`Injected via custom socket after lock wait for ${triggerName} (key=${sessionKey})`);
+      log.log(
+        `Injected via custom socket after lock wait for ${triggerName} (key=${sessionKey})`,
+      );
       releaseLock();
       process.exit(0);
     }
@@ -1379,30 +1576,42 @@ export async function main(): Promise<void> {
       const claudeSocket = `/tmp/claudec-${existingSession}.sock`;
       await Bun.sleep(300);
       if (existsSync(claudeSocket)) {
-        log.log(`Injected via Claude IPC after lock wait ${existingSession} (key=${sessionKey})`);
+        log.log(
+          `Injected via Claude IPC after lock wait ${existingSession} (key=${sessionKey})`,
+        );
         releaseLock();
         process.exit(0);
       }
-      log.log(`Session ${existingSession} died after post-lock IPC injection — starting fresh`);
+      log.log(
+        `Session ${existingSession} died after post-lock IPC injection — starting fresh`,
+      );
       db.prepare(
-        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
       ).run(triggerName, sessionKey);
       existingSession = null;
     }
   }
 
-  log.log(`Trigger firing: ${triggerName} (mode=${sessionMode}, key=${sessionKey}, channel=${channel})`);
+  log.log(
+    `Trigger firing: ${triggerName} (mode=${sessionMode}, key=${sessionKey}, channel=${channel})`,
+  );
 
   const startedAt = isoNow();
 
   // --- Track this run ---
   let runId: number | null = null;
   try {
-    const runRow = db.prepare(`
+    const runRow = db
+      .prepare(
+        `
       INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload)
       VALUES (?, ?, ?, ?)
       RETURNING id
-    `).get(triggerName, sessionKey, sessionMode, payload) as { id: number } | undefined;
+    `,
+      )
+      .get(triggerName, sessionKey, sessionMode, payload) as
+      | { id: number }
+      | undefined;
     runId = runRow?.id ?? null;
   } catch {
     // trigger_runs table may not exist in older DBs
@@ -1431,9 +1640,10 @@ export async function main(): Promise<void> {
   // --- Run the query ---
   // Persistent sessions can run for hours (long tasks, teams) — no hard timeout.
   // Ephemeral sessions get a timeout to prevent runaway processes.
-  const triggerTimeout = sessionMode === "persistent"
-    ? undefined
-    : parseInt(process.env.TRIGGER_TIMEOUT ?? "3600", 10) * 1000;
+  const triggerTimeout =
+    sessionMode === "persistent"
+      ? undefined
+      : parseInt(process.env.TRIGGER_TIMEOUT ?? "3600", 10) * 1000;
 
   let resultMsg: SDKResultMessage | null = null;
   let capturedSessionId: string | null = null;
@@ -1448,7 +1658,10 @@ export async function main(): Promise<void> {
   // --- Set up message channel + socket server for message injection ---
   const socketPath = getSocketPath(triggerName, sessionKey);
   // Use a placeholder session_id initially; the generator produces messages with it
-  const msgChannel = createMessageChannel("pending", sessionMode === "persistent" ? undefined : IDLE_TIMEOUT_MS);
+  const msgChannel = createMessageChannel(
+    "pending",
+    sessionMode === "persistent" ? undefined : IDLE_TIMEOUT_MS,
+  );
   let socketServer: Server | null = null;
 
   const runQuery = async (resumeId?: string) => {
@@ -1462,21 +1675,29 @@ export async function main(): Promise<void> {
       disallowedTools: DISALLOWED_BUILTIN_TOOLS,
       cwd: HOME,
       ...(resumeId ? { resume: resumeId } : {}),
-      ...(CLAUDE_CODE_PATH ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH } : {}),
+      ...(CLAUDE_CODE_PATH
+        ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
+        : {}),
     };
 
     // Push the initial prompt as the first message
     msgChannel.push(prompt);
 
     // Start socket server so other trigger-runner processes can inject messages
-    socketServer = startSocketServer(socketPath, (text) => {
-      msgChannel.push(text);
-    }, log);
+    socketServer = startSocketServer(
+      socketPath,
+      (text) => {
+        msgChannel.push(text);
+      },
+      log,
+    );
 
     const q = query({ prompt: msgChannel.generator, options });
 
     const timeoutHandle = triggerTimeout
-      ? setTimeout(() => { q.close(); }, triggerTimeout)
+      ? setTimeout(() => {
+          q.close();
+        }, triggerTimeout)
       : undefined;
 
     try {
@@ -1511,9 +1732,11 @@ export async function main(): Promise<void> {
         }
       } catch (err) {
         // Resume failed — retry as fresh session
-        log.log(`Resume failed for session ${existingSession} — retrying as fresh session: ${err}`);
+        log.log(
+          `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
+        );
         db.prepare(
-          "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?"
+          "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
         ).run(triggerName, sessionKey);
         existingSession = null;
         resultMsg = null;
@@ -1538,23 +1761,28 @@ export async function main(): Promise<void> {
 
   // Log result text
   if (resultMsg && "result" in resultMsg) {
-    log.log(`Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`);
+    log.log(
+      `Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`,
+    );
   }
 
   const endedAt = isoNow();
 
   // --- Save session for persistent triggers ---
   if (sessionMode === "persistent" && capturedSessionId) {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO trigger_sessions (trigger_name, session_key, session_id)
       VALUES (?, ?, ?)
       ON CONFLICT(trigger_name, session_key) DO UPDATE SET session_id = ?, updated_at = datetime('now')
-    `).run(triggerName, sessionKey, capturedSessionId, capturedSessionId);
+    `,
+    ).run(triggerName, sessionKey, capturedSessionId, capturedSessionId);
     log.log(`Saved session for key=${sessionKey}: ${capturedSessionId}`);
   }
 
   // --- Record metrics ---
-  const usage = (resultMsg as { usage?: Record<string, number> } | null)?.usage ?? {};
+  const usage =
+    (resultMsg as { usage?: Record<string, number> } | null)?.usage ?? {};
   try {
     recordMetrics(db, {
       sessionType: "trigger",
@@ -1562,12 +1790,16 @@ export async function main(): Promise<void> {
       triggerName,
       startedAt,
       endedAt,
-      durationMs: (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
+      durationMs:
+        (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
       inputTokens: (usage.input_tokens as number | undefined) ?? 0,
       outputTokens: (usage.output_tokens as number | undefined) ?? 0,
-      cacheReadTokens: (usage.cache_read_input_tokens as number | undefined) ?? 0,
-      cacheCreationTokens: (usage.cache_creation_input_tokens as number | undefined) ?? 0,
-      costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
+      cacheReadTokens:
+        (usage.cache_read_input_tokens as number | undefined) ?? 0,
+      cacheCreationTokens:
+        (usage.cache_creation_input_tokens as number | undefined) ?? 0,
+      costUsd:
+        (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
       numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
       isError,
     });
@@ -1578,21 +1810,31 @@ export async function main(): Promise<void> {
   // --- Send usage reporting webhook ---
   try {
     const usageConfig = readUsageReportingConfig();
-    await sendUsageWebhook(usageConfig, {
-      sessionType: "trigger",
-      sessionId: capturedSessionId ?? "",
-      triggerName,
-      startedAt,
-      endedAt,
-      durationMs: (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-      inputTokens: (usage.input_tokens as number | undefined) ?? 0,
-      outputTokens: (usage.output_tokens as number | undefined) ?? 0,
-      cacheReadTokens: (usage.cache_read_input_tokens as number | undefined) ?? 0,
-      cacheCreationTokens: (usage.cache_creation_input_tokens as number | undefined) ?? 0,
-      costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
-      numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
-      isError,
-    }, log, db);
+    await sendUsageWebhook(
+      usageConfig,
+      {
+        sessionType: "trigger",
+        sessionId: capturedSessionId ?? "",
+        triggerName,
+        startedAt,
+        endedAt,
+        durationMs:
+          (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
+        inputTokens: (usage.input_tokens as number | undefined) ?? 0,
+        outputTokens: (usage.output_tokens as number | undefined) ?? 0,
+        cacheReadTokens:
+          (usage.cache_read_input_tokens as number | undefined) ?? 0,
+        cacheCreationTokens:
+          (usage.cache_creation_input_tokens as number | undefined) ?? 0,
+        costUsd:
+          (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ??
+          0,
+        numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
+        isError,
+      },
+      log,
+      db,
+    );
   } catch {
     // Usage reporting should never block trigger completion
   }
@@ -1601,7 +1843,7 @@ export async function main(): Promise<void> {
   if (runId !== null && capturedSessionId !== null) {
     try {
       db.prepare(
-        "UPDATE trigger_runs SET session_id = ?, completed_at = datetime('now') WHERE id = ?"
+        "UPDATE trigger_runs SET session_id = ?, completed_at = datetime('now') WHERE id = ?",
       ).run(capturedSessionId, runId);
     } catch {
       // Non-fatal
