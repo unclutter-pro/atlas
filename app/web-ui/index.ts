@@ -73,6 +73,18 @@ function timeAgo(dt: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * Convert SQLite "YYYY-MM-DD HH:MM:SS" UTC timestamp to ISO 8601 with Z marker.
+ * SQLite's datetime('now') returns UTC without timezone info; clients (e.g.
+ * `new Date(...)` in browsers) interpret unmarked timestamps as local time,
+ * which renders user messages 1-2 hours off depending on the viewer's TZ.
+ */
+export function sqliteToIso(s: string): string {
+  if (!s) return s;
+  if (s.endsWith("Z")) return s;
+  return s.replace(" ", "T") + "Z";
+}
+
 // --- Layout ---
 function layout(
   title: string,
@@ -299,6 +311,60 @@ function parseSessionMessages(filePath: string): ParsedMessage[] {
   }
 
   return messages;
+}
+
+/**
+ * Determine whether a Claude Code session is currently mid-turn (i.e. the
+ * agent owes a response) based on the JSONL tail.
+ *
+ * Why this is needed: `claudec` keeps its IPC socket alive for the entire
+ * chat lifetime — not just per-turn. So a socket-existence check tells us
+ * the process is up, not whether it's currently producing a response. Result:
+ * the chat UI's typing indicator stays on forever after the agent finishes.
+ *
+ * Rule: the agent is "working" if the last user/assistant entry is either
+ *   - a `user` message (fresh prompt or tool_result waiting for response), OR
+ *   - an `assistant` message with `stop_reason === "tool_use"` (tool pending)
+ * Otherwise (final assistant message with end_turn / stop_sequence / etc.)
+ * the turn has completed and the agent is idle.
+ *
+ * If no JSONL exists yet, the session is just spawning → treat as active.
+ */
+export function isAgentTurnActive(filePath: string | null): boolean {
+  if (!filePath) return true; // session starting up, no JSONL yet
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf-8");
+  } catch {
+    return true; // unreadable → assume active to avoid stuck-done state
+  }
+  const lines = content.split("\n");
+  // Iterate backwards to find the last user/assistant entry (skip system,
+  // last-prompt, pr-link, attachment, etc. which are post-turn metadata).
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let obj: any;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (obj.type === "user") {
+      // Fresh user message or tool_result — agent will produce a response.
+      return true;
+    }
+    if (obj.type === "assistant") {
+      const msg = obj.message;
+      const stopReason = (msg && typeof msg === "object" && !Array.isArray(msg))
+        ? msg.stop_reason
+        : null;
+      // Allowlist: only `tool_use` means more model work is coming.
+      // Everything else (end_turn / stop_sequence / max_tokens / refusal /
+      // null / unknown) is treated as terminal. Erring toward "done" here is
+      // safe — if the agent is truly mid-turn, the next JSONL line will land
+      // within ~500ms and the next poll will flip back to active.
+      return stopReason === "tool_use";
+    }
+  }
+  // No user/assistant entries at all — session just spawned; treat as active.
+  return true;
 }
 
 function renderConversation(messages: ParsedMessage[]): string {
@@ -863,9 +929,11 @@ app.get("/chat/conversation", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
-    // Check socket independently — agent may be running before/after JSONL file is written
-    isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
+    const socketAlive = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
+    // Socket alone is insufficient — claudec persists between turns. Combine
+    // with JSONL turn-state to detect whether the agent owes a response.
+    isRunning = socketAlive && isAgentTurnActive(filePath);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate, not real user text
@@ -878,12 +946,12 @@ app.get("/chat/conversation", (c) => {
   }
 
   // Merge: DB user messages + JSONL assistant/tool messages, sorted by timestamp
-  // SQLite timestamps are "YYYY-MM-DD HH:MM:SS"; JSONL are ISO "YYYY-MM-DDTHH:MM:SS.mmmZ" — both sort correctly after normalising the space
+  // SQLite timestamps are "YYYY-MM-DD HH:MM:SS" UTC; JSONL are ISO "YYYY-MM-DDTHH:MM:SS.mmmZ" — both sort correctly after normalising
   const combined: ParsedMessage[] = [
     ...dbMessages.map(m => ({
       type: "user-text" as const,
       content: m.content,
-      timestamp: m.created_at.replace(" ", "T"),
+      timestamp: sqliteToIso(m.created_at),
     })),
     ...assistantMsgs,
   ];
@@ -930,7 +998,7 @@ app.post("/chat", async (c) => {
     inbox_message_id: msg.id,
     sender: "web-ui",
     message: content.slice(0, 20000),
-    timestamp: msg.created_at,
+    timestamp: sqliteToIso(msg.created_at),
   });
   Bun.spawn(
     ["/atlas/app/triggers/trigger.sh", "web-chat", payload, "_default"],
@@ -960,7 +1028,7 @@ app.post("/chat", async (c) => {
   }
 
   const combined: ParsedMessage[] = [
-    ...dbMessages.map(m => ({ type: "user-text" as const, content: m.content, timestamp: m.created_at.replace(" ", "T") })),
+    ...dbMessages.map(m => ({ type: "user-text" as const, content: m.content, timestamp: sqliteToIso(m.created_at) })),
     ...assistantMsgs,
   ];
   combined.sort((a, b) => {
@@ -1660,7 +1728,7 @@ api.post("/chat/messages", async (c) => {
     inbox_message_id: msg.id,
     sender: "web-ui",
     message: content.slice(0, 20000),
-    timestamp: msg.created_at,
+    timestamp: sqliteToIso(msg.created_at),
   });
   Bun.spawn(
     ["/atlas/app/triggers/trigger.sh", "web-chat", payload, "_default"],
@@ -1672,7 +1740,7 @@ api.post("/chat/messages", async (c) => {
     message: {
       id: msg.id,
       content: msg.content,
-      timestamp: msg.created_at,
+      timestamp: sqliteToIso(msg.created_at),
     },
   });
 });
@@ -1767,9 +1835,11 @@ api.get("/chat/messages", (c) => {
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
   if (session) {
-    // Check socket independently — agent may be running before/after JSONL file is written
-    isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
+    const socketAlive = existsSync(`/tmp/claudec-${session.session_id}.sock`);
     const filePath = findSessionFile(session.session_id);
+    // Socket alone is insufficient — claudec persists between turns. Combine
+    // with JSONL turn-state to detect whether the agent owes a response.
+    isRunning = socketAlive && isAgentTurnActive(filePath);
     if (filePath) {
       const all = parseSessionMessages(filePath);
       // Drop user-text entries from JSONL — those are trigger boilerplate
@@ -1784,7 +1854,7 @@ api.get("/chat/messages", (c) => {
     combined.push({
       role: "user",
       content: m.content,
-      timestamp: m.created_at.replace(" ", "T"),
+      timestamp: sqliteToIso(m.created_at),
     });
   }
 
@@ -1860,9 +1930,12 @@ api.get("/chat/stream", (c) => {
             let assistantMsgs: ParsedMessage[] = [];
             let isRunning = false;
             if (session) {
-              // Check socket independently — agent may be running before/after JSONL file is written
-              isRunning = existsSync(`/tmp/claudec-${session.session_id}.sock`);
+              const socketAlive = existsSync(`/tmp/claudec-${session.session_id}.sock`);
               const filePath = findSessionFile(session.session_id);
+              // Socket alone is insufficient — claudec persists between turns.
+              // Combine with JSONL turn-state to detect whether the agent owes
+              // a response (otherwise the typing indicator never clears).
+              isRunning = socketAlive && isAgentTurnActive(filePath);
               if (filePath) {
                 const all = parseSessionMessages(filePath);
                 assistantMsgs = all.filter(m => m.type !== "user-text");
@@ -1874,7 +1947,7 @@ api.get("/chat/stream", (c) => {
             // Categorize messages
             const userMessages = dbMessages.map(m => ({
               content: m.content,
-              timestamp: m.created_at.replace(" ", "T"),
+              timestamp: sqliteToIso(m.created_at),
             }));
             const assistantTextMsgs = assistantMsgs.filter(m => m.type === "assistant-text");
             const toolUseMsgs = assistantMsgs.filter(m => m.type === "assistant-tool-use");
@@ -1886,7 +1959,7 @@ api.get("/chat/stream", (c) => {
                 messages.push({
                   role: "user",
                   content: m.content,
-                  timestamp: m.created_at.replace(" ", "T"),
+                  timestamp: sqliteToIso(m.created_at),
                 });
               }
               for (const m of assistantMsgs) {
