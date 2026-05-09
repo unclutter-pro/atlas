@@ -25,8 +25,13 @@ export interface Attachment {
   created_at: string;
 }
 
+// Attachments are ephemeral by design: stored under /tmp so the customer
+// pod's PVC stays small and pod restarts auto-clear stale voice notes
+// (their transcripts are already in the message content; the original
+// audio is only useful immediately after upload for STT-fallback retries).
+// Override with ATLAS_ATTACHMENTS_DIR if a different location is needed.
 const ATTACHMENTS_DIR = process.env.ATLAS_ATTACHMENTS_DIR
-  ?? `${process.env.HOME ?? "/root"}/.attachments`;
+  ?? "/tmp/atlas-attachments";
 
 function ensureDir(): void {
   if (!existsSync(ATTACHMENTS_DIR)) {
