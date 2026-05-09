@@ -17,6 +17,15 @@ import { getDb } from "../lib/atlas-db";
 import { apiKeyAuth } from "../lib/api-auth";
 import { resolveConfig, redactConfig, getConfigSources } from "../lib/config";
 import { pauseAtlas, resumeAtlas, stopAllSessions, getControlStatus, isAtlasPaused } from "../lib/kill-switch";
+import {
+  saveAttachment,
+  getAttachment,
+  getAttachmentsForMessage,
+  attachmentDiskPath,
+  attachmentExists,
+  attachmentUrl,
+  type Attachment,
+} from "../lib/attachments";
 
 // --- Config ---
 const AGENT_NAME = process.env.AGENT_NAME || "Atlas";
@@ -1741,8 +1750,37 @@ api.post("/triggers/:name/run", (c) => {
 // --- Chat (JSON API) ---
 
 api.post("/chat/messages", async (c) => {
-  const body = await c.req.json();
-  const content = (body.message || "").trim();
+  // Accept either application/json (legacy text-only) or multipart/form-data
+  // (text + file attachments, e.g. voice notes). Multipart form fields:
+  //   - message       (required) — text content / transcript
+  //   - file          (optional, repeatable) — binary attachment(s)
+  //   - transcription (optional) — STT transcript for matching audio file;
+  //                    attached to the LAST audio file only (typical case:
+  //                    a single voice note + its transcript).
+  const contentType = c.req.header("content-type") ?? "";
+  let content: string;
+  let attachmentSpecs: Array<{ file: File; transcription?: string }> = [];
+
+  if (contentType.includes("multipart/form-data")) {
+    const form = await c.req.formData();
+    content = ((form.get("message") as string) ?? "").trim();
+    const transcription = ((form.get("transcription") as string) ?? "").trim() || undefined;
+    const files = form.getAll("file").filter((f): f is File => f instanceof File);
+    // Attach transcription to the last audio file (a voice-note message only
+    // ships one audio file in practice; this keeps the API forgiving).
+    let audioIdxForTranscript = -1;
+    files.forEach((f, idx) => {
+      if (f.type.startsWith("audio/")) audioIdxForTranscript = idx;
+    });
+    attachmentSpecs = files.map((f, idx) => ({
+      file: f,
+      transcription: idx === audioIdxForTranscript ? transcription : undefined,
+    }));
+  } else {
+    const body = await c.req.json();
+    content = (body.message || "").trim();
+  }
+
   if (!content || typeof content !== "string") {
     return c.json({ error: "Missing 'message' field" }, 400);
   }
@@ -1753,18 +1791,47 @@ api.post("/chat/messages", async (c) => {
     )
     .get(content) as any;
 
+  // Persist attachments (if any) and capture metadata for the trigger payload + response.
+  const savedAttachments: Attachment[] = [];
+  for (const spec of attachmentSpecs) {
+    try {
+      const a = await saveAttachment(db, {
+        messageId: msg.id,
+        file: spec.file,
+        mimeType: spec.file.type || "application/octet-stream",
+        fileName: spec.file.name,
+        transcription: spec.transcription ?? null,
+      });
+      savedAttachments.push(a);
+    } catch (e) {
+      // Non-fatal: log and continue. Worst case: the message goes through
+      // without that attachment instead of failing the whole request.
+      console.error("[chat] failed to save attachment:", e);
+    }
+  }
+
   // Touch wake file
   try {
     mkdirSync(`${WS}/inbox`, { recursive: true });
     closeSync(openSync(WAKE, "w"));
   } catch {}
 
-  // Fire trigger
+  // Trigger payload — include attachment metadata so the AI is aware of voice
+  // notes / files and can fetch the original via /api/v1/attachments/<id>.
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
     message: content.slice(0, 20000),
     timestamp: sqliteToIso(msg.created_at),
+    attachments: savedAttachments.map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      mime_type: a.mime_type,
+      file_name: a.file_name,
+      file_size: a.file_size,
+      transcription: a.transcription,
+      url: attachmentUrl(a.id),
+    })),
   });
   Bun.spawn(
     ["/atlas/app/triggers/trigger.sh", "web-chat", payload, "_default"],
@@ -1777,6 +1844,35 @@ api.post("/chat/messages", async (c) => {
       id: msg.id,
       content: msg.content,
       timestamp: sqliteToIso(msg.created_at),
+      attachments: savedAttachments.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        mime_type: a.mime_type,
+        file_name: a.file_name,
+        file_size: a.file_size,
+        url: attachmentUrl(a.id),
+      })),
+    },
+  });
+});
+
+// Stream a stored attachment back to the caller. Used by the web UI to play
+// voice notes inline (the unclutter-pro frontend proxies this through its
+// own /api/chat/attachments/<id> endpoint, which adds session auth).
+api.get("/attachments/:id", async (c) => {
+  const id = c.req.param("id");
+  const a = getAttachment(db, id);
+  if (!a) return c.json({ error: "not found" }, 404);
+  if (!attachmentExists(a)) return c.json({ error: "file missing on disk" }, 410);
+
+  const path = attachmentDiskPath(a);
+  const file = Bun.file(path);
+  return new Response(file, {
+    headers: {
+      "Content-Type": a.mime_type,
+      "Content-Length": String(a.file_size),
+      "Content-Disposition": `inline; filename="${a.file_name.replace(/"/g, "")}"`,
+      "Cache-Control": "private, max-age=3600",
     },
   });
 });
