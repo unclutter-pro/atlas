@@ -27,6 +27,22 @@ function createTables(database: Database): void {
       updated_at TEXT DEFAULT (datetime('now')),
       UNIQUE(trigger_name, session_key)
     );
+
+    -- Generic attachments associated with messages (audio voice notes today;
+    -- images, PDFs, etc. later without further migration). Files live on
+    -- disk under HOME/.attachments/<id>.<ext>; this table stores metadata.
+    CREATE TABLE IF NOT EXISTS message_attachments (
+      id TEXT PRIMARY KEY,           -- uuid (filename without extension)
+      message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,            -- 'audio' | 'image' | 'video' | 'document' | 'other'
+      mime_type TEXT NOT NULL,       -- e.g. 'audio/webm', 'image/png'
+      file_name TEXT NOT NULL,       -- original client filename, sanitised
+      file_size INTEGER NOT NULL,
+      transcription TEXT,            -- audio only: STT result text
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_message_attachments_msg ON message_attachments(message_id);
   `);
 
   // Triggers: plugin system for cron, webhook, manual triggers
