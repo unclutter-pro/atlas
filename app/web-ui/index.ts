@@ -1981,13 +1981,38 @@ api.get("/chat/messages", (c) => {
   }
 
   // Merge DB user messages + JSONL assistant/tool messages, sorted chronologically
-  const combined: { role: string; content: string; timestamp: string; toolName?: string }[] = [];
+  const combined: {
+    role: string;
+    content: string;
+    timestamp: string;
+    toolName?: string;
+    attachments?: Array<{
+      id: string;
+      kind: string;
+      mime_type: string;
+      file_name: string;
+      file_size: number;
+      url: string;
+    }>;
+  }[] = [];
 
   for (const m of dbMessages) {
+    // Include attachment metadata so the web client can re-render audio
+    // bubbles / file chips after a page reload (without re-fetching the
+    // payload sent to the trigger). Transcripts stay server-side only.
+    const atts = getAttachmentsForMessage(db, m.id).map((a) => ({
+      id: a.id,
+      kind: a.kind,
+      mime_type: a.mime_type,
+      file_name: a.file_name,
+      file_size: a.file_size,
+      url: attachmentUrl(a.id),
+    }));
     combined.push({
       role: "user",
       content: m.content,
       timestamp: sqliteToIso(m.created_at),
+      ...(atts.length > 0 ? { attachments: atts } : {}),
     });
   }
 
