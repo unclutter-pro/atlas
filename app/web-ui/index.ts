@@ -1749,36 +1749,97 @@ api.post("/triggers/:name/run", (c) => {
 
 // --- Chat (JSON API) ---
 
+// STT — Whisper-compatible endpoint (parakeet on the cluster, by default).
+// Set ATLAS_STT_URL to override.
+const STT_URL = process.env.ATLAS_STT_URL
+  ?? "http://parakeet.shared-stt.svc.cluster.local:5092/v1/audio/transcriptions";
+const STT_TIMEOUT_MS = 30_000;
+
+/**
+ * Best-effort STT: send an audio file to the cluster STT service and
+ * return the transcript, or `null` if the service is down / times out.
+ *
+ * Kept local to the chat handler because the existing Python integrations
+ * (signal-addon, whatsapp-addon) operate on disk paths and pull in
+ * stdlib HTTP — this one is just the thin Bun + fetch path.
+ */
+async function transcribeAudio(file: File): Promise<string | null> {
+  try {
+    const form = new FormData();
+    form.append("file", file, file.name || "voice.webm");
+    form.append("model", "default");
+    const res = await fetch(STT_URL, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(STT_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.error(`[chat] STT non-2xx: ${res.status}`);
+      return null;
+    }
+    const data = (await res.json()) as { text?: string };
+    return (data.text || "").trim() || null;
+  } catch (err) {
+    console.error("[chat] STT request failed:", err);
+    return null;
+  }
+}
+
 api.post("/chat/messages", async (c) => {
   // Accept either application/json (legacy text-only) or multipart/form-data
   // (text + file attachments, e.g. voice notes). Multipart form fields:
-  //   - message       (required) — text content / transcript
+  //   - message       (optional) — text content / caption. Required ONLY when
+  //                    no files are attached (a bare file send is valid).
   //   - file          (optional, repeatable) — binary attachment(s)
-  //   - transcription (optional) — STT transcript for matching audio file;
-  //                    attached to the LAST audio file only (typical case:
-  //                    a single voice note + its transcript).
+  //   - transcription (optional) — pre-computed STT transcript for the audio
+  //                    attachment. When omitted on an audio file, this
+  //                    handler runs STT inline (parakeet) so the agent
+  //                    sees usable text without a round-trip to the client.
   const contentType = c.req.header("content-type") ?? "";
   let content: string;
-  let attachmentSpecs: Array<{ file: File; transcription?: string }> = [];
+  let attachmentSpecs: Array<{ file: File; transcription?: string | null }> = [];
+  // Track whether the caller supplied content; if not we may synthesise from STT.
+  let contentExplicitlySet = false;
 
   if (contentType.includes("multipart/form-data")) {
     const form = await c.req.formData();
     content = ((form.get("message") as string) ?? "").trim();
-    const transcription = ((form.get("transcription") as string) ?? "").trim() || undefined;
+    contentExplicitlySet = content.length > 0;
+    const callerTranscription = ((form.get("transcription") as string) ?? "").trim() || null;
     const files = form.getAll("file").filter((f): f is File => f instanceof File);
-    // Attach transcription to the last audio file (a voice-note message only
-    // ships one audio file in practice; this keeps the API forgiving).
-    let audioIdxForTranscript = -1;
-    files.forEach((f, idx) => {
-      if (f.type.startsWith("audio/")) audioIdxForTranscript = idx;
-    });
+
+    // Identify the (single) audio file — voice notes ship exactly one in
+    // practice and that's the one whose transcript drives `content`.
+    const audioIdx = files.findIndex((f) => f.type.startsWith("audio/"));
+
+    // Run STT inline if there's audio + no transcript was provided. Failure
+    // is non-fatal: we just save the message without a transcript and let
+    // the agent fall back to its own STT skill if it cares.
+    let computedTranscript: string | null = callerTranscription;
+    if (audioIdx >= 0 && !computedTranscript) {
+      computedTranscript = await transcribeAudio(files[audioIdx]);
+    }
+
     attachmentSpecs = files.map((f, idx) => ({
       file: f,
-      transcription: idx === audioIdxForTranscript ? transcription : undefined,
+      transcription: idx === audioIdx ? computedTranscript : null,
     }));
+
+    // If the caller didn't ship a message string, synthesise one. Order of
+    // preference: STT transcript → "(Datei: name)" placeholder → "(N Dateien)".
+    if (!contentExplicitlySet) {
+      if (computedTranscript) {
+        content = computedTranscript;
+      } else if (files.length === 1) {
+        content = `(Datei: ${files[0].name || "ohne Namen"})`;
+      } else if (files.length > 1) {
+        content = `(${files.length} Dateien)`;
+      }
+    }
   } else {
     const body = await c.req.json();
     content = (body.message || "").trim();
+    contentExplicitlySet = content.length > 0;
   }
 
   if (!content || typeof content !== "string") {
