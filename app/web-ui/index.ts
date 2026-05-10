@@ -1795,6 +1795,11 @@ api.post("/chat/messages", async (c) => {
   //                    attachment. When omitted on an audio file, this
   //                    handler runs STT inline (parakeet) so the agent
   //                    sees usable text without a round-trip to the client.
+  //
+  // Wrapped in a single try/catch so any unhandled throw becomes a logged
+  // 500 with a stable shape — Hono's default 500 message hid the real cause
+  // when STT or formData parsing surfaced an exception in production.
+  try {
   const contentType = c.req.header("content-type") ?? "";
   let content: string;
   let attachmentSpecs: Array<{ file: File; transcription?: string | null }> = [];
@@ -1808,9 +1813,24 @@ api.post("/chat/messages", async (c) => {
     const callerTranscription = ((form.get("transcription") as string) ?? "").trim() || null;
     const files = form.getAll("file").filter((f): f is File => f instanceof File);
 
-    // Identify the (single) audio file — voice notes ship exactly one in
-    // practice and that's the one whose transcript drives `content`.
-    const audioIdx = files.findIndex((f) => f.type.startsWith("audio/"));
+    // Diagnostic: log incoming shape so we can correlate failures with the
+    // mime types / sizes browsers actually deliver. Stays quiet for empty
+    // requests so it doesn't drown the log on healthy traffic.
+    if (files.length > 0) {
+      console.log(
+        `[chat] POST multipart: content=${content.length}b explicit=${contentExplicitlySet} `
+        + `files=[${files.map((f) => `${f.name}@${f.size}b/${f.type || "no-type"}`).join(", ")}] `
+        + `callerTranscription=${callerTranscription ? "yes" : "no"}`,
+      );
+    }
+
+    // Identify the (single) audio file. Browsers usually ship
+    // "audio/webm;codecs=opus", but some webm-mux pipelines tag voice notes
+    // as "video/webm" — fall back to a name-based heuristic for those.
+    const audioIdx = files.findIndex((f) =>
+      f.type.startsWith("audio/")
+      || /\.(webm|m4a|mp3|ogg|wav|aac|opus)$/i.test(f.name || ""),
+    );
 
     // Run STT inline if there's audio + no transcript was provided. Failure
     // is non-fatal: we just save the message without a transcript and let
@@ -1915,6 +1935,15 @@ api.post("/chat/messages", async (c) => {
       })),
     },
   });
+  } catch (err) {
+    // Surface the real error to logs so we can fix it instead of returning
+    // an opaque 500. The client still gets a sanitised message.
+    console.error("[chat] POST handler threw:", err);
+    if (err instanceof Error && err.stack) {
+      console.error(err.stack);
+    }
+    return c.json({ error: "Internal error", detail: err instanceof Error ? err.message : "unknown" }, 500);
+  }
 });
 
 // Stream a stored attachment back to the caller. Used by the web UI to play
