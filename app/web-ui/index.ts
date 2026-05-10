@@ -1500,6 +1500,22 @@ app.get("/sessions/:sessionId", (c) => {
 const api = new Hono();
 api.use("*", apiKeyAuth);
 
+// Last-resort error handler: any throw that escapes a route's own
+// try/catch lands here, gets logged with full stack, and returns a
+// stable JSON 500 instead of Hono's default plain-text "Internal Server
+// Error" page (which made a recent voice-send 500 unreadable on the
+// proxy side because we couldn't parse the body for diagnostics).
+api.onError((err, c) => {
+  console.error("[api] uncaught error on", c.req.path, "—", err);
+  if (err instanceof Error && err.stack) {
+    console.error(err.stack);
+  }
+  return c.json(
+    { error: "Internal error", detail: err instanceof Error ? err.message : "unknown" },
+    500,
+  );
+});
+
 // --- Configuration ---
 
 api.get("/config", (c) => {
