@@ -325,6 +325,11 @@ if [ ! -f "$WORKSPACE/triggers/dreaming/prompt.md" ]; then
   echo "  Created dreaming trigger prompt"
 fi
 
+# Always refresh dreaming trigger filter — system-managed (not user-customizable),
+# so we overwrite on every init to ensure upgrades reach existing containers.
+cp /atlas/app/defaults/triggers/dreaming/filter.sh "$WORKSPACE/triggers/dreaming/filter.sh"
+chmod +x "$WORKSPACE/triggers/dreaming/filter.sh"
+
 # Ensure web-chat trigger exists (idempotent migration)
 sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, prompt, session_mode) VALUES (
   'web-chat', 'manual', 'Web UI chat message handler', 'web', '', 'persistent');" || echo "  ⚠ web-chat trigger insert failed (non-fatal)"
