@@ -155,10 +155,16 @@ def _extract_password_from_secret_blob(raw: str) -> str:
     # Canonical fields by type:
     #   api_key → "value"
     #   login   → "password"
+    #
+    # The outer pf.read_text().strip() only cleans whitespace around the
+    # JSON document — values stored with a trailing newline (a common
+    # accident when a value is piped into a credential store) survive
+    # through the JSON layer. Strip the extracted field too so the IMAP
+    # protocol doesn't choke on the rogue `\n` in the password.
     for key in ("password", "value"):
         candidate = parsed.get(key)
-        if isinstance(candidate, str) and candidate:
-            return candidate
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
     return raw
 
 
