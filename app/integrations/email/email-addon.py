@@ -122,9 +122,44 @@ def load_config():
     if not config["password"] and config["password_file"]:
         pf = Path(config["password_file"])
         if pf.exists():
-            config["password"] = pf.read_text().strip()
+            raw = pf.read_text().strip()
+            config["password"] = _extract_password_from_secret_blob(raw)
 
     return config
+
+
+def _extract_password_from_secret_blob(raw: str) -> str:
+    """Return the bare password from a password_file content.
+
+    Atlas standardises on a structured secret-file format for forward
+    compatibility with credential managers, vault drivers and sync sidecars
+    that mount richer metadata alongside the value::
+
+        {"type": "api_key", "value": "<password>"}
+        {"type": "login",   "password": "<password>", "username": "..."}
+
+    Bare-string password files keep working unchanged. Parse leniently: if
+    the content looks like JSON, extract the canonical password field; else
+    fall back to the raw text.
+    """
+    if not raw:
+        return raw
+    if not raw.startswith("{"):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    if not isinstance(parsed, dict):
+        return raw
+    # Canonical fields by type:
+    #   api_key → "value"
+    #   login   → "password"
+    for key in ("password", "value"):
+        candidate = parsed.get(key)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return raw
 
 
 # --- SSL / Connection helpers ---
