@@ -131,10 +131,16 @@ def load_config():
 def _extract_password_from_secret_blob(raw: str) -> str:
     """Return the bare password from a password_file content.
 
-    The unclutter-secrets-sync sidecar writes structured JSON blobs
-    (``{"type":"api_key","value":"..."}`` or ``{"type":"login","password":"..."}``)
-    instead of bare strings. Older deployments still ship the password as a
-    plain string. Be lenient: try JSON first, fall back to the raw value.
+    Atlas standardises on a structured secret-file format for forward
+    compatibility with credential managers, vault drivers and sync sidecars
+    that mount richer metadata alongside the value::
+
+        {"type": "api_key", "value": "<password>"}
+        {"type": "login",   "password": "<password>", "username": "..."}
+
+    Bare-string password files keep working unchanged. Parse leniently: if
+    the content looks like JSON, extract the canonical password field; else
+    fall back to the raw text.
     """
     if not raw:
         return raw
@@ -146,9 +152,9 @@ def _extract_password_from_secret_blob(raw: str) -> str:
         return raw
     if not isinstance(parsed, dict):
         return raw
-    # secrets-sync formats (see unclutter-secrets-sync/src/format.ts):
-    #   api_key → field "value"
-    #   login   → field "password"
+    # Canonical fields by type:
+    #   api_key → "value"
+    #   login   → "password"
     for key in ("password", "value"):
         candidate = parsed.get(key)
         if isinstance(candidate, str) and candidate:
