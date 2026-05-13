@@ -122,9 +122,38 @@ def load_config():
     if not config["password"] and config["password_file"]:
         pf = Path(config["password_file"])
         if pf.exists():
-            config["password"] = pf.read_text().strip()
+            raw = pf.read_text().strip()
+            config["password"] = _extract_password_from_secret_blob(raw)
 
     return config
+
+
+def _extract_password_from_secret_blob(raw: str) -> str:
+    """Return the bare password from a password_file content.
+
+    The unclutter-secrets-sync sidecar writes structured JSON blobs
+    (``{"type":"api_key","value":"..."}`` or ``{"type":"login","password":"..."}``)
+    instead of bare strings. Older deployments still ship the password as a
+    plain string. Be lenient: try JSON first, fall back to the raw value.
+    """
+    if not raw:
+        return raw
+    if not raw.startswith("{"):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+    if not isinstance(parsed, dict):
+        return raw
+    # secrets-sync formats (see unclutter-secrets-sync/src/format.ts):
+    #   api_key → field "value"
+    #   login   → field "password"
+    for key in ("password", "value"):
+        candidate = parsed.get(key)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return raw
 
 
 # --- SSL / Connection helpers ---
