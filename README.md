@@ -34,7 +34,7 @@ Atlas needs Claude Code credentials. Choose one:
 
 **Option A: OAuth (recommended)**
 ```bash
-docker run -it --rm -v $(pwd)/volume:/home/atlas atlas claude login
+docker run -it --rm -v $(pwd)/volume:/home/agent --entrypoint claude atlas:latest
 ```
 
 **Option B: API Key**
