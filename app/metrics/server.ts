@@ -231,12 +231,11 @@ function collectProcessMetrics(): MetricLine[] {
 }
 
 // ---------------------------------------------------------------------------
-// PR-5: Email poller observability
+// Email poller observability
 //
-// Signal to operators (and AtlasEmailPollerDown alert in PR-9) whether
-// the IMAP listener is actually running. The poller is supervised by
-// supervisord; we check `supervisorctl status email-poller` and surface
-// the result as a 0/1 gauge.
+// Signal to operators whether the IMAP listener is actually running. The
+// poller is supervised by supervisord; we check `supervisorctl status
+// email-poller` and surface the result as a 0/1 gauge.
 //
 // We deliberately use supervisorctl rather than scanning /proc — when
 // supervisord considers the service down (e.g. exit-on-error backoff),

@@ -1538,18 +1538,16 @@ api.patch("/config", async (c) => {
   const runtimePath = join(WS, ".atlas-runtime-config.json");
 
   // ─────────────────────────────────────────────────────────────
-  // PR-3 (F-2): atomic read-merge-write.
+  // Atomic read-merge-write.
   //
-  // Old behaviour: `JSON.parse(readFileSync(...))` wrapped in a bare
-  // catch silently swallowed corrupt-file errors. If the file was ever
+  // A bare `try/catch` around `JSON.parse(readFileSync(...))` would
+  // silently swallow corrupt-file errors. If the file were ever
   // truncated by a previous crash or partial write, the next PATCH
-  // would start from `{}` and clobber every key — including the
-  // controller-written imap/smtp settings. The pod looked fine and
-  // email broke without a single log line.
+  // would start from `{}` and clobber every previously-merged key.
   //
-  // New behaviour: parse errors are logged loudly, and the write goes
-  // through a tmp-file + rename so a crash mid-write never produces a
-  // half-written runtime-config.
+  // Instead: parse errors are logged loudly and refuse to proceed,
+  // and the write goes through a tmp-file + rename so a crash
+  // mid-write never produces a half-written runtime-config.
   // ─────────────────────────────────────────────────────────────
   let existing: Record<string, any> = {};
   if (existsSync(runtimePath)) {
