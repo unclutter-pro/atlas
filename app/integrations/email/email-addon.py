@@ -78,15 +78,32 @@ def load_config():
         except ImportError:
             pass
 
-    # Layer 2: Runtime config overrides (written by /api/v1/config endpoint)
+    # Layer 2: Runtime config overrides (written by /api/v1/config endpoint).
+    #
+    # PR-3 (F-2): the old bare `except: pass` here silently swallowed
+    # corruption — the agent would fall back to config.yml-only state
+    # with no signal at all that an explicit override existed and was
+    # unreadable. Now we surface the error to stderr so it shows up in
+    # the email-poller log and is greppable by operators.
     rt = {}
     if os.path.exists(RUNTIME_CONFIG_PATH):
         try:
             with open(RUNTIME_CONFIG_PATH) as f:
                 rt_data = json.load(f)
             rt = rt_data.get("email", {}) if isinstance(rt_data, dict) else {}
-        except (json.JSONDecodeError, OSError):
-            pass
+        except json.JSONDecodeError as e:
+            print(
+                f"[email config] ERROR: {RUNTIME_CONFIG_PATH} is corrupt JSON "
+                f"({e}); falling back to config.yml. Manual recovery may be required.",
+                file=sys.stderr,
+                flush=True,
+            )
+        except OSError as e:
+            print(
+                f"[email config] WARN: could not read {RUNTIME_CONFIG_PATH}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     # Merge: runtime overrides config.yml (for each key, use rt value if present,
     # else cfg value, else default).  Env vars override both.
