@@ -80,11 +80,11 @@ def load_config():
 
     # Layer 2: Runtime config overrides (written by /api/v1/config endpoint).
     #
-    # PR-3 (F-2): the old bare `except: pass` here silently swallowed
-    # corruption — the agent would fall back to config.yml-only state
-    # with no signal at all that an explicit override existed and was
-    # unreadable. Now we surface the error to stderr so it shows up in
-    # the email-poller log and is greppable by operators.
+    # We surface parse errors to stderr so they show up in the email-poller
+    # log. Silently swallowing them would let a corrupt runtime-config drop
+    # the agent back to config.yml-only state without any signal — and the
+    # next /api/v1/config write would then clobber whatever valid state was
+    # actually meant to be there.
     rt = {}
     if os.path.exists(RUNTIME_CONFIG_PATH):
         try:
