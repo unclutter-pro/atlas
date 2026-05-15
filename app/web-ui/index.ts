@@ -10,6 +10,7 @@ import {
   statSync,
   unlinkSync,
   chmodSync,
+  renameSync,
 } from "fs";
 import { join, resolve, relative } from "path";
 import { homedir } from "os";
@@ -1536,15 +1537,45 @@ api.patch("/config", async (c) => {
   const body = await c.req.json();
   const runtimePath = join(WS, ".atlas-runtime-config.json");
 
-  // Read existing runtime config
+  // ─────────────────────────────────────────────────────────────
+  // PR-3 (F-2): atomic read-merge-write.
+  //
+  // Old behaviour: `JSON.parse(readFileSync(...))` wrapped in a bare
+  // catch silently swallowed corrupt-file errors. If the file was ever
+  // truncated by a previous crash or partial write, the next PATCH
+  // would start from `{}` and clobber every key — including the
+  // controller-written imap/smtp settings. The pod looked fine and
+  // email broke without a single log line.
+  //
+  // New behaviour: parse errors are logged loudly, and the write goes
+  // through a tmp-file + rename so a crash mid-write never produces a
+  // half-written runtime-config.
+  // ─────────────────────────────────────────────────────────────
   let existing: Record<string, any> = {};
-  try {
-    if (existsSync(runtimePath)) {
-      existing = JSON.parse(readFileSync(runtimePath, "utf-8"));
+  if (existsSync(runtimePath)) {
+    try {
+      const raw = readFileSync(runtimePath, "utf-8");
+      existing = JSON.parse(raw);
+    } catch (err) {
+      // Don't silently fall back to `{}` — that loses all previous
+      // controller-written state on the next write. Surface the error
+      // so an operator (or follow-up sync) can recover.
+      console.error(
+        `[config PATCH] runtime-config is corrupt at ${runtimePath} — refusing to deep-merge over an empty object:`,
+        err,
+      );
+      return c.json(
+        {
+          error: "Runtime config is corrupt",
+          message:
+            "The on-disk runtime config could not be parsed. Manual inspection required to avoid silently overwriting valid state.",
+        },
+        500,
+      );
     }
-  } catch {}
+  }
 
-  // Deep merge
+  // Deep merge — target keys preserved unless source overrides them.
   function deepMerge(target: Record<string, any>, source: Record<string, any>): Record<string, any> {
     for (const key of Object.keys(source)) {
       if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
@@ -1557,7 +1588,26 @@ api.patch("/config", async (c) => {
   }
 
   deepMerge(existing, body);
-  writeFileSync(runtimePath, JSON.stringify(existing, null, 2), "utf-8");
+  const serialized = JSON.stringify(existing, null, 2);
+
+  // Atomic write: tmp file + rename. rename() is atomic within the same
+  // filesystem (POSIX). A crash between writeFileSync and renameSync
+  // leaves the original runtime-config untouched.
+  const tmpPath = `${runtimePath}.tmp`;
+  try {
+    writeFileSync(tmpPath, serialized, "utf-8");
+    renameSync(tmpPath, runtimePath);
+  } catch (err) {
+    // Best-effort tmp cleanup; don't mask the original error.
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    } catch {}
+    console.error(`[config PATCH] failed to write runtime-config:`, err);
+    return c.json(
+      { error: "Write failed", message: err instanceof Error ? err.message : "unknown" },
+      500,
+    );
+  }
 
   // Regenerate settings
   try {
