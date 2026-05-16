@@ -93,7 +93,7 @@ Your endpoint should validate this header to ensure requests originate from Atla
 - **Fire-and-forget**: The webhook is sent asynchronously with a 10-second timeout. It never blocks session teardown.
 - **Error handling**: Failed requests are logged but do not affect session flow.
 - **Timing**: The webhook fires after the session fully completes (all hooks finished, metrics recorded).
-- **Scope**: Reports on trigger sessions only (the main Claude sessions, not agent teammates).
+- **Scope**: Reports on trigger sessions only (the main Claude sessions, not subagents).
 
 ## Example: Receiving Webhooks
 

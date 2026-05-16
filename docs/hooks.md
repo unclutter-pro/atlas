@@ -4,7 +4,7 @@ Claude Code hooks inject context at lifecycle events. Hooks are shell scripts or
 
 ## session-start.sh
 
-Runs when any Claude Code session starts (trigger sessions and agent teammates).
+Runs when any Claude Code session starts (trigger sessions and subagents).
 
 Outputs XML-wrapped sections:
 
@@ -85,7 +85,7 @@ Runs before manual context compaction (when user runs `/compact`). Same behavior
 
 ## SubagentStop (prompt-type hook)
 
-Configured in `settings.json` as a prompt-type hook. Fires in the trigger session when an agent teammate finishes. Asks the trigger session to evaluate whether the teammate's result is complete and acceptable, or needs rework.
+Configured in `settings.json` as a prompt-type hook. Fires in the trigger session when a subagent finishes. Asks the trigger session to evaluate whether the subagent's result is complete and acceptable, or needs rework.
 
 Configured via `generate-settings.ts` — the model used for this review is set by `subagent_review` in `config.yml`.
 
