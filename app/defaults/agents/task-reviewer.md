@@ -1,6 +1,6 @@
 ---
 name: task-reviewer
-description: Reviews non-code task results against acceptance criteria. Use after a teammate completes a research task, writing task, configuration change, or any deliverable that needs verification before reporting to the user. For code reviews, use the specialized review agents (security-code-reviewer, code-quality-reviewer, etc.) instead.
+description: Reviews non-code task results against acceptance criteria. Use after a subagent completes a research task, writing task, configuration change, or any deliverable that needs verification before reporting to the user. For code reviews, use the specialized review agents (security-code-reviewer, code-quality-reviewer, etc.) instead.
 tools: Read, Glob, Grep, WebFetch, WebSearch
 model: haiku
 ---

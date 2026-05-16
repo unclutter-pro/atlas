@@ -15,9 +15,9 @@ Containerized autonomous agent system powered by Claude Code. Made to enable com
 Trigger Event → trigger.sh → trigger-runner (native binary) → Trigger Session (PM role)
                                                                           ↓
                                                          Simple: respond directly via CLI tools
-                                                         Complex: TeamCreate + Agent(teammates)
+                                                         Complex: Agent(subagent_type=..., prompt="...")
                                                                           ↓
-                                                         Teammates work in parallel on non-overlapping paths
+                                                         Subagents are stateless workers receiving full context via prompt
 ```
 
 ## Tech Stack

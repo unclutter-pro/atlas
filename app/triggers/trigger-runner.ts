@@ -139,6 +139,10 @@ const DISALLOWED_BUILTIN_TOOLS = [
   "TaskGet",
   // No interactive user-question loop in trigger sessions
   "AskUserQuestion",
+  // Teams feature disabled — agent runs without teammate coordination
+  "TeamCreate",
+  "TeamDelete",
+  "SendMessage",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1091,6 @@ export async function runDirect(
   // --- Set environment variables ---
   process.env.ATLAS_TRIGGER = triggerName;
   process.env.ATLAS_TRIGGER_CHANNEL = channel;
-  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
   delete process.env.CLAUDECODE;
 
   // Apply any extra env vars from options
@@ -1634,11 +1637,10 @@ export async function main(): Promise<void> {
   process.env.ATLAS_TRIGGER = triggerName;
   process.env.ATLAS_TRIGGER_CHANNEL = channel;
   process.env.ATLAS_TRIGGER_SESSION_KEY = sessionKey;
-  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
   delete process.env.CLAUDECODE; // avoid nested-session detection
 
   // --- Run the query ---
-  // Persistent sessions can run for hours (long tasks, teams) — no hard timeout.
+  // Persistent sessions can run for hours (long tasks) — no hard timeout.
   // Ephemeral sessions get a timeout to prevent runaway processes.
   const triggerTimeout =
     sessionMode === "persistent"

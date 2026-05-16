@@ -1,6 +1,6 @@
 # Integrations
 
-Atlas supports Signal and Email as communication channels. Each integration writes incoming messages to the inbox, then spawns a trigger session (persistent, keyed per contact/thread) that can reply directly or delegate complex tasks to agent teammates.
+Atlas supports Signal and Email as communication channels. Each integration writes incoming messages to the inbox, then spawns a trigger session (persistent, keyed per contact/thread) that can reply directly or delegate complex tasks to subagents via `Agent(...)`.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ Signal message ──▸ signal incoming <sender> <message>
                           (direct CLI call)             (delegate)
                                     │                       │
                                     ▼                       ▼
-                            signal-cli send         Agent teammate
+                            signal-cli send         Subagent worker
 
 
 Email (IMAP) ──▸ email poll
@@ -51,7 +51,7 @@ Email (IMAP) ──▸ email poll
                           (direct CLI call)              (delegate)
                                     │                       │
                                     ▼                       ▼
-                            SMTP with threading     Agent teammate
+                            SMTP with threading     Subagent worker
                             headers
 ```
 
@@ -111,7 +111,7 @@ trigger_create:
     {{payload}}
 
     The payload contains inbox_message_id and sender. Reply via CLI: signal send.
-    Escalate complex tasks by delegating to an Agent teammate.
+    Escalate complex tasks by delegating via Agent.
 ```
 
 **3. Start polling** (add to supervisord or crontab):
@@ -206,7 +206,7 @@ trigger_create:
     {{payload}}
 
     The payload contains inbox_message_id and thread_id. Reply via CLI: email reply.
-    Escalate complex tasks by delegating to an Agent teammate.
+    Escalate complex tasks by delegating via Agent.
 ```
 
 **4. Start polling**:

@@ -33,10 +33,10 @@ const beadsSessionScript = "/atlas/app/hooks/beads-session.sh";
 
 // No prompt-based stop hook — the Beads command hook (beads-session.sh check)
 // handles task completion gating via RalphLoop-style {"decision":"block"} JSON.
-// Team lifecycle and response delivery are handled by system prompt instructions.
+// Response delivery is handled by system prompt instructions.
 
 const subagentStopPrompt = [
-  "A team member has completed their task. Review the result in $ARGUMENTS.",
+  "A subagent has completed their task. Review the result in $ARGUMENTS.",
   "",
   "Evaluate:",
   "1. Was the original task fully completed?",
@@ -58,7 +58,6 @@ const commitAttribution = agentEmail
 
 const settings: Record<string, unknown> = {
   env: {
-    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   },
   attribution: {
@@ -77,9 +76,6 @@ const settings: Record<string, unknown> = {
       "WebFetch",
       "WebSearch",
       "Agent",
-      "TeamCreate",
-      "TeamDelete",
-      "SendMessage",
       "mcp__*",
     ],
     deny: [
