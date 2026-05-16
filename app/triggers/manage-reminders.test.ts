@@ -311,6 +311,29 @@ describe("check: recurring reminder re-schedule", () => {
     expect(newRow.prompt).toBe("Review the CI pipeline");
   });
 
+  test("recurring reminder: --at sets initial fire_at, --recurring drives the re-schedule", () => {
+    // Simulates: reminder add --at="2026-05-16 14:00" --recurring=5h ...
+    // Initial fire_at comes from --at (here: a fixed past timestamp so it's due).
+    // After fire, the next row's fire_at is now + recurring_interval_seconds.
+    const initialFireAt = "2020-01-01 14:00:00";
+    const id = insertReminder(db, {
+      fire_at: initialFireAt,
+      recurring_interval_seconds: 18_000, // 5h
+    });
+
+    const original = db.prepare("SELECT fire_at FROM reminders WHERE id = ?").get(id) as any;
+    expect(original.fire_at).toBe(initialFireAt); // --at honored as the first fire time
+
+    const newId = simulateFire(db, id);
+    const newRow = db.prepare("SELECT fire_at, recurring_interval_seconds FROM reminders WHERE id = ?").get(newId!) as any;
+
+    // Next fire is scheduled at "now + 5h" — verify it's roughly 18000 seconds in the future
+    const nextMs = new Date(newRow.fire_at.replace(" ", "T") + "Z").getTime();
+    const expectedMs = Date.now() + 18_000 * 1000;
+    expect(Math.abs(nextMs - expectedMs)).toBeLessThan(5000); // 5s tolerance for test execution
+    expect(newRow.recurring_interval_seconds).toBe(18_000);
+  });
+
   test("recurring reminder: cancelling the new pending row stops the chain", () => {
     const id = insertReminder(db, { recurring_interval_seconds: 18_000 });
     const newId = simulateFire(db, id);
