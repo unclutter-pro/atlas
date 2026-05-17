@@ -208,6 +208,9 @@ interface ParsedMessage {
   timestamp?: string;
   toolName?: string;
   toolInput?: string;
+  /** Anthropic message.id (UUID). Present on assistant blocks; used to stitch
+   *  streamed chunks to their final assistant_message on the client side. */
+  messageId?: string;
 }
 
 function findSessionFile(sessionId: string): string | null {
@@ -224,7 +227,7 @@ function findSessionFile(sessionId: string): string | null {
   return null;
 }
 
-function parseSessionMessages(filePath: string): ParsedMessage[] {
+export function parseSessionMessages(filePath: string): ParsedMessage[] {
   const messages: ParsedMessage[] = [];
   let content: string;
   try {
@@ -291,10 +294,17 @@ function parseSessionMessages(filePath: string): ParsedMessage[] {
       const rawMsg = obj.message;
       const msgBlocks = (rawMsg && typeof rawMsg === "object" && !Array.isArray(rawMsg) && Array.isArray(rawMsg.content))
         ? rawMsg.content : rawMsg;
+      // Anthropic message.id — same id the SDK emits on stream_event.message_start
+      // events. We propagate it on every block produced by this turn so the
+      // SSE handler can match streamed chunks to the final assistant_message.
+      const messageId: string | undefined =
+        (rawMsg && typeof rawMsg === "object" && !Array.isArray(rawMsg) && typeof rawMsg.id === "string")
+          ? rawMsg.id
+          : undefined;
       if (!Array.isArray(msgBlocks)) continue;
       for (const block of msgBlocks) {
         if (block.type === "text" && block.text) {
-          messages.push({ type: "assistant-text", content: block.text, timestamp: ts });
+          messages.push({ type: "assistant-text", content: block.text, timestamp: ts, messageId });
         } else if (block.type === "tool_use") {
           const inputStr = typeof block.input === "string"
             ? block.input
@@ -2266,6 +2276,11 @@ api.delete("/chat/messages", async (c) => {
   db.prepare("DELETE FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default'").run();
   // 3. Clear web channel user messages
   db.prepare("DELETE FROM messages WHERE channel='web'").run();
+  // 4. Drop any persisted stream chunks for the retired session so they
+  //    don't haunt the next conversation if SQLite recycles the row ids.
+  if (session) {
+    db.prepare("DELETE FROM web_chat_stream_chunks WHERE session_id = ?").run(session.session_id);
+  }
 
   return c.json({ ok: true, farewellSent });
 });
@@ -2365,6 +2380,12 @@ api.get("/chat/messages", (c) => {
 });
 
 api.get("/chat/stream", (c) => {
+  // Per-request opt-out of incremental text chunks. Default ON — the new
+  // streaming behaviour is what we want for new clients. Callers that want
+  // the old "wait for the whole message" UX can pass `?stream=false`.
+  const streamParam = c.req.query("stream");
+  const wantsStreamChunks = streamParam !== "false" && streamParam !== "0";
+
   return c.newResponse(
     new ReadableStream({
       async start(controller) {
@@ -2378,6 +2399,7 @@ api.get("/chat/stream", (c) => {
         let lastUserMsgCount = 0;
         let lastAssistantMsgCount = 0;
         let lastToolCount = 0;
+        let lastChunkId = 0; // monotonic id from web_chat_stream_chunks
         let wasRunning = false;
         let isFirstPoll = true;
         let pollCount = 0;
@@ -2463,6 +2485,22 @@ api.get("/chat/stream", (c) => {
               lastUserMsgCount = userMessages.length;
               lastAssistantMsgCount = assistantTextMsgs.length;
               lastToolCount = toolUseMsgs.length;
+              // Skip any chunks that landed before this stream opened — they
+              // belong to an already-rendered message and the JSONL is the
+              // canonical source for past turns. Without this, a fresh
+              // connection would replay every delta the trigger-runner has
+              // ever persisted for this session. When no session row exists
+              // yet (user opened the chat before sending anything) there are
+              // no chunks to skip; lastChunkId stays at 0 and the next poll
+              // will discover the new session and emit chunks from the start.
+              if (session) {
+                const maxRow = db
+                  .prepare(
+                    "SELECT COALESCE(MAX(id), 0) AS maxId FROM web_chat_stream_chunks WHERE session_id = ?",
+                  )
+                  .get(session.session_id) as { maxId: number } | undefined;
+                lastChunkId = maxRow?.maxId ?? 0;
+              }
               wasRunning = isAgentRunning;
               isFirstPoll = false;
               setTimeout(poll, 500);
@@ -2479,10 +2517,47 @@ api.get("/chat/stream", (c) => {
               lastUserMsgCount = userMessages.length;
             }
 
+            // Stream chunks: emit any text deltas the trigger-runner has
+            // persisted since the last poll. Each chunk carries the same
+            // messageId the final assistant_message will carry, so the client
+            // can stitch them into a growing bubble and then replace with the
+            // final text once it lands in the JSONL. Skipped when the client
+            // opted out via ?stream=false.
+            if (wantsStreamChunks && session) {
+              const chunks = db
+                .prepare(
+                  `SELECT id, message_uuid, chunk_index, content_delta
+                     FROM web_chat_stream_chunks
+                     WHERE session_id = ? AND id > ?
+                     ORDER BY id ASC
+                     LIMIT 200`,
+                )
+                .all(session.session_id, lastChunkId) as {
+                  id: number;
+                  message_uuid: string;
+                  chunk_index: number;
+                  content_delta: string;
+                }[];
+              for (const ch of chunks) {
+                send("assistant_message_chunk", {
+                  messageId: ch.message_uuid,
+                  index: ch.chunk_index,
+                  delta: ch.content_delta,
+                });
+                lastChunkId = ch.id;
+              }
+            }
+
             // New assistant text messages
             if (assistantTextMsgs.length > lastAssistantMsgCount) {
               for (let i = lastAssistantMsgCount; i < assistantTextMsgs.length; i++) {
-                send("assistant_message", { content: assistantTextMsgs[i].content, timestamp: assistantTextMsgs[i].timestamp || "" });
+                send("assistant_message", {
+                  content: assistantTextMsgs[i].content,
+                  timestamp: assistantTextMsgs[i].timestamp || "",
+                  ...(assistantTextMsgs[i].messageId
+                    ? { messageId: assistantTextMsgs[i].messageId }
+                    : {}),
+                });
               }
               lastAssistantMsgCount = assistantTextMsgs.length;
             }
