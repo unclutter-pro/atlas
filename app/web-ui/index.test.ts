@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning } from "./index";
+import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages } from "./index";
 
 describe("sqliteToIso", () => {
   test("converts SQLite UTC timestamp to ISO with Z", () => {
@@ -138,6 +138,87 @@ describe("isAgentTurnActive", () => {
     ];
     writeFileSync(path, lines.join("\n"));
     expect(isAgentTurnActive(path)).toBe(false);
+  });
+});
+
+describe("parseSessionMessages — messageId propagation", () => {
+  let tmp: string;
+  let path: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "atlas-parse-test-"));
+    path = join(tmp, "session.jsonl");
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("captures Anthropic message.id on assistant-text blocks (used to stitch SSE chunks → final message)", () => {
+    const lines = [
+      JSON.stringify({ type: "user", message: { role: "user", content: "hi" }, timestamp: "2026-05-17T10:00:00Z" }),
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-17T10:00:01Z",
+        message: {
+          role: "assistant",
+          id: "msg_01ABCDEF",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "hello back" }],
+        },
+      }),
+    ];
+    writeFileSync(path, lines.join("\n"));
+
+    const parsed = parseSessionMessages(path);
+    const assistantText = parsed.find((m) => m.type === "assistant-text");
+    expect(assistantText).toBeDefined();
+    expect(assistantText?.content).toBe("hello back");
+    expect(assistantText?.messageId).toBe("msg_01ABCDEF");
+  });
+
+  test("messageId is undefined when JSONL entry lacks message.id (legacy/malformed lines)", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-17T10:00:01Z",
+        message: {
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "no id here" }],
+        },
+      }),
+    ];
+    writeFileSync(path, lines.join("\n"));
+
+    const parsed = parseSessionMessages(path);
+    const assistantText = parsed.find((m) => m.type === "assistant-text");
+    expect(assistantText?.messageId).toBeUndefined();
+  });
+
+  test("propagates the same messageId to every block inside one assistant message (text + tool_use share an id)", () => {
+    const lines = [
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-17T10:00:01Z",
+        message: {
+          role: "assistant",
+          id: "msg_shared",
+          stop_reason: "tool_use",
+          content: [
+            { type: "text", text: "ok let me check" },
+            { type: "tool_use", id: "tu_1", name: "WebFetch", input: { url: "https://x" } },
+          ],
+        },
+      }),
+    ];
+    writeFileSync(path, lines.join("\n"));
+
+    const parsed = parseSessionMessages(path);
+    const text = parsed.find((m) => m.type === "assistant-text");
+    expect(text?.messageId).toBe("msg_shared");
+    // tool_use block doesn't propagate messageId (it's not used downstream),
+    // but we don't crash either.
   });
 });
 

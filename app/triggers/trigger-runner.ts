@@ -1049,6 +1049,73 @@ function openDb(): Database {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming chunk persistence (web channel only)
+// ---------------------------------------------------------------------------
+
+/**
+ * State carried across stream_event messages for a single turn. We treat the
+ * SDK's `message_start` raw event as the boundary between turns: a new
+ * message id resets the chunk counter; deltas are appended in order.
+ */
+export interface StreamChunkState {
+  /** Setter for the current turn's stable id. Called on message_start. */
+  setUuid: (uuid: string) => void;
+  /** Getter for the active turn id (null before message_start). */
+  uuidRef: () => string | null;
+  /** Returns the next chunk_index for the active turn (post-increments). */
+  nextIndex: () => number;
+}
+
+/**
+ * Persist a text delta from an SDKPartialAssistantMessage to
+ * web_chat_stream_chunks so the web-ui SSE handler can forward it to the
+ * client. Silently ignores non-text events (tool blocks, message_stop, etc.)
+ * — those go through the regular JSONL → assistant_message path.
+ *
+ * Exported for unit testing; the production caller is the for-await loop in
+ * the persistent web-chat session.
+ */
+export function persistStreamChunk(
+  msg: { type: string; event?: unknown; session_id?: string },
+  state: StreamChunkState,
+  db: Database = openSharedDb(),
+): void {
+  if (msg.type !== "stream_event") return;
+  const event = msg.event as
+    | {
+        type?: string;
+        message?: { id?: string };
+        delta?: { type?: string; text?: string };
+      }
+    | undefined;
+  if (!event || typeof event !== "object") return;
+  if (!msg.session_id) return;
+
+  // message_start: begin a new turn. Use the Anthropic message id as the
+  // stable handle the client will use to stitch chunks → final message.
+  if (event.type === "message_start" && event.message?.id) {
+    state.setUuid(event.message.id);
+    return;
+  }
+
+  // content_block_delta: append the text fragment to the current turn.
+  if (
+    event.type === "content_block_delta"
+    && event.delta?.type === "text_delta"
+    && typeof event.delta.text === "string"
+    && event.delta.text.length > 0
+  ) {
+    const uuid = state.uuidRef();
+    if (!uuid) return; // no message_start yet — shouldn't happen, skip safely
+    const index = state.nextIndex();
+    db.prepare(
+      `INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta)
+       VALUES (?, ?, ?, ?)`,
+    ).run(msg.session_id, uuid, index, event.delta.text);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Direct mode (no DB trigger)
 // ---------------------------------------------------------------------------
 
@@ -1666,6 +1733,11 @@ export async function main(): Promise<void> {
   );
   let socketServer: Server | null = null;
 
+  // Streaming: emit text deltas for any session whose channel renders them
+  // (today: web). Other channels (signal, email) deliver complete messages
+  // anyway, so there's no benefit to the extra event volume.
+  const wantsStreaming = channel === "web";
+
   const runQuery = async (resumeId?: string) => {
     const options: Parameters<typeof query>[0]["options"] = {
       systemPrompt,
@@ -1680,6 +1752,7 @@ export async function main(): Promise<void> {
       ...(CLAUDE_CODE_PATH
         ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
         : {}),
+      ...(wantsStreaming ? { includePartialMessages: true } : {}),
     };
 
     // Push the initial prompt as the first message
@@ -1702,6 +1775,11 @@ export async function main(): Promise<void> {
         }, triggerTimeout)
       : undefined;
 
+    // Per-message chunk counter for streaming. Resets when a new
+    // SDKAssistantMessage uuid appears so each turn's deltas index from 0.
+    let streamChunkUuid: string | null = null;
+    let streamChunkIndex = 0;
+
     try {
       for await (const msg of q) {
         if (msg.type === "result") {
@@ -1713,6 +1791,36 @@ export async function main(): Promise<void> {
         // Capture session_id from any message that carries it
         if ("session_id" in msg && msg.session_id && !capturedSessionId) {
           capturedSessionId = msg.session_id as string;
+        }
+        // Streaming: persist text deltas so the web-ui SSE handler can
+        // forward them to the client in near-real-time. We accept the cost
+        // of one INSERT per delta (typically a few characters) because the
+        // chunks table is local SQLite and the web channel is low-volume.
+        //
+        // Per the SDK type `SDKPartialAssistantMessage.session_id` is always
+        // present on stream_event messages, but we belt-and-brace with the
+        // outer `capturedSessionId` so a future SDK change can't silently
+        // drop every chunk by handing us a partial without session_id.
+        if (wantsStreaming && msg.type === "stream_event") {
+          try {
+            const sid = (msg as unknown as { session_id?: string }).session_id
+              ?? capturedSessionId
+              ?? undefined;
+            if (sid) {
+              persistStreamChunk(
+                { type: msg.type, event: (msg as unknown as { event?: unknown }).event, session_id: sid },
+                {
+                  setUuid: (u) => { streamChunkUuid = u; streamChunkIndex = 0; },
+                  uuidRef: () => streamChunkUuid,
+                  nextIndex: () => streamChunkIndex++,
+                },
+                db,
+              );
+            }
+          } catch (err) {
+            // Don't let a malformed stream event tear down the whole turn.
+            log.log(`stream-chunk persist failed: ${err}`);
+          }
         }
       }
     } finally {

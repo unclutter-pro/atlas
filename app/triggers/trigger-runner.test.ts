@@ -27,8 +27,10 @@ import {
   startSocketServer,
   trySocketInject,
   cleanupSocket,
+  persistStreamChunk,
   type TriggerConfig,
   type MetricsData,
+  type StreamChunkState,
 } from "./trigger-runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -745,5 +747,146 @@ describe("Socket IPC", () => {
     server = null; // Already cleaned up
 
     expect(existsSync(socketPath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// persistStreamChunk — text delta persistence for the web channel SSE stream
+// ---------------------------------------------------------------------------
+
+describe("persistStreamChunk", () => {
+  let db: Database;
+  let state: { uuid: string | null; nextIndex: number };
+  let api: StreamChunkState;
+
+  beforeAll(() => {
+    db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE web_chat_stream_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message_uuid TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content_delta TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  });
+
+  afterAll(() => {
+    db.close();
+  });
+
+  afterEach(() => {
+    db.exec("DELETE FROM web_chat_stream_chunks");
+  });
+
+  function freshState(): StreamChunkState {
+    state = { uuid: null, nextIndex: 0 };
+    api = {
+      setUuid: (u) => { state.uuid = u; state.nextIndex = 0; },
+      uuidRef: () => state.uuid,
+      nextIndex: () => state.nextIndex++,
+    };
+    return api;
+  }
+
+  function rows(): { message_uuid: string; chunk_index: number; content_delta: string }[] {
+    return db.prepare(
+      "SELECT message_uuid, chunk_index, content_delta FROM web_chat_stream_chunks ORDER BY id ASC",
+    ).all() as { message_uuid: string; chunk_index: number; content_delta: string }[];
+  }
+
+  test("message_start records the message id but writes no chunk row", () => {
+    const s = freshState();
+    persistStreamChunk(
+      { type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-abc" } } },
+      s,
+      db,
+    );
+    expect(state.uuid).toBe("msg-abc");
+    expect(rows().length).toBe(0);
+  });
+
+  test("text deltas after message_start are persisted with incrementing index", () => {
+    const s = freshState();
+    persistStreamChunk(
+      { type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } },
+      s, db,
+    );
+    persistStreamChunk(
+      { type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hello" } } },
+      s, db,
+    );
+    persistStreamChunk(
+      { type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: " world" } } },
+      s, db,
+    );
+
+    expect(rows()).toEqual([
+      { message_uuid: "msg-1", chunk_index: 0, content_delta: "Hello" },
+      { message_uuid: "msg-1", chunk_index: 1, content_delta: " world" },
+    ]);
+  });
+
+  test("a new message_start resets the chunk index to 0", () => {
+    const s = freshState();
+    // turn 1
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "A" } } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "B" } } }, s, db);
+    // turn 2 (after a tool, say)
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-2" } } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "X" } } }, s, db);
+
+    expect(rows()).toEqual([
+      { message_uuid: "msg-1", chunk_index: 0, content_delta: "A" },
+      { message_uuid: "msg-1", chunk_index: 1, content_delta: "B" },
+      { message_uuid: "msg-2", chunk_index: 0, content_delta: "X" },
+    ]);
+  });
+
+  test("non-text deltas (tool_use, thinking, message_stop) are ignored", () => {
+    const s = freshState();
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
+
+    // Tool-block delta, thinking-delta, content_block_stop, message_stop — none should write a row
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "..." } } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_stop", index: 0 } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_stop" } }, s, db);
+
+    expect(rows().length).toBe(0);
+  });
+
+  test("empty text deltas are ignored (no zero-length rows)", () => {
+    const s = freshState();
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "" } } }, s, db);
+
+    expect(rows().length).toBe(0);
+  });
+
+  test("text delta before any message_start is silently dropped", () => {
+    const s = freshState();
+    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "orphan" } } }, s, db);
+
+    expect(rows().length).toBe(0);
+    expect(state.uuid).toBeNull();
+  });
+
+  test("non-stream_event types are ignored", () => {
+    const s = freshState();
+    persistStreamChunk({ type: "assistant", session_id: "sess-1", event: { type: "message_start", message: { id: "x" } } }, s, db);
+    expect(state.uuid).toBeNull();
+    expect(rows().length).toBe(0);
+  });
+
+  test("missing session_id is ignored", () => {
+    const s = freshState();
+    persistStreamChunk({ type: "stream_event", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
+    // message_start with no session_id should not even set the uuid
+    expect(state.uuid).toBeNull();
+    expect(rows().length).toBe(0);
   });
 });

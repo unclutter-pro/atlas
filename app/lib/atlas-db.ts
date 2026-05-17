@@ -130,6 +130,35 @@ function createTables(database: Database): void {
     );
   `);
 
+  // Web-chat streaming: incremental text deltas produced by the SDK while an
+  // assistant turn is in flight. Web-UI tails this table and forwards chunks
+  // as SSE events so the user sees text appear as it's generated. Rows are
+  // disposable — keyed by session_id + message_uuid (message_uuid is the
+  // SDKAssistantMessage uuid, so the client can stitch chunks to the final
+  // assistant message that lands in the JSONL).
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS web_chat_stream_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      message_uuid TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      content_delta TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_web_chat_stream_chunks_session
+      ON web_chat_stream_chunks(session_id, id);
+  `);
+
+  // Prune orphaned stream chunks on startup — rows whose session_id no
+  // longer maps to a live trigger_session. Without this, every retired
+  // web-chat session leaves its chunks behind forever and the table grows
+  // unbounded on long-lived customer containers. Bounded by the size of
+  // the chunks table at boot, so cheap even after a long uptime.
+  database.exec(`
+    DELETE FROM web_chat_stream_chunks
+    WHERE session_id NOT IN (SELECT session_id FROM trigger_sessions)
+  `);
+
   // Webhook queue: failed usage webhooks for retry on next trigger run
   database.exec(`
     CREATE TABLE IF NOT EXISTS webhook_queue (
