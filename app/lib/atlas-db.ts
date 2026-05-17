@@ -149,6 +149,16 @@ function createTables(database: Database): void {
       ON web_chat_stream_chunks(session_id, id);
   `);
 
+  // Prune orphaned stream chunks on startup — rows whose session_id no
+  // longer maps to a live trigger_session. Without this, every retired
+  // web-chat session leaves its chunks behind forever and the table grows
+  // unbounded on long-lived customer containers. Bounded by the size of
+  // the chunks table at boot, so cheap even after a long uptime.
+  database.exec(`
+    DELETE FROM web_chat_stream_chunks
+    WHERE session_id NOT IN (SELECT session_id FROM trigger_sessions)
+  `);
+
   // Webhook queue: failed usage webhooks for retry on next trigger run
   database.exec(`
     CREATE TABLE IF NOT EXISTS webhook_queue (
