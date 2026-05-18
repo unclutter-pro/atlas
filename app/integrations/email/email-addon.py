@@ -1017,7 +1017,10 @@ def cmd_send(config, to, subject, body, attachments=None):
         """, (thread_id, msg["Message-ID"], config["username"], to, subject, body[:8000]))
 
         db.commit()
-        print(f"Email sent to {to} (subject=\"{subject}\", thread={thread_id})")
+        print(f"Email sent to {to}")
+        print(f"  Subject: {subject}")
+        print(f"  Thread:  {thread_id}")
+        print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     except Exception as e:
         print(f"ERROR: Failed to send: {e}", file=sys.stderr)
@@ -1087,8 +1090,10 @@ def cmd_reply(config, thread_id, body, attachments=None):
               f"Re: {subject}", body[:8000]))
 
         db.commit()
-        print(f"Reply sent to {recipient} (thread={thread_id}, "
-              f"In-Reply-To={last_message_id or 'none'})")
+        print(f"Reply sent to {recipient}")
+        print(f"  Subject: Re: {subject}")
+        print(f"  Thread:  {thread_id}")
+        print(f"Follow up on this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     except Exception as e:
         print(f"ERROR: Failed to send reply: {e}", file=sys.stderr)
@@ -1112,15 +1117,19 @@ def cmd_threads(config, limit=20):
         db.close()
         return
 
-    print(f"{'Thread ID':<40} {'Subject':<30} {'From':<25} {'Msgs':>4}  {'Updated'}")
-    print("-" * 130)
+    # One block per thread — never truncate the thread_id, since it's the
+    # handle the caller will pass to `email reply` / `email thread`.
     for row in rows:
-        tid = row[0][:38]
-        subj = row[1][:28]
-        sender = row[2][:23]
-        count = row[3]
-        updated = row[4][:16]
-        print(f"{tid:<40} {subj:<30} {sender:<25} {count:>4}  {updated}")
+        tid, subj, sender, count, updated = row
+        print(f"Thread: {tid}")
+        print(f"  Subject:  {subj}")
+        print(f"  From:     {sender}")
+        print(f"  Messages: {count}")
+        print(f"  Updated:  {updated[:16]}")
+        print("")
+
+    print('View a thread with:  email thread "<thread_id>"')
+    print('Reply to a thread with:  email reply "<thread_id>" "<body>"')
 
     db.close()
 
@@ -1192,6 +1201,8 @@ def cmd_thread_detail(config, thread_id, raw=False):
         print("---")
         print("")
 
+    print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
+
     db.close()
 
 
@@ -1228,6 +1239,8 @@ def cmd_read_email(config, email_id, raw=False):
         print(f"**Thread:** {thread_id}  ")
         print("")
         print(body or "*(empty)*")
+        print("")
+        print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     db.close()
 
