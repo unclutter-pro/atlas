@@ -2602,8 +2602,17 @@ api.get("/chat/stream", (c) => {
     {
       headers: {
         "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
+        // `no-transform` blocks intermediate gzip / compression that some
+        // proxies apply, which would otherwise queue chunks until the
+        // compression buffer fills. Required for true progressive delivery.
+        "Cache-Control": "no-cache, no-transform",
         "Connection": "keep-alive",
+        // `X-Accel-Buffering: no` is the standard hint that disables
+        // buffering in nginx, Cloudflare, and most reverse proxies. Without
+        // it, the streamed chunks accumulate in the proxy buffer and the
+        // client sees the whole response land as a single blob at the end
+        // of the turn — exactly the symptom we hit in production.
+        "X-Accel-Buffering": "no",
       },
     }
   );
