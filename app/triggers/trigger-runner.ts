@@ -57,6 +57,7 @@ export type TriggerConfig = {
 export type MetricsData = {
   sessionType: string;
   sessionId: string;
+  parentSessionId?: string;
   triggerName: string;
   startedAt: string;
   endedAt: string;
@@ -805,14 +806,15 @@ export function recordMetrics(db: Database, data: MetricsData): void {
   db.prepare(
     `
     INSERT OR IGNORE INTO session_metrics
-      (session_type, session_id, trigger_name, started_at, ended_at,
+      (session_type, session_id, parent_session_id, trigger_name, started_at, ended_at,
        duration_ms, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, cost_usd, num_turns, is_error)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     data.sessionType,
     data.sessionId,
+    data.parentSessionId ?? null,
     data.triggerName,
     data.startedAt,
     data.endedAt,
@@ -825,6 +827,205 @@ export function recordMetrics(db: Database, data: MetricsData): void {
     data.numTurns,
     data.isError ? 1 : 0,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Subagent JSONL cost tracking
+// ---------------------------------------------------------------------------
+
+/** Pricing per 1M tokens for each model family. */
+export const MODEL_PRICING: Record<
+  string,
+  { in: number; out: number; cacheRead: number; cacheCreate: number }
+> = {
+  opus:    { in: 15.0,  out: 75.0,  cacheRead: 1.50,  cacheCreate: 18.75 },
+  sonnet:  { in: 3.0,   out: 15.0,  cacheRead: 0.30,  cacheCreate: 3.75 },
+  haiku:   { in: 1.0,   out: 5.0,   cacheRead: 0.10,  cacheCreate: 1.25 },
+};
+
+/** Determine pricing tier from a model string (e.g. "claude-sonnet-4-5"). */
+export function modelFamily(model: string): keyof typeof MODEL_PRICING {
+  const m = model.toLowerCase();
+  if (m.includes("opus")) return "opus";
+  if (m.includes("haiku")) return "haiku";
+  return "sonnet"; // default
+}
+
+export type SubagentMetrics = {
+  subagentId: string;
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+};
+
+/**
+ * Parse a subagent JSONL file and aggregate token usage + cost.
+ * Returns null if the file cannot be parsed or contains no usage data.
+ */
+export function parseSubagentJsonl(filePath: string): SubagentMetrics | null {
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const lines = content.split("\n");
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  let costUsd = 0;
+  const seenMessageIds = new Set<string>();
+  let firstTimestamp: string | null = null;
+  let lastTimestamp: string | null = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj: any;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    // Track timestamps for started_at/ended_at
+    if (obj.timestamp) {
+      if (!firstTimestamp) firstTimestamp = obj.timestamp as string;
+      lastTimestamp = obj.timestamp as string;
+    }
+
+    // Only process message entries that have usage data
+    const msg = obj.message;
+    if (!msg || typeof msg !== "object") continue;
+    if (!msg.usage) continue;
+
+    // Deduplicate by message id to avoid double-counting retries
+    const msgId = msg.id as string | undefined;
+    if (msgId) {
+      if (seenMessageIds.has(msgId)) continue;
+      seenMessageIds.add(msgId);
+    }
+
+    const usage = msg.usage as Record<string, number>;
+    const family = modelFamily((msg.model as string | undefined) ?? "");
+    const pricing = MODEL_PRICING[family];
+
+    const inTok = (usage.input_tokens as number | undefined) ?? 0;
+    const outTok = (usage.output_tokens as number | undefined) ?? 0;
+    const cacheReadTok = (usage.cache_read_input_tokens as number | undefined) ?? 0;
+    const cacheCreateTok = (usage.cache_creation_input_tokens as number | undefined) ?? 0;
+
+    inputTokens += inTok;
+    outputTokens += outTok;
+    cacheReadTokens += cacheReadTok;
+    cacheCreationTokens += cacheCreateTok;
+
+    // Compute cost for this message (per MTok pricing)
+    costUsd +=
+      (inTok * pricing.in +
+        outTok * pricing.out +
+        cacheReadTok * pricing.cacheRead +
+        cacheCreateTok * pricing.cacheCreate) /
+      1_000_000;
+  }
+
+  if (inputTokens === 0 && outputTokens === 0 && costUsd === 0) return null;
+
+  const startedAt = firstTimestamp ?? new Date().toISOString();
+  const endedAt = lastTimestamp ?? startedAt;
+  const durationMs =
+    new Date(endedAt).getTime() - new Date(startedAt).getTime();
+
+  // Extract subagent id from file name (agent-<id>.jsonl)
+  const fileName = filePath.split("/").pop() ?? filePath;
+  const subagentId = fileName.replace(/^agent-/, "").replace(/\.jsonl$/, "");
+
+  return {
+    subagentId,
+    startedAt,
+    endedAt,
+    durationMs: Math.max(0, durationMs),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    costUsd,
+  };
+}
+
+/**
+ * Resolve the Claude project directory name for the current working directory.
+ * Claude Code derives this by replacing every '/' with '-' and stripping the
+ * leading '-'. This matches the directory naming used by Claude Code itself.
+ */
+export function resolveClaudeProjectDir(): string {
+  const projectDir =
+    process.env.CLAUDE_PROJECT_DIR ??
+    process.cwd().replace(/\//g, "-").replace(/^-/, "");
+  return projectDir;
+}
+
+/**
+ * Scan subagent JSONL files for a given parent session and write a
+ * session_metrics row for each one found. Errors are silently swallowed so
+ * the parent trigger is never blocked.
+ */
+export function recordSubagentMetrics(
+  db: Database,
+  parentSessionId: string,
+  triggerName: string,
+  homeDir?: string,
+): void {
+  try {
+    const base = homeDir ?? HOME;
+    const projectDir = resolveClaudeProjectDir();
+    const subagentsDir = `${base}/.claude/projects/${projectDir}/${parentSessionId}/subagents`;
+
+    if (!existsSync(subagentsDir)) return;
+
+    let entries: string[];
+    try {
+      entries = readdirSync(subagentsDir);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.startsWith("agent-") || !entry.endsWith(".jsonl")) continue;
+      const filePath = `${subagentsDir}/${entry}`;
+      try {
+        const metrics = parseSubagentJsonl(filePath);
+        if (!metrics) continue;
+        recordMetrics(db, {
+          sessionType: "subagent",
+          sessionId: metrics.subagentId,
+          parentSessionId,
+          triggerName,
+          startedAt: metrics.startedAt,
+          endedAt: metrics.endedAt,
+          durationMs: metrics.durationMs,
+          inputTokens: metrics.inputTokens,
+          outputTokens: metrics.outputTokens,
+          cacheReadTokens: metrics.cacheReadTokens,
+          cacheCreationTokens: metrics.cacheCreationTokens,
+          costUsd: metrics.costUsd,
+          numTurns: 0,
+          isError: false,
+        });
+      } catch {
+        // Never block on individual subagent parse failure
+      }
+    }
+  } catch {
+    // Never block trigger completion
+  }
 }
 
 /**
@@ -1915,6 +2116,18 @@ export async function main(): Promise<void> {
     });
   } catch {
     // session_metrics table may not exist in very old DBs
+  }
+
+  // --- Record subagent metrics ---
+  // Subagent usage is written to separate JSONL files and never included in the
+  // parent resultMsg.usage. Scan and record each subagent independently so the
+  // dashboard reflects the true total cost.
+  if (capturedSessionId) {
+    try {
+      recordSubagentMetrics(db, capturedSessionId, triggerName);
+    } catch {
+      // Never block trigger completion on subagent metric failure
+    }
   }
 
   // --- Send usage reporting webhook ---

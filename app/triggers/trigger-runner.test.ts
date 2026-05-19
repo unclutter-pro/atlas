@@ -5,7 +5,7 @@
  * Run with: cd app/triggers && bun test
  */
 
-import { test, describe, expect, beforeAll, afterAll, afterEach } from "bun:test";
+import { test, describe, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -28,6 +28,10 @@ import {
   trySocketInject,
   cleanupSocket,
   persistStreamChunk,
+  parseSubagentJsonl,
+  recordSubagentMetrics,
+  modelFamily,
+  MODEL_PRICING,
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
@@ -58,6 +62,7 @@ function createInMemoryDb(): Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_type TEXT NOT NULL,
       session_id TEXT,
+      parent_session_id TEXT,
       trigger_name TEXT,
       started_at TEXT NOT NULL,
       ended_at TEXT NOT NULL,
@@ -888,5 +893,254 @@ describe("persistStreamChunk", () => {
     // message_start with no session_id should not even set the uuid
     expect(state.uuid).toBeNull();
     expect(rows().length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// modelFamily + MODEL_PRICING
+// ---------------------------------------------------------------------------
+
+describe("modelFamily", () => {
+  test("detects opus from model string", () => {
+    expect(modelFamily("claude-opus-4-5")).toBe("opus");
+    expect(modelFamily("claude-opus-3")).toBe("opus");
+  });
+  test("detects haiku from model string", () => {
+    expect(modelFamily("claude-haiku-3-5")).toBe("haiku");
+    expect(modelFamily("claude-haiku-3")).toBe("haiku");
+  });
+  test("defaults to sonnet for anything else", () => {
+    expect(modelFamily("claude-sonnet-4-5")).toBe("sonnet");
+    expect(modelFamily("claude-3-5-sonnet-20241022")).toBe("sonnet");
+    expect(modelFamily("unknown-model")).toBe("sonnet");
+    expect(modelFamily("")).toBe("sonnet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseSubagentJsonl
+// ---------------------------------------------------------------------------
+
+describe("parseSubagentJsonl", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "atlas-subagent-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function writeJsonl(name: string, lines: object[]): string {
+    const p = join(tmp, name);
+    writeFileSync(p, lines.map(l => JSON.stringify(l)).join("\n"));
+    return p;
+  }
+
+  test("returns null for non-existent file", () => {
+    expect(parseSubagentJsonl(join(tmp, "nonexistent.jsonl"))).toBeNull();
+  });
+
+  test("returns null for file with no usage data", () => {
+    const p = writeJsonl("agent-empty.jsonl", [
+      { type: "user", message: { role: "user", content: "hi" }, timestamp: "2026-01-01T00:00:00Z" },
+    ]);
+    expect(parseSubagentJsonl(p)).toBeNull();
+  });
+
+  test("aggregates token usage and computes cost for sonnet model", () => {
+    const p = writeJsonl("agent-abc123.jsonl", [
+      {
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:00Z",
+        message: {
+          id: "msg_01",
+          model: "claude-sonnet-4-5",
+          usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 200, cache_creation_input_tokens: 100 },
+        },
+      },
+    ]);
+    const result = parseSubagentJsonl(p);
+    expect(result).not.toBeNull();
+    expect(result!.inputTokens).toBe(1000);
+    expect(result!.outputTokens).toBe(500);
+    expect(result!.cacheReadTokens).toBe(200);
+    expect(result!.cacheCreationTokens).toBe(100);
+    // cost = (1000*3 + 500*15 + 200*0.3 + 100*3.75) / 1_000_000
+    // = (3000 + 7500 + 60 + 375) / 1_000_000 = 10935 / 1_000_000
+    expect(result!.costUsd).toBeCloseTo(0.010935, 6);
+    expect(result!.subagentId).toBe("abc123");
+  });
+
+  test("deduplicates messages with same id", () => {
+    const p = writeJsonl("agent-dup.jsonl", [
+      {
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:00Z",
+        message: {
+          id: "msg_dup",
+          model: "claude-haiku-3-5",
+          usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      },
+      {
+        // Same id — should be skipped (dedup)
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:01Z",
+        message: {
+          id: "msg_dup",
+          model: "claude-haiku-3-5",
+          usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      },
+    ]);
+    const result = parseSubagentJsonl(p);
+    expect(result!.inputTokens).toBe(100);
+    expect(result!.outputTokens).toBe(50);
+  });
+
+  test("computes duration from first/last timestamps", () => {
+    const p = writeJsonl("agent-dur.jsonl", [
+      {
+        type: "user",
+        timestamp: "2026-01-01T10:00:00Z",
+        message: { role: "user", content: "go" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:05Z",
+        message: {
+          id: "msg_a",
+          model: "claude-sonnet-4-5",
+          usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      },
+    ]);
+    const result = parseSubagentJsonl(p);
+    expect(result!.durationMs).toBe(5000);
+    expect(result!.startedAt).toBe("2026-01-01T10:00:00Z");
+    expect(result!.endedAt).toBe("2026-01-01T10:00:05Z");
+  });
+
+  test("handles multiple messages and sums correctly", () => {
+    const p = writeJsonl("agent-multi.jsonl", [
+      {
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:00Z",
+        message: {
+          id: "msg_1",
+          model: "claude-opus-4-5",
+          usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-01-01T10:00:10Z",
+        message: {
+          id: "msg_2",
+          model: "claude-opus-4-5",
+          usage: { input_tokens: 300, output_tokens: 200, cache_read_input_tokens: 50, cache_creation_input_tokens: 25 },
+        },
+      },
+    ]);
+    const result = parseSubagentJsonl(p);
+    expect(result!.inputTokens).toBe(800);
+    expect(result!.outputTokens).toBe(300);
+    expect(result!.cacheReadTokens).toBe(50);
+    expect(result!.cacheCreationTokens).toBe(25);
+  });
+
+  test("skips malformed JSON lines", () => {
+    const p = join(tmp, "agent-malformed.jsonl");
+    writeFileSync(p, [
+      JSON.stringify({ type: "assistant", timestamp: "2026-01-01T10:00:00Z", message: { id: "msg_ok", model: "claude-sonnet-4-5", usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }),
+      "not valid json",
+      "{incomplete",
+    ].join("\n"));
+    const result = parseSubagentJsonl(p);
+    expect(result).not.toBeNull();
+    expect(result!.inputTokens).toBe(10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordSubagentMetrics
+// ---------------------------------------------------------------------------
+
+describe("recordSubagentMetrics", () => {
+  let db: Database;
+  let tmp: string;
+
+  beforeEach(() => {
+    db = createInMemoryDb();
+    tmp = mkdtempSync(join(tmpdir(), "atlas-subagent-rec-test-"));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("inserts rows for each subagent JSONL file found", () => {
+    const parentId = "parent-session-001";
+    // recordSubagentMetrics builds path: homeDir/.claude/projects/<projectDir>/<parentId>/subagents
+    const subagentsDir = join(tmp, ".claude", "projects", "test-project", parentId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+
+    const agentLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-01-01T10:00:00Z",
+      message: { id: "msg_a", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    });
+    writeFileSync(join(subagentsDir, "agent-subA.jsonl"), agentLine);
+    writeFileSync(join(subagentsDir, "agent-subB.jsonl"), agentLine);
+
+    // Override CLAUDE_PROJECT_DIR so recordSubagentMetrics uses our test-project dir
+    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "test-project";
+
+    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
+
+    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
+
+    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type = 'subagent'").all() as any[];
+    expect(rows.length).toBe(2);
+    const ids = rows.map(r => r.session_id).sort();
+    expect(ids).toEqual(["subA", "subB"]);
+    expect(rows[0].parent_session_id).toBe(parentId);
+    expect(rows[0].trigger_name).toBe("my-trigger");
+    expect(rows[0].cost_usd).toBeGreaterThan(0);
+  });
+
+  test("silently ignores missing subagents directory", () => {
+    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "nonexistent-project";
+    // Should not throw
+    expect(() => recordSubagentMetrics(db, "fake-parent", "trigger", tmp)).not.toThrow();
+    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
+    const rows = db.prepare("SELECT * FROM session_metrics").all();
+    expect(rows.length).toBe(0);
+  });
+
+  test("ignores non-agent JSONL files", () => {
+    const parentId = "parent-session-002";
+    const subagentsDir = join(tmp, ".claude", "projects", "test-project2", parentId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+
+    // Write a file that does NOT start with "agent-"
+    writeFileSync(join(subagentsDir, "session.jsonl"), JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-01-01T10:00:00Z",
+      message: { id: "msg_a", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    }));
+
+    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "test-project2";
+    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
+
+    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type = 'subagent'").all();
+    expect(rows.length).toBe(0);
   });
 });

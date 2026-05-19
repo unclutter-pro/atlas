@@ -89,6 +89,7 @@ function createTables(database: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_type TEXT NOT NULL,
       session_id TEXT,
+      parent_session_id TEXT,
       trigger_name TEXT,
       started_at TEXT NOT NULL,
       ended_at TEXT NOT NULL,
@@ -103,6 +104,7 @@ function createTables(database: Database): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
+    CREATE INDEX IF NOT EXISTS idx_session_metrics_parent ON session_metrics(parent_session_id);
   `);
 
   // Trigger runs: tracks active trigger invocations for crash recovery
@@ -377,6 +379,15 @@ function migrateSchema(database: Database): void {
   ).get();
   if (tasksTableExists) {
     database.exec("DROP TABLE tasks");
+  }
+
+  // --- v5 migration: add parent_session_id to session_metrics for subagent tracking ---
+  const metricsInfo = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_metrics'"
+  ).get() as { sql: string } | undefined;
+  if (metricsInfo?.sql && !metricsInfo.sql.includes("parent_session_id")) {
+    database.exec(`ALTER TABLE session_metrics ADD COLUMN parent_session_id TEXT`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_session_metrics_parent ON session_metrics(parent_session_id)`);
   }
 
 }
