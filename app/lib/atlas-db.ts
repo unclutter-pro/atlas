@@ -105,6 +105,9 @@ function createTables(database: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
     CREATE INDEX IF NOT EXISTS idx_session_metrics_parent ON session_metrics(parent_session_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_metrics_subagent_unique
+      ON session_metrics(session_id)
+      WHERE session_type='subagent' AND session_id IS NOT NULL;
   `);
 
   // Trigger runs: tracks active trigger invocations for crash recovery
@@ -388,6 +391,28 @@ function migrateSchema(database: Database): void {
   if (metricsInfo?.sql && !metricsInfo.sql.includes("parent_session_id")) {
     database.exec(`ALTER TABLE session_metrics ADD COLUMN parent_session_id TEXT`);
     database.exec(`CREATE INDEX IF NOT EXISTS idx_session_metrics_parent ON session_metrics(parent_session_id)`);
+  }
+
+  // --- v6 migration: dedupe subagent rows and add partial unique index ---
+  const subagentUniqueIndex = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_session_metrics_subagent_unique'"
+  ).get();
+  if (!subagentUniqueIndex) {
+    // Remove duplicate subagent rows, keeping the highest id (most recent) per session_id
+    database.exec(`
+      DELETE FROM session_metrics
+      WHERE session_type='subagent'
+        AND id NOT IN (
+          SELECT MAX(id) FROM session_metrics
+          WHERE session_type='subagent'
+          GROUP BY session_id
+        );
+    `);
+    database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_session_metrics_subagent_unique
+        ON session_metrics(session_id)
+        WHERE session_type='subagent' AND session_id IS NOT NULL;
+    `);
   }
 
 }

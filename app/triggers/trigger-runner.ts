@@ -1003,6 +1003,36 @@ export function recordSubagentMetrics(
       try {
         const metrics = parseSubagentJsonl(filePath);
         if (!metrics) continue;
+
+        // Check if a row already exists for this subagent to avoid duplicate
+        // insertions across multiple trigger runs sharing the same parent session.
+        const existing = db.prepare(
+          `SELECT id, cost_usd FROM session_metrics WHERE session_type='subagent' AND session_id=?`
+        ).get(metrics.subagentId) as { id: number; cost_usd: number } | undefined;
+
+        if (existing) {
+          // If the JSONL has grown (new turns appended), update the row.
+          // Otherwise skip — already at final state.
+          if (metrics.costUsd > existing.cost_usd) {
+            db.prepare(`
+              UPDATE session_metrics
+              SET ended_at=?, duration_ms=?, input_tokens=?, output_tokens=?,
+                  cache_read_tokens=?, cache_creation_tokens=?, cost_usd=?
+              WHERE id=?
+            `).run(
+              metrics.endedAt,
+              metrics.durationMs,
+              metrics.inputTokens,
+              metrics.outputTokens,
+              metrics.cacheReadTokens,
+              metrics.cacheCreationTokens,
+              metrics.costUsd,
+              existing.id,
+            );
+          }
+          continue;
+        }
+
         recordMetrics(db, {
           sessionType: "subagent",
           sessionId: metrics.subagentId,

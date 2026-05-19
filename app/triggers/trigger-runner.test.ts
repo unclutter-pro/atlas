@@ -6,7 +6,7 @@
  */
 
 import { test, describe, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
@@ -76,6 +76,9 @@ function createInMemoryDb(): Database {
       is_error INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_metrics_subagent_unique
+      ON session_metrics(session_id)
+      WHERE session_type='subagent' AND session_id IS NOT NULL;
   `);
   return db;
 }
@@ -1142,5 +1145,99 @@ describe("recordSubagentMetrics", () => {
 
     const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type = 'subagent'").all();
     expect(rows.length).toBe(0);
+  });
+
+  test("calling recordSubagentMetrics twice with the same JSONL produces only 1 row", () => {
+    const parentId = "parent-dedup-001";
+    const subagentsDir = join(tmp, ".claude", "projects", "test-dedup", parentId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+
+    const agentLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-01-01T10:00:00Z",
+      message: { id: "msg_dup", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    });
+    writeFileSync(join(subagentsDir, "agent-dedup1.jsonl"), agentLine);
+
+    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "test-dedup";
+
+    // First call — should insert 1 row
+    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
+    // Second call — same JSONL, should NOT insert a duplicate
+    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
+
+    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
+
+    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type='subagent'").all() as any[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].session_id).toBe("dedup1");
+  });
+
+  test("if JSONL grows between calls the row is updated, not duplicated", () => {
+    const parentId = "parent-update-001";
+    const subagentsDir = join(tmp, ".claude", "projects", "test-update", parentId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+
+    const filePath = join(subagentsDir, "agent-upd1.jsonl");
+
+    // Initial JSONL — one turn
+    writeFileSync(filePath, JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-01-01T10:00:00Z",
+      message: { id: "msg_v1", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    }) + "\n");
+
+    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "test-update";
+
+    // First call — inserts 1 row
+    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
+
+    const rowsBefore = db.prepare("SELECT * FROM session_metrics WHERE session_type='subagent'").all() as any[];
+    expect(rowsBefore.length).toBe(1);
+    const costBefore = rowsBefore[0].cost_usd as number;
+
+    // Append a second turn to the JSONL (more tokens = higher cost)
+    const secondLine = JSON.stringify({
+      type: "assistant",
+      timestamp: "2026-01-01T10:05:00Z",
+      message: { id: "msg_v2", model: "claude-sonnet-4-5", usage: { input_tokens: 200, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    }) + "\n";
+    writeFileSync(filePath, readFileSync(filePath, "utf8") + secondLine);
+
+    // Second call — JSONL is bigger, should UPDATE the existing row
+    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
+
+    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
+
+    const rowsAfter = db.prepare("SELECT * FROM session_metrics WHERE session_type='subagent'").all() as any[];
+    expect(rowsAfter.length).toBe(1);
+    expect(rowsAfter[0].cost_usd).toBeGreaterThan(costBefore);
+    expect(rowsAfter[0].session_id).toBe("upd1");
+  });
+
+  test("trigger-type rows are NOT deduplicated — two calls produce two rows", () => {
+    const data = {
+      sessionType: "trigger" as const,
+      sessionId: "same-trigger-session",
+      triggerName: "my-trigger",
+      startedAt: "2026-01-01T10:00:00Z",
+      endedAt: "2026-01-01T10:01:00Z",
+      durationMs: 60000,
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0.001,
+      numTurns: 1,
+      isError: false,
+    };
+
+    recordMetrics(db, data);
+    recordMetrics(db, data);
+
+    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type='trigger'").all() as any[];
+    expect(rows.length).toBe(2);
   });
 });
