@@ -131,7 +131,7 @@ const DISALLOWED_BUILTIN_TOOLS = [
   // Worktrees are managed by the harness, not by the agent
   "EnterWorktree",
   "ExitWorktree",
-  // Atlas tracks tasks via Beads, never via Claude Code's built-ins
+  // Atlas tracks tasks via its own CLI, never via Claude Code's built-ins
   "TodoWrite",
   "TaskCreate",
   "TaskUpdate",
@@ -143,6 +143,23 @@ const DISALLOWED_BUILTIN_TOOLS = [
   "TeamCreate",
   "TeamDelete",
   "SendMessage",
+];
+
+/**
+ * Tools disallowed for the validator session.
+ * The validator is read-only — it may inspect files but must not write anything,
+ * spawn agents, or access task/goal/reminder state.
+ */
+export const DISALLOWED_VALIDATOR_TOOLS = [
+  ...DISALLOWED_BUILTIN_TOOLS,
+  // Write tools — validator is strictly read-only
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  // MCP tools — no external access
+  "mcp__*",
+  // Agent spawning
+  "Agent",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1310,7 +1327,44 @@ export async function main(): Promise<void> {
 
   const channel = config.channel || "internal";
   const sessionMode = config.session_mode || "ephemeral";
-  const sessionKey = sessionKeyArg ?? "_default";
+
+  // --- Synthetic session_key for webhooks without an explicit key ---
+  // Webhook triggers often have no natural session grouping; without a key
+  // ATLAS_TRIGGER_SESSION_KEY would be unset inside the session, which breaks
+  // `task goal create` and other session-scoped CLI commands.
+  // Generate a stable synthetic key from the trigger run ID so each webhook
+  // invocation gets its own isolated task scope.
+  let sessionKey = sessionKeyArg ?? "_default";
+  if (config.type === "webhook" && !sessionKeyArg) {
+    // We need the run ID — insert the trigger_runs row early so we can use it.
+    // (It will be inserted again below with RETURNING id; we detect and reuse here.)
+    let syntheticRunId: number | null = null;
+    try {
+      const runRow = db
+        .prepare(
+          `INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload)
+           VALUES (?, ?, ?, ?)
+           RETURNING id`,
+        )
+        .get(triggerName, "_pending", sessionMode, payload) as { id: number } | undefined;
+      syntheticRunId = runRow?.id ?? null;
+    } catch {
+      // trigger_runs may not exist yet — fall back to timestamp
+    }
+    if (syntheticRunId !== null) {
+      sessionKey = `webhook-${syntheticRunId}`;
+      // Update the row with the final session key
+      try {
+        db.prepare("UPDATE trigger_runs SET session_key = ? WHERE id = ?").run(
+          sessionKey,
+          syntheticRunId,
+        );
+      } catch {}
+    } else {
+      sessionKey = `webhook-${triggerName}-${Date.now()}`;
+    }
+    log.log(`Synthetic session key for webhook: ${sessionKey}`);
+  }
 
   // --- Build prompt ---
   let prompt = config.prompt;
@@ -1669,22 +1723,39 @@ export async function main(): Promise<void> {
   const startedAt = isoNow();
 
   // --- Track this run ---
+  // For webhook triggers we may have already inserted a trigger_runs row above
+  // (to generate a synthetic session key). In that case reuse the existing id.
   let runId: number | null = null;
-  try {
-    const runRow = db
-      .prepare(
-        `
-      INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload)
-      VALUES (?, ?, ?, ?)
-      RETURNING id
-    `,
-      )
-      .get(triggerName, sessionKey, sessionMode, payload) as
-      | { id: number }
-      | undefined;
-    runId = runRow?.id ?? null;
-  } catch {
-    // trigger_runs table may not exist in older DBs
+  const syntheticWebhookRun = config.type === "webhook" && !sessionKeyArg
+    ? (() => {
+        try {
+          const row = db.prepare(
+            "SELECT id FROM trigger_runs WHERE trigger_name = ? AND session_key = ? ORDER BY id DESC LIMIT 1"
+          ).get(triggerName, sessionKey) as { id: number } | undefined;
+          return row?.id ?? null;
+        } catch { return null; }
+      })()
+    : null;
+
+  if (syntheticWebhookRun !== null) {
+    runId = syntheticWebhookRun;
+  } else {
+    try {
+      const runRow = db
+        .prepare(
+          `
+        INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload)
+        VALUES (?, ?, ?, ?)
+        RETURNING id
+      `,
+        )
+        .get(triggerName, sessionKey, sessionMode, payload) as
+        | { id: number }
+        | undefined;
+      runId = runRow?.id ?? null;
+    } catch {
+      // trigger_runs table may not exist in older DBs
+    }
   }
 
   // --- Disable remote MCP ---

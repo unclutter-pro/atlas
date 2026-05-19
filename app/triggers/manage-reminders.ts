@@ -272,20 +272,6 @@ switch (command) {
 
     const id = result.lastInsertRowid;
 
-    // Delegate suspend file creation to beads-session.sh write-suspend.
-    // This keeps the naming convention in one place (beads-session.sh owns the format).
-    if (process.env.BEADS_ACTOR) {
-      const reason = `Reminder #${id}: "${title}" scheduled for ${fireAtLocal}`;
-      try {
-        execSync(`/atlas/app/hooks/beads-session.sh write-suspend "${reason.replace(/"/g, '\\"')}"`, {
-          stdio: ["ignore", "ignore", "inherit"],
-          env: { ...process.env },
-        });
-      } catch (e) {
-        console.error(`Warning: Could not create suspend file: ${e}`);
-      }
-    }
-
     console.log(`Reminder #${id} scheduled: "${title}"`);
     console.log(`  Fire at: ${fireAtLocal}`);
     console.log(`  Channel: ${channel}`);

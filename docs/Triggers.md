@@ -226,7 +226,7 @@ Agent(subagent_type="general-purpose", model="sonnet", prompt="<detailed task>")
 
 ### Complex multi-step tasks
 ```
-# Plan tasks in Beads, then spawn subagents for each unit of work:
+# Plan tasks with `task add`, then spawn subagents for each unit of work:
 Agent(subagent_type="general-purpose", model="sonnet", prompt="<self-contained task with acceptance criteria>")
 # Optional review pass:
 Agent(subagent_type="general-purpose", model="haiku", prompt="<review task>")
@@ -301,7 +301,7 @@ Nightly cognitive consolidation — inspired by how memory consolidation works d
 3. **Memory Hygiene** — Cleans redundancies, resolves broken wikilinks, archives stale entries, validates frontmatter
 4. **External Verification** — Checks current state of external resources (open PRs, deployments, task status)
 5. **Skill Creation** — Can create new skills from recurring patterns observed across sessions
-6. **Beads Hygiene** — Closes completed tasks, flags stale items, runs `bd doctor`
+6. **Task Hygiene** — Reviews open tasks and goals, closes completed ones, flags stale items
 
 - **Schedule:** `0 3 * * *` (daily at 03:00)
 - **Session Mode:** ephemeral

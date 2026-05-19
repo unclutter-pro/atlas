@@ -92,16 +92,15 @@ For any external resources referenced in today's sessions, verify that your memo
 
 This is not monitoring. Don't check if things are "working" — check if your *records* about them are still true.
 
-## Phase 5: Beads Hygiene
+## Phase 5: Task Hygiene
 
-Run maintenance on the task tracking system:
+Review open goals and tasks across all sessions:
 ```bash
-bd stale
-bd orphans
-bd doctor --check=conventions
+task goal list --all
+task list --all --status=open,in_progress
 ```
 
-Close any tasks that are clearly completed based on today's sessions. Flag items that need human attention with `bd human <id>`.
+Close any goals/tasks that are clearly completed based on today's sessions. Use `task goal close <id> --reason=...` and `task close <id> --reason=...` to close completed items. Use `task cancel <id>` for items that are no longer relevant.
 
 ## Rules
 

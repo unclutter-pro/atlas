@@ -91,8 +91,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && claude --version \
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse \
-  # --- Beads (bd) — AI-native task management ---
-  && npm i -g @beads/bd@0.63.3 \
   # --- RTK (Rust Token Killer) — CLI proxy for 60-90% token savings ---
   && RTK_VERSION="0.38.0" \
   && if [ "$ARCH" = "arm64" ]; then RTK_ARCH="aarch64-unknown-linux-gnu"; else RTK_ARCH="x86_64-unknown-linux-musl"; fi \
@@ -107,7 +105,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 ENV PATH="/home/agent/.homebrew/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
-ENV BEADS_DIR=/home/agent/.beads
 ENV HOMEBREW_NO_AUTO_UPDATE=1
 ENV HOMEBREW_NO_ANALYTICS=1
 

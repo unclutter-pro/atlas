@@ -47,6 +47,9 @@ if [ -n "${ATLAS_TRIGGER:-}" ]; then
     echo "</system-reminder>"
   fi
 
+  # Phase 3: Task context injection for continuity after compaction
+  /atlas/app/hooks/task-session.sh prime 2>/dev/null || true
+
   exit 0
 fi
 
