@@ -1242,15 +1242,9 @@ app.get("/analytics", (c) => {
       WHERE created_at >= datetime('now', '-7 days')
     `).get() as any || {};
 
-    // "Real cost" tile: always sums trigger + subagent rows within the date range
-    // regardless of the type filter, so users can see the full picture even when
-    // filtering to just trigger rows.
-    const { clause: realWhere, values: realParams } = analyticsWhere({
-      from, to, types: [], trigger: filterTrig, minCost, status: statusFilt,
-    });
-    realCostAll = db.prepare(`
-      SELECT SUM(cost_usd) as cost FROM session_metrics ${realWhere}
-    `).get(...realParams) as any || {};
+    // Unused variable kept for TS compatibility — no longer computing "real cost"
+    // since subagent cost is now aggregated directly into the trigger row.
+    realCostAll = {};
 
     if (groupBy === "day") {
       grouped = db.prepare(`
@@ -1310,7 +1304,6 @@ app.get("/analytics", (c) => {
       reviewer: "#e040fb",
       trigger: "#7c6ef0",
       "trigger-relay": "#ff9800",
-      subagent: "#4caf50",
     };
     return `<span class="badge" style="background:${colors[t] || "#3a3b55"};color:#fff">${safe(t)}</span>`;
   }
@@ -1339,7 +1332,7 @@ app.get("/analytics", (c) => {
     ? ` <span class="text-muted" style="font-size:12px">(filtered)</span>` : "";
 
   // Type multi-select checkboxes
-  const typeOptions = ["trigger", "subagent", "worker", "reviewer", "trigger-relay"];
+  const typeOptions = ["trigger", "worker", "reviewer", "trigger-relay"];
   const typeCheckboxes = typeOptions.map(t => {
     const checked = types.includes(t) ? " checked" : "";
     return `<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
@@ -1424,19 +1417,11 @@ app.get("/analytics", (c) => {
 
   // Sessions table
   const rows = metrics.map((m) => {
-    const isSubagent = m.session_type === "subagent";
-    const indent = isSubagent ? `style="padding-left:24px"` : "";
-    const sourceCell = isSubagent
-      ? `<td title="subagent of ${safe(m.parent_session_id || "")}" style="color:#4caf50;font-size:11px">
-           <span style="opacity:0.5">↳</span> ${safe((m.parent_session_id || "").slice(0, 8))}…
-         </td>`
-      : `<td class="text-muted" style="font-size:11px">parent</td>`;
     return `
     <tr>
       <td class="text-muted" style="white-space:nowrap">${safe(timeAgo(m.created_at))}</td>
       <td>${typeBadge(m.session_type)}</td>
-      ${sourceCell}
-      <td ${indent} style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.trigger_name ? safe(m.trigger_name) : '<span class="text-muted">—</span>'}</td>
+      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.trigger_name ? safe(m.trigger_name) : '<span class="text-muted">—</span>'}</td>
       <td>${fmtDuration(m.duration_ms)}</td>
       <td title="new input">${fmtNum(m.input_tokens)}</td>
       <td title="output">${fmtNum(m.output_tokens)}</td>
@@ -1447,11 +1432,7 @@ app.get("/analytics", (c) => {
     </tr>`;
   }).join("");
 
-  // Real cost supplemental note (shown when type filter excludes subagents)
-  const showingSubagents = types.length === 0 || types.includes("subagent");
-  const realCostNote = !showingSubagents && realCostAll.cost > 0
-    ? `<div class="text-muted" style="font-size:12px;margin-top:4px">incl. subagents: ${fmtCost(realCostAll.cost)}</div>`
-    : "";
+  // No supplemental cost note needed — subagent cost is aggregated into trigger rows.
 
   const html = `
     <h1>Analytics</h1>
@@ -1461,7 +1442,6 @@ app.get("/analytics", (c) => {
       <div class="stat">
         <div class="num">${fmtCost(totalCost)}</div>
         <div class="label">Cost${activeLabel}</div>
-        ${realCostNote}
       </div>
       <div class="stat"><div class="num">${fmtCost(week7.cost)}</div><div class="label">Cost (7d, all types)</div></div>
       <div class="stat"><div class="num">${costPerHour != null ? fmtCost(costPerHour, 4) : "—"}</div><div class="label">Est. $/hr${activeLabel}</div></div>
@@ -1487,7 +1467,7 @@ app.get("/analytics", (c) => {
         ? '<div class="text-muted">No sessions match the current filter.</div>'
         : `<div style="overflow-x:auto"><table>
         <thead><tr>
-          <th>Time</th><th>Type</th><th>Source</th><th>Trigger</th><th>Duration</th>
+          <th>Time</th><th>Type</th><th>Trigger</th><th>Duration</th>
           <th title="New input tokens">Input</th>
           <th>Output</th>
           <th title="Cache creation tokens (billed at write rate)" style="color:#f0a500">Cache↑</th>
@@ -1518,7 +1498,7 @@ app.get("/analytics.csv", (c) => {
   let rows: any[] = [];
   try {
     rows = db.prepare(
-      `SELECT session_type, session_id, parent_session_id, trigger_name,
+      `SELECT session_type, session_id, trigger_name,
               started_at, ended_at, duration_ms,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
               cost_usd, num_turns, is_error, created_at
@@ -1526,9 +1506,9 @@ app.get("/analytics.csv", (c) => {
     ).all(...whereParams) as any[];
   } catch {}
 
-  const header = "session_type,session_id,parent_session_id,trigger_name,started_at,ended_at,duration_ms,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_usd,num_turns,is_error,created_at";
+  const header = "session_type,session_id,trigger_name,started_at,ended_at,duration_ms,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_usd,num_turns,is_error,created_at";
   const csvRows = rows.map(r => [
-    r.session_type, r.session_id, r.parent_session_id ?? "",
+    r.session_type, r.session_id,
     r.trigger_name ?? "", r.started_at, r.ended_at, r.duration_ms,
     r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_creation_tokens,
     r.cost_usd, r.num_turns, r.is_error, r.created_at,

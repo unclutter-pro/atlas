@@ -28,13 +28,13 @@ import {
   trySocketInject,
   cleanupSocket,
   persistStreamChunk,
-  parseSubagentJsonl,
-  recordSubagentMetrics,
+  aggregateRunCost,
   modelFamily,
   MODEL_PRICING,
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
+  type AggregatedUsage,
 } from "./trigger-runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,6 @@ function createInMemoryDb(): Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_type TEXT NOT NULL,
       session_id TEXT,
-      parent_session_id TEXT,
       trigger_name TEXT,
       started_at TEXT NOT NULL,
       ended_at TEXT NOT NULL,
@@ -76,9 +75,6 @@ function createInMemoryDb(): Database {
       is_error INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_metrics_subagent_unique
-      ON session_metrics(session_id)
-      WHERE session_type='subagent' AND session_id IS NOT NULL;
   `);
   return db;
 }
@@ -921,323 +917,199 @@ describe("modelFamily", () => {
 });
 
 // ---------------------------------------------------------------------------
-// parseSubagentJsonl
+// aggregateRunCost
 // ---------------------------------------------------------------------------
 
-describe("parseSubagentJsonl", () => {
+describe("aggregateRunCost", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "atlas-subagent-test-"));
+    tmp = mkdtempSync(join(tmpdir(), "atlas-agg-cost-test-"));
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  function writeJsonl(name: string, lines: object[]): string {
-    const p = join(tmp, name);
-    writeFileSync(p, lines.map(l => JSON.stringify(l)).join("\n"));
-    return p;
+  function makeEntry(opts: {
+    id: string;
+    timestamp: string;
+    model?: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead?: number;
+    cacheCreate?: number;
+  }): string {
+    return JSON.stringify({
+      type: "assistant",
+      timestamp: opts.timestamp,
+      message: {
+        id: opts.id,
+        model: opts.model ?? "claude-sonnet-4-5",
+        usage: {
+          input_tokens: opts.inputTokens,
+          output_tokens: opts.outputTokens,
+          cache_read_input_tokens: opts.cacheRead ?? 0,
+          cache_creation_input_tokens: opts.cacheCreate ?? 0,
+        },
+      },
+    });
   }
 
-  test("returns null for non-existent file", () => {
-    expect(parseSubagentJsonl(join(tmp, "nonexistent.jsonl"))).toBeNull();
+  function setupProject(sessionId: string): {
+    projectDir: string;
+    parentJsonl: string;
+    subagentsDir: string;
+  } {
+    const projectDir = "test-project-agg";
+    const base = join(tmp, ".claude", "projects", projectDir);
+    mkdirSync(base, { recursive: true });
+    const parentJsonl = join(base, `${sessionId}.jsonl`);
+    const subagentsDir = join(base, sessionId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    return { projectDir, parentJsonl, subagentsDir };
+  }
+
+  test("returns zeros when no JSONL files exist", () => {
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "nonexistent-project-agg";
+    const result = aggregateRunCost("no-session", "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(0);
+    expect(result.costUsd).toBe(0);
   });
 
-  test("returns null for file with no usage data", () => {
-    const p = writeJsonl("agent-empty.jsonl", [
-      { type: "user", message: { role: "user", content: "hi" }, timestamp: "2026-01-01T00:00:00Z" },
-    ]);
-    expect(parseSubagentJsonl(p)).toBeNull();
-  });
+  test("sums parent JSONL tokens correctly", () => {
+    const sessionId = "agg-parent-only";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-  test("aggregates token usage and computes cost for sonnet model", () => {
-    const p = writeJsonl("agent-abc123.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2026-01-01T10:00:00Z",
-        message: {
-          id: "msg_01",
-          model: "claude-sonnet-4-5",
-          usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 200, cache_creation_input_tokens: 100 },
-        },
-      },
-    ]);
-    const result = parseSubagentJsonl(p);
-    expect(result).not.toBeNull();
-    expect(result!.inputTokens).toBe(1000);
-    expect(result!.outputTokens).toBe(500);
-    expect(result!.cacheReadTokens).toBe(200);
-    expect(result!.cacheCreationTokens).toBe(100);
-    // cost = (1000*3 + 500*15 + 200*0.3 + 100*3.75) / 1_000_000
-    // = (3000 + 7500 + 60 + 375) / 1_000_000 = 10935 / 1_000_000
-    expect(result!.costUsd).toBeCloseTo(0.010935, 6);
-    expect(result!.subagentId).toBe("abc123");
-  });
-
-  test("deduplicates messages with same id", () => {
-    const p = writeJsonl("agent-dup.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2026-01-01T10:00:00Z",
-        message: {
-          id: "msg_dup",
-          model: "claude-haiku-3-5",
-          usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-        },
-      },
-      {
-        // Same id — should be skipped (dedup)
-        type: "assistant",
-        timestamp: "2026-01-01T10:00:01Z",
-        message: {
-          id: "msg_dup",
-          model: "claude-haiku-3-5",
-          usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-        },
-      },
-    ]);
-    const result = parseSubagentJsonl(p);
-    expect(result!.inputTokens).toBe(100);
-    expect(result!.outputTokens).toBe(50);
-  });
-
-  test("computes duration from first/last timestamps", () => {
-    const p = writeJsonl("agent-dur.jsonl", [
-      {
-        type: "user",
-        timestamp: "2026-01-01T10:00:00Z",
-        message: { role: "user", content: "go" },
-      },
-      {
-        type: "assistant",
-        timestamp: "2026-01-01T10:00:05Z",
-        message: {
-          id: "msg_a",
-          model: "claude-sonnet-4-5",
-          usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-        },
-      },
-    ]);
-    const result = parseSubagentJsonl(p);
-    expect(result!.durationMs).toBe(5000);
-    expect(result!.startedAt).toBe("2026-01-01T10:00:00Z");
-    expect(result!.endedAt).toBe("2026-01-01T10:00:05Z");
-  });
-
-  test("handles multiple messages and sums correctly", () => {
-    const p = writeJsonl("agent-multi.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2026-01-01T10:00:00Z",
-        message: {
-          id: "msg_1",
-          model: "claude-opus-4-5",
-          usage: { input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-        },
-      },
-      {
-        type: "assistant",
-        timestamp: "2026-01-01T10:00:10Z",
-        message: {
-          id: "msg_2",
-          model: "claude-opus-4-5",
-          usage: { input_tokens: 300, output_tokens: 200, cache_read_input_tokens: 50, cache_creation_input_tokens: 25 },
-        },
-      },
-    ]);
-    const result = parseSubagentJsonl(p);
-    expect(result!.inputTokens).toBe(800);
-    expect(result!.outputTokens).toBe(300);
-    expect(result!.cacheReadTokens).toBe(50);
-    expect(result!.cacheCreationTokens).toBe(25);
-  });
-
-  test("skips malformed JSON lines", () => {
-    const p = join(tmp, "agent-malformed.jsonl");
-    writeFileSync(p, [
-      JSON.stringify({ type: "assistant", timestamp: "2026-01-01T10:00:00Z", message: { id: "msg_ok", model: "claude-sonnet-4-5", usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }),
-      "not valid json",
-      "{incomplete",
+    writeFileSync(parentJsonl, [
+      makeEntry({ id: "msg_1", timestamp: "2026-01-01T10:00:10Z", inputTokens: 1000, outputTokens: 500, cacheRead: 200, cacheCreate: 100 }),
     ].join("\n"));
-    const result = parseSubagentJsonl(p);
-    expect(result).not.toBeNull();
-    expect(result!.inputTokens).toBe(10);
-  });
-});
 
-// ---------------------------------------------------------------------------
-// recordSubagentMetrics
-// ---------------------------------------------------------------------------
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
 
-describe("recordSubagentMetrics", () => {
-  let db: Database;
-  let tmp: string;
-
-  beforeEach(() => {
-    db = createInMemoryDb();
-    tmp = mkdtempSync(join(tmpdir(), "atlas-subagent-rec-test-"));
+    expect(result.inputTokens).toBe(1000);
+    expect(result.outputTokens).toBe(500);
+    expect(result.cacheReadTokens).toBe(200);
+    expect(result.cacheCreationTokens).toBe(100);
+    // cost = (1000*3 + 500*15 + 200*0.3 + 100*3.75) / 1_000_000 = 10935/1e6
+    expect(result.costUsd).toBeCloseTo(0.010935, 6);
   });
 
-  afterEach(() => {
-    db.close();
-    rmSync(tmp, { recursive: true, force: true });
+  test("sums parent + subagent JSONL tokens together", () => {
+    const sessionId = "agg-with-subagents";
+    const { projectDir, parentJsonl, subagentsDir } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    writeFileSync(parentJsonl, makeEntry({ id: "msg_parent", timestamp: "2026-01-01T10:00:10Z", inputTokens: 500, outputTokens: 200 }));
+    writeFileSync(join(subagentsDir, "agent-sub1.jsonl"), makeEntry({ id: "msg_sub1", timestamp: "2026-01-01T10:00:20Z", inputTokens: 300, outputTokens: 100 }));
+    writeFileSync(join(subagentsDir, "agent-sub2.jsonl"), makeEntry({ id: "msg_sub2", timestamp: "2026-01-01T10:00:30Z", inputTokens: 200, outputTokens: 50 }));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(1000);
+    expect(result.outputTokens).toBe(350);
   });
 
-  test("inserts rows for each subagent JSONL file found", () => {
-    const parentId = "parent-session-001";
-    // recordSubagentMetrics builds path: homeDir/.claude/projects/<projectDir>/<parentId>/subagents
-    const subagentsDir = join(tmp, ".claude", "projects", "test-project", parentId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
+  test("filters out messages outside the time window", () => {
+    const sessionId = "agg-time-window";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-    const agentLine = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-01-01T10:00:00Z",
-      message: { id: "msg_a", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
-    });
-    writeFileSync(join(subagentsDir, "agent-subA.jsonl"), agentLine);
-    writeFileSync(join(subagentsDir, "agent-subB.jsonl"), agentLine);
+    writeFileSync(parentJsonl, [
+      // Before window start — should be excluded
+      makeEntry({ id: "msg_before", timestamp: "2026-01-01T09:59:00Z", inputTokens: 9999, outputTokens: 9999 }),
+      // Inside window
+      makeEntry({ id: "msg_inside", timestamp: "2026-01-01T10:00:10Z", inputTokens: 100, outputTokens: 50 }),
+      // After window end + 60s buffer — should be excluded
+      makeEntry({ id: "msg_after", timestamp: "2026-01-01T10:02:30Z", inputTokens: 9999, outputTokens: 9999 }),
+    ].join("\n"));
 
-    // Override CLAUDE_PROJECT_DIR so recordSubagentMetrics uses our test-project dir
-    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
-    process.env.CLAUDE_PROJECT_DIR = "test-project";
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
 
-    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
-
-    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
-
-    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type = 'subagent'").all() as any[];
-    expect(rows.length).toBe(2);
-    const ids = rows.map(r => r.session_id).sort();
-    expect(ids).toEqual(["subA", "subB"]);
-    expect(rows[0].parent_session_id).toBe(parentId);
-    expect(rows[0].trigger_name).toBe("my-trigger");
-    expect(rows[0].cost_usd).toBeGreaterThan(0);
+    expect(result.inputTokens).toBe(100);
+    expect(result.outputTokens).toBe(50);
   });
 
-  test("silently ignores missing subagents directory", () => {
-    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
-    process.env.CLAUDE_PROJECT_DIR = "nonexistent-project";
-    // Should not throw
-    expect(() => recordSubagentMetrics(db, "fake-parent", "trigger", tmp)).not.toThrow();
-    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
-    const rows = db.prepare("SELECT * FROM session_metrics").all();
-    expect(rows.length).toBe(0);
+  test("deduplicates by message.id across parent and subagent files", () => {
+    const sessionId = "agg-dedup";
+    const { projectDir, parentJsonl, subagentsDir } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    // Same message id in both parent and subagent — should only count once
+    const sharedEntry = makeEntry({ id: "msg_shared", timestamp: "2026-01-01T10:00:10Z", inputTokens: 500, outputTokens: 200 });
+    writeFileSync(parentJsonl, sharedEntry);
+    writeFileSync(join(subagentsDir, "agent-dup.jsonl"), sharedEntry);
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    // Should count only once, not twice
+    expect(result.inputTokens).toBe(500);
+    expect(result.outputTokens).toBe(200);
   });
 
-  test("ignores non-agent JSONL files", () => {
-    const parentId = "parent-session-002";
-    const subagentsDir = join(tmp, ".claude", "projects", "test-project2", parentId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
+  test("applies correct pricing per model family", () => {
+    const sessionId = "agg-pricing";
+    const { projectDir, parentJsonl, subagentsDir } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-    // Write a file that does NOT start with "agent-"
-    writeFileSync(join(subagentsDir, "session.jsonl"), JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-01-01T10:00:00Z",
-      message: { id: "msg_a", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
-    }));
+    // Opus: in=15, out=75 per 1M
+    writeFileSync(parentJsonl, makeEntry({ id: "msg_opus", timestamp: "2026-01-01T10:00:10Z", model: "claude-opus-4-5", inputTokens: 1000, outputTokens: 1000 }));
+    // Haiku: in=1, out=5 per 1M
+    writeFileSync(join(subagentsDir, "agent-haiku.jsonl"), makeEntry({ id: "msg_haiku", timestamp: "2026-01-01T10:00:20Z", model: "claude-haiku-3-5", inputTokens: 1000, outputTokens: 1000 }));
 
-    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
-    process.env.CLAUDE_PROJECT_DIR = "test-project2";
-    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
-    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
 
-    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type = 'subagent'").all();
-    expect(rows.length).toBe(0);
+    // opus: (1000*15 + 1000*75) / 1e6 = 0.090
+    // haiku: (1000*1 + 1000*5) / 1e6 = 0.006
+    expect(result.costUsd).toBeCloseTo(0.096, 6);
   });
 
-  test("calling recordSubagentMetrics twice with the same JSONL produces only 1 row", () => {
-    const parentId = "parent-dedup-001";
-    const subagentsDir = join(tmp, ".claude", "projects", "test-dedup", parentId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
+  test("returns zeros for files with no usage data or missing message.id", () => {
+    const sessionId = "agg-no-usage";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-    const agentLine = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-01-01T10:00:00Z",
-      message: { id: "msg_dup", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
-    });
-    writeFileSync(join(subagentsDir, "agent-dedup1.jsonl"), agentLine);
+    writeFileSync(parentJsonl, [
+      JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:10Z", message: { role: "user", content: "hi" } }),
+      // No message.id
+      JSON.stringify({ type: "assistant", timestamp: "2026-01-01T10:00:11Z", message: { model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50 } } }),
+    ].join("\n"));
 
-    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
-    process.env.CLAUDE_PROJECT_DIR = "test-dedup";
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
 
-    // First call — should insert 1 row
-    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
-    // Second call — same JSONL, should NOT insert a duplicate
-    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
-
-    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
-
-    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type='subagent'").all() as any[];
-    expect(rows.length).toBe(1);
-    expect(rows[0].session_id).toBe("dedup1");
+    expect(result.inputTokens).toBe(0);
+    expect(result.costUsd).toBe(0);
   });
 
-  test("if JSONL grows between calls the row is updated, not duplicated", () => {
-    const parentId = "parent-update-001";
-    const subagentsDir = join(tmp, ".claude", "projects", "test-update", parentId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
+  test("includes messages within the 60-second end buffer", () => {
+    const sessionId = "agg-buffer";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
 
-    const filePath = join(subagentsDir, "agent-upd1.jsonl");
+    // 30 seconds after endedAt — within 60s buffer
+    writeFileSync(parentJsonl, makeEntry({ id: "msg_buffered", timestamp: "2026-01-01T10:01:30Z", inputTokens: 200, outputTokens: 100 }));
 
-    // Initial JSONL — one turn
-    writeFileSync(filePath, JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-01-01T10:00:00Z",
-      message: { id: "msg_v1", model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
-    }) + "\n");
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
 
-    const origProjectDir = process.env.CLAUDE_PROJECT_DIR;
-    process.env.CLAUDE_PROJECT_DIR = "test-update";
-
-    // First call — inserts 1 row
-    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
-
-    const rowsBefore = db.prepare("SELECT * FROM session_metrics WHERE session_type='subagent'").all() as any[];
-    expect(rowsBefore.length).toBe(1);
-    const costBefore = rowsBefore[0].cost_usd as number;
-
-    // Append a second turn to the JSONL (more tokens = higher cost)
-    const secondLine = JSON.stringify({
-      type: "assistant",
-      timestamp: "2026-01-01T10:05:00Z",
-      message: { id: "msg_v2", model: "claude-sonnet-4-5", usage: { input_tokens: 200, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
-    }) + "\n";
-    writeFileSync(filePath, readFileSync(filePath, "utf8") + secondLine);
-
-    // Second call — JSONL is bigger, should UPDATE the existing row
-    recordSubagentMetrics(db, parentId, "my-trigger", tmp);
-
-    process.env.CLAUDE_PROJECT_DIR = origProjectDir;
-
-    const rowsAfter = db.prepare("SELECT * FROM session_metrics WHERE session_type='subagent'").all() as any[];
-    expect(rowsAfter.length).toBe(1);
-    expect(rowsAfter[0].cost_usd).toBeGreaterThan(costBefore);
-    expect(rowsAfter[0].session_id).toBe("upd1");
-  });
-
-  test("trigger-type rows are NOT deduplicated — two calls produce two rows", () => {
-    const data = {
-      sessionType: "trigger" as const,
-      sessionId: "same-trigger-session",
-      triggerName: "my-trigger",
-      startedAt: "2026-01-01T10:00:00Z",
-      endedAt: "2026-01-01T10:01:00Z",
-      durationMs: 60000,
-      inputTokens: 100,
-      outputTokens: 50,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      costUsd: 0.001,
-      numTurns: 1,
-      isError: false,
-    };
-
-    recordMetrics(db, data);
-    recordMetrics(db, data);
-
-    const rows = db.prepare("SELECT * FROM session_metrics WHERE session_type='trigger'").all() as any[];
-    expect(rows.length).toBe(2);
+    expect(result.inputTokens).toBe(200);
+    expect(result.outputTokens).toBe(100);
   });
 });

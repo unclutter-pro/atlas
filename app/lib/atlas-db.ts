@@ -89,7 +89,6 @@ function createTables(database: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       session_type TEXT NOT NULL,
       session_id TEXT,
-      parent_session_id TEXT,
       trigger_name TEXT,
       started_at TEXT NOT NULL,
       ended_at TEXT NOT NULL,
@@ -104,10 +103,6 @@ function createTables(database: Database): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
-    CREATE INDEX IF NOT EXISTS idx_session_metrics_parent ON session_metrics(parent_session_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_session_metrics_subagent_unique
-      ON session_metrics(session_id)
-      WHERE session_type='subagent' AND session_id IS NOT NULL;
   `);
 
   // Trigger runs: tracks active trigger invocations for crash recovery
@@ -384,35 +379,61 @@ function migrateSchema(database: Database): void {
     database.exec("DROP TABLE tasks");
   }
 
-  // --- v5 migration: add parent_session_id to session_metrics for subagent tracking ---
-  const metricsInfo = database.prepare(
+  // --- v5 migration: drop subagent rows and clean up subagent-specific schema ---
+  // Subagent cost is now aggregated into the parent trigger row via JSONL scanning.
+  // Remove any subagent rows and drop the now-unused indexes if they exist.
+  try {
+    database.exec(`DELETE FROM session_metrics WHERE session_type='subagent'`);
+  } catch {}
+  try {
+    database.exec(`DROP INDEX IF EXISTS idx_session_metrics_parent`);
+  } catch {}
+  try {
+    database.exec(`DROP INDEX IF EXISTS idx_session_metrics_subagent_unique`);
+  } catch {}
+  // Drop parent_session_id column if it was added by an older migration
+  const metricsInfoV5 = database.prepare(
     "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_metrics'"
   ).get() as { sql: string } | undefined;
-  if (metricsInfo?.sql && !metricsInfo.sql.includes("parent_session_id")) {
-    database.exec(`ALTER TABLE session_metrics ADD COLUMN parent_session_id TEXT`);
-    database.exec(`CREATE INDEX IF NOT EXISTS idx_session_metrics_parent ON session_metrics(parent_session_id)`);
-  }
-
-  // --- v6 migration: dedupe subagent rows and add partial unique index ---
-  const subagentUniqueIndex = database.prepare(
-    "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_session_metrics_subagent_unique'"
-  ).get();
-  if (!subagentUniqueIndex) {
-    // Remove duplicate subagent rows, keeping the highest id (most recent) per session_id
-    database.exec(`
-      DELETE FROM session_metrics
-      WHERE session_type='subagent'
-        AND id NOT IN (
-          SELECT MAX(id) FROM session_metrics
-          WHERE session_type='subagent'
-          GROUP BY session_id
+  if (metricsInfoV5?.sql?.includes("parent_session_id")) {
+    database.exec("BEGIN");
+    try {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS _session_metrics_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_type TEXT NOT NULL,
+          session_id TEXT,
+          trigger_name TEXT,
+          started_at TEXT NOT NULL,
+          ended_at TEXT NOT NULL,
+          duration_ms INTEGER DEFAULT 0,
+          input_tokens INTEGER DEFAULT 0,
+          output_tokens INTEGER DEFAULT 0,
+          cache_read_tokens INTEGER DEFAULT 0,
+          cache_creation_tokens INTEGER DEFAULT 0,
+          cost_usd REAL DEFAULT 0,
+          num_turns INTEGER DEFAULT 0,
+          is_error INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now'))
         );
-    `);
-    database.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_session_metrics_subagent_unique
-        ON session_metrics(session_id)
-        WHERE session_type='subagent' AND session_id IS NOT NULL;
-    `);
+        INSERT INTO _session_metrics_new
+          (id, session_type, session_id, trigger_name, started_at, ended_at,
+           duration_ms, input_tokens, output_tokens, cache_read_tokens,
+           cache_creation_tokens, cost_usd, num_turns, is_error, created_at)
+          SELECT id, session_type, session_id, trigger_name, started_at, ended_at,
+                 duration_ms, input_tokens, output_tokens, cache_read_tokens,
+                 cache_creation_tokens, cost_usd, num_turns, is_error, created_at
+          FROM session_metrics
+          WHERE session_type != 'subagent';
+        DROP TABLE session_metrics;
+        ALTER TABLE _session_metrics_new RENAME TO session_metrics;
+        CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
+      `);
+      database.exec("COMMIT");
+    } catch (e) {
+      database.exec("ROLLBACK");
+      throw e;
+    }
   }
 
 }

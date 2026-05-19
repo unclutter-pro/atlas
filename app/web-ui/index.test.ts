@@ -252,10 +252,10 @@ describe("analyticsWhere", () => {
   });
 
   test("includes session_type IN clause for multiple types", () => {
-    const { clause, values } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: ["trigger", "subagent"], trigger: "", minCost: "", status: "" });
+    const { clause, values } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: ["trigger", "worker"], trigger: "", minCost: "", status: "" });
     expect(clause).toContain("session_type IN");
     expect(values).toContain("trigger");
-    expect(values).toContain("subagent");
+    expect(values).toContain("worker");
   });
 
   test("includes LIKE clause for trigger filter", () => {
@@ -321,12 +321,13 @@ describe("/analytics endpoint", () => {
     expect(html).toContain("analytics-form");
   });
 
-  test("responds with HTML showing subagent type in type checkboxes", async () => {
+  test("responds with HTML showing trigger type in type checkboxes", async () => {
     const req = new Request("http://localhost/analytics?from=2024-01-01&to=2030-01-01");
     const res = await app.fetch(req);
     const html = await res.text();
-    // The type checkboxes should include 'subagent'
-    expect(html).toContain("subagent");
+    // The type checkboxes should include 'trigger' but not 'subagent' (no longer a separate row type)
+    expect(html).toContain("trigger");
+    expect(html).not.toContain(`value="subagent"`);
   });
 
   test("group_by=day returns grouped table", async () => {
@@ -368,6 +369,6 @@ describe("/analytics endpoint", () => {
     const req = new Request("http://localhost/analytics.csv?from=2024-01-01&to=2030-01-01");
     const res = await app.fetch(req);
     const text = await res.text();
-    expect(text.startsWith("session_type,session_id,parent_session_id")).toBe(true);
+    expect(text.startsWith("session_type,session_id,trigger_name")).toBe(true);
   });
 });
