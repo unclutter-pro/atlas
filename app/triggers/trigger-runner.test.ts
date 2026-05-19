@@ -5,8 +5,8 @@
  * Run with: cd app/triggers && bun test
  */
 
-import { test, describe, expect, beforeAll, afterAll, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { test, describe, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
@@ -28,9 +28,13 @@ import {
   trySocketInject,
   cleanupSocket,
   persistStreamChunk,
+  aggregateRunCost,
+  modelFamily,
+  MODEL_PRICING,
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
+  type AggregatedUsage,
 } from "./trigger-runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -888,5 +892,224 @@ describe("persistStreamChunk", () => {
     // message_start with no session_id should not even set the uuid
     expect(state.uuid).toBeNull();
     expect(rows().length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// modelFamily + MODEL_PRICING
+// ---------------------------------------------------------------------------
+
+describe("modelFamily", () => {
+  test("detects opus from model string", () => {
+    expect(modelFamily("claude-opus-4-5")).toBe("opus");
+    expect(modelFamily("claude-opus-3")).toBe("opus");
+  });
+  test("detects haiku from model string", () => {
+    expect(modelFamily("claude-haiku-3-5")).toBe("haiku");
+    expect(modelFamily("claude-haiku-3")).toBe("haiku");
+  });
+  test("defaults to sonnet for anything else", () => {
+    expect(modelFamily("claude-sonnet-4-5")).toBe("sonnet");
+    expect(modelFamily("claude-3-5-sonnet-20241022")).toBe("sonnet");
+    expect(modelFamily("unknown-model")).toBe("sonnet");
+    expect(modelFamily("")).toBe("sonnet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aggregateRunCost
+// ---------------------------------------------------------------------------
+
+describe("aggregateRunCost", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "atlas-agg-cost-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function makeEntry(opts: {
+    id: string;
+    timestamp: string;
+    model?: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheRead?: number;
+    cacheCreate?: number;
+  }): string {
+    return JSON.stringify({
+      type: "assistant",
+      timestamp: opts.timestamp,
+      message: {
+        id: opts.id,
+        model: opts.model ?? "claude-sonnet-4-5",
+        usage: {
+          input_tokens: opts.inputTokens,
+          output_tokens: opts.outputTokens,
+          cache_read_input_tokens: opts.cacheRead ?? 0,
+          cache_creation_input_tokens: opts.cacheCreate ?? 0,
+        },
+      },
+    });
+  }
+
+  function setupProject(sessionId: string): {
+    projectDir: string;
+    parentJsonl: string;
+    subagentsDir: string;
+  } {
+    const projectDir = "test-project-agg";
+    const base = join(tmp, ".claude", "projects", projectDir);
+    mkdirSync(base, { recursive: true });
+    const parentJsonl = join(base, `${sessionId}.jsonl`);
+    const subagentsDir = join(base, sessionId, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    return { projectDir, parentJsonl, subagentsDir };
+  }
+
+  test("returns zeros when no JSONL files exist", () => {
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = "nonexistent-project-agg";
+    const result = aggregateRunCost("no-session", "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+    expect(result.inputTokens).toBe(0);
+    expect(result.outputTokens).toBe(0);
+    expect(result.costUsd).toBe(0);
+  });
+
+  test("sums parent JSONL tokens correctly", () => {
+    const sessionId = "agg-parent-only";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    writeFileSync(parentJsonl, [
+      makeEntry({ id: "msg_1", timestamp: "2026-01-01T10:00:10Z", inputTokens: 1000, outputTokens: 500, cacheRead: 200, cacheCreate: 100 }),
+    ].join("\n"));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(1000);
+    expect(result.outputTokens).toBe(500);
+    expect(result.cacheReadTokens).toBe(200);
+    expect(result.cacheCreationTokens).toBe(100);
+    // cost = (1000*3 + 500*15 + 200*0.3 + 100*3.75) / 1_000_000 = 10935/1e6
+    expect(result.costUsd).toBeCloseTo(0.010935, 6);
+  });
+
+  test("sums parent + subagent JSONL tokens together", () => {
+    const sessionId = "agg-with-subagents";
+    const { projectDir, parentJsonl, subagentsDir } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    writeFileSync(parentJsonl, makeEntry({ id: "msg_parent", timestamp: "2026-01-01T10:00:10Z", inputTokens: 500, outputTokens: 200 }));
+    writeFileSync(join(subagentsDir, "agent-sub1.jsonl"), makeEntry({ id: "msg_sub1", timestamp: "2026-01-01T10:00:20Z", inputTokens: 300, outputTokens: 100 }));
+    writeFileSync(join(subagentsDir, "agent-sub2.jsonl"), makeEntry({ id: "msg_sub2", timestamp: "2026-01-01T10:00:30Z", inputTokens: 200, outputTokens: 50 }));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(1000);
+    expect(result.outputTokens).toBe(350);
+  });
+
+  test("filters out messages outside the time window", () => {
+    const sessionId = "agg-time-window";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    writeFileSync(parentJsonl, [
+      // Before window start — should be excluded
+      makeEntry({ id: "msg_before", timestamp: "2026-01-01T09:59:00Z", inputTokens: 9999, outputTokens: 9999 }),
+      // Inside window
+      makeEntry({ id: "msg_inside", timestamp: "2026-01-01T10:00:10Z", inputTokens: 100, outputTokens: 50 }),
+      // After window end + 60s buffer — should be excluded
+      makeEntry({ id: "msg_after", timestamp: "2026-01-01T10:02:30Z", inputTokens: 9999, outputTokens: 9999 }),
+    ].join("\n"));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(100);
+    expect(result.outputTokens).toBe(50);
+  });
+
+  test("deduplicates by message.id across parent and subagent files", () => {
+    const sessionId = "agg-dedup";
+    const { projectDir, parentJsonl, subagentsDir } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    // Same message id in both parent and subagent — should only count once
+    const sharedEntry = makeEntry({ id: "msg_shared", timestamp: "2026-01-01T10:00:10Z", inputTokens: 500, outputTokens: 200 });
+    writeFileSync(parentJsonl, sharedEntry);
+    writeFileSync(join(subagentsDir, "agent-dup.jsonl"), sharedEntry);
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    // Should count only once, not twice
+    expect(result.inputTokens).toBe(500);
+    expect(result.outputTokens).toBe(200);
+  });
+
+  test("applies correct pricing per model family", () => {
+    const sessionId = "agg-pricing";
+    const { projectDir, parentJsonl, subagentsDir } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    // Opus: in=15, out=75 per 1M
+    writeFileSync(parentJsonl, makeEntry({ id: "msg_opus", timestamp: "2026-01-01T10:00:10Z", model: "claude-opus-4-5", inputTokens: 1000, outputTokens: 1000 }));
+    // Haiku: in=1, out=5 per 1M
+    writeFileSync(join(subagentsDir, "agent-haiku.jsonl"), makeEntry({ id: "msg_haiku", timestamp: "2026-01-01T10:00:20Z", model: "claude-haiku-3-5", inputTokens: 1000, outputTokens: 1000 }));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    // opus: (1000*15 + 1000*75) / 1e6 = 0.090
+    // haiku: (1000*1 + 1000*5) / 1e6 = 0.006
+    expect(result.costUsd).toBeCloseTo(0.096, 6);
+  });
+
+  test("returns zeros for files with no usage data or missing message.id", () => {
+    const sessionId = "agg-no-usage";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    writeFileSync(parentJsonl, [
+      JSON.stringify({ type: "user", timestamp: "2026-01-01T10:00:10Z", message: { role: "user", content: "hi" } }),
+      // No message.id
+      JSON.stringify({ type: "assistant", timestamp: "2026-01-01T10:00:11Z", message: { model: "claude-sonnet-4-5", usage: { input_tokens: 100, output_tokens: 50 } } }),
+    ].join("\n"));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(0);
+    expect(result.costUsd).toBe(0);
+  });
+
+  test("includes messages within the 60-second end buffer", () => {
+    const sessionId = "agg-buffer";
+    const { projectDir, parentJsonl } = setupProject(sessionId);
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = projectDir;
+
+    // 30 seconds after endedAt — within 60s buffer
+    writeFileSync(parentJsonl, makeEntry({ id: "msg_buffered", timestamp: "2026-01-01T10:01:30Z", inputTokens: 200, outputTokens: 100 }));
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(200);
+    expect(result.outputTokens).toBe(100);
   });
 });

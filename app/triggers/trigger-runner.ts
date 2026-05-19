@@ -804,7 +804,7 @@ export async function flushWebhookQueue(
 export function recordMetrics(db: Database, data: MetricsData): void {
   db.prepare(
     `
-    INSERT OR IGNORE INTO session_metrics
+    INSERT INTO session_metrics
       (session_type, session_id, trigger_name, started_at, ended_at,
        duration_ms, input_tokens, output_tokens, cache_read_tokens,
        cache_creation_tokens, cost_usd, num_turns, is_error)
@@ -825,6 +825,177 @@ export function recordMetrics(db: Database, data: MetricsData): void {
     data.numTurns,
     data.isError ? 1 : 0,
   );
+}
+
+// ---------------------------------------------------------------------------
+// JSONL cost aggregation
+// ---------------------------------------------------------------------------
+
+/** Pricing per 1M tokens for each model family. */
+export const MODEL_PRICING: Record<
+  string,
+  { in: number; out: number; cacheRead: number; cacheCreate: number }
+> = {
+  opus:    { in: 15.0,  out: 75.0,  cacheRead: 1.50,  cacheCreate: 18.75 },
+  sonnet:  { in: 3.0,   out: 15.0,  cacheRead: 0.30,  cacheCreate: 3.75 },
+  haiku:   { in: 1.0,   out: 5.0,   cacheRead: 0.10,  cacheCreate: 1.25 },
+};
+
+/** Determine pricing tier from a model string (e.g. "claude-sonnet-4-5"). */
+export function modelFamily(model: string): keyof typeof MODEL_PRICING {
+  const m = model.toLowerCase();
+  if (m.includes("opus")) return "opus";
+  if (m.includes("haiku")) return "haiku";
+  return "sonnet"; // default
+}
+
+/**
+ * Resolve the Claude project directory name for the current working directory.
+ * Claude Code derives this by replacing every '/' with '-' and stripping the
+ * leading '-'. This matches the directory naming used by Claude Code itself.
+ */
+export function resolveClaudeProjectDir(): string {
+  const projectDir =
+    process.env.CLAUDE_PROJECT_DIR ??
+    process.cwd().replace(/\//g, "-").replace(/^-/, "");
+  return projectDir;
+}
+
+export type AggregatedUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+};
+
+/**
+ * Aggregate cost+tokens for a trigger run by scanning the parent session JSONL
+ * plus all subagent JSONL files, filtering by timestamp window and deduping
+ * by message.id. Uses Anthropic API list pricing per model family.
+ *
+ * Window: [startedAt, endedAt + 60s buffer] — buffer accommodates async tool_results.
+ *
+ * Returns zero-valued result if files missing or parse fails (never throws).
+ */
+export function aggregateRunCost(
+  parentSessionId: string,
+  startedAt: string,
+  endedAt: string,
+  homeDir?: string,
+): AggregatedUsage {
+  const zero: AggregatedUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    costUsd: 0,
+  };
+
+  try {
+    const base = homeDir ?? HOME;
+    const projectDir = resolveClaudeProjectDir();
+    const projectBase = `${base}/.claude/projects/${projectDir}`;
+
+    // Build time window
+    const windowStart = new Date(startedAt).getTime();
+    const windowEnd = new Date(endedAt).getTime() + 60_000; // +60s buffer
+
+    if (isNaN(windowStart) || isNaN(windowEnd)) return zero;
+
+    // Collect files to scan: parent JSONL + all subagent JSONLs
+    const filesToScan: string[] = [];
+
+    const parentJsonl = `${projectBase}/${parentSessionId}.jsonl`;
+    if (existsSync(parentJsonl)) {
+      filesToScan.push(parentJsonl);
+    }
+
+    const subagentsDir = `${projectBase}/${parentSessionId}/subagents`;
+    if (existsSync(subagentsDir)) {
+      try {
+        const entries = readdirSync(subagentsDir);
+        for (const entry of entries) {
+          if (entry.startsWith("agent-") && entry.endsWith(".jsonl")) {
+            filesToScan.push(`${subagentsDir}/${entry}`);
+          }
+        }
+      } catch {
+        // Subagents dir unreadable — proceed with parent only
+      }
+    }
+
+    if (filesToScan.length === 0) return zero;
+
+    // Single dedup set shared across all files
+    const seenMessageIds = new Set<string>();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheCreationTokens = 0;
+    let costUsd = 0;
+
+    for (const filePath of filesToScan) {
+      let content: string;
+      try {
+        content = readFileSync(filePath, "utf8");
+      } catch {
+        continue;
+      }
+
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let obj: any;
+        try {
+          obj = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+
+        // Filter by time window
+        if (!obj.timestamp) continue;
+        const ts = new Date(obj.timestamp as string).getTime();
+        if (isNaN(ts) || ts < windowStart || ts > windowEnd) continue;
+
+        // Must have message.usage and message.id
+        const msg = obj.message;
+        if (!msg || typeof msg !== "object") continue;
+        if (!msg.usage) continue;
+        if (!msg.id) continue;
+
+        // Deduplicate by message.id across all files
+        const msgId = msg.id as string;
+        if (seenMessageIds.has(msgId)) continue;
+        seenMessageIds.add(msgId);
+
+        const usage = msg.usage as Record<string, number>;
+        const family = modelFamily((msg.model as string | undefined) ?? "");
+        const pricing = MODEL_PRICING[family];
+
+        const inTok = (usage.input_tokens as number | undefined) ?? 0;
+        const outTok = (usage.output_tokens as number | undefined) ?? 0;
+        const cacheReadTok = (usage.cache_read_input_tokens as number | undefined) ?? 0;
+        const cacheCreateTok = (usage.cache_creation_input_tokens as number | undefined) ?? 0;
+
+        inputTokens += inTok;
+        outputTokens += outTok;
+        cacheReadTokens += cacheReadTok;
+        cacheCreationTokens += cacheCreateTok;
+        costUsd +=
+          (inTok * pricing.in +
+            outTok * pricing.out +
+            cacheReadTok * pricing.cacheRead +
+            cacheCreateTok * pricing.cacheCreate) /
+          1_000_000;
+      }
+    }
+
+    return { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
+  } catch {
+    // Never throw — return zeros on any unexpected failure
+    return zero;
+  }
 }
 
 /**
@@ -1891,8 +2062,33 @@ export async function main(): Promise<void> {
   }
 
   // --- Record metrics ---
+  // Aggregate cost from parent JSONL + all subagent JSONLs within the run window.
+  // The Anthropic SDK does NOT aggregate subagent token usage into the parent
+  // resultMsg.usage — each subagent call has its own API request_id.
+  // Scanning the JSONL files directly gives us the true total cost.
   const usage =
     (resultMsg as { usage?: Record<string, number> } | null)?.usage ?? {};
+  let aggregated: AggregatedUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    costUsd: 0,
+  };
+  if (capturedSessionId) {
+    try {
+      aggregated = aggregateRunCost(capturedSessionId, startedAt, endedAt);
+    } catch {
+      // Fall back to SDK-reported values if aggregation fails
+      aggregated = {
+        inputTokens: (usage.input_tokens as number | undefined) ?? 0,
+        outputTokens: (usage.output_tokens as number | undefined) ?? 0,
+        cacheReadTokens: (usage.cache_read_input_tokens as number | undefined) ?? 0,
+        cacheCreationTokens: (usage.cache_creation_input_tokens as number | undefined) ?? 0,
+        costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
+      };
+    }
+  }
   try {
     recordMetrics(db, {
       sessionType: "trigger",
@@ -1902,14 +2098,11 @@ export async function main(): Promise<void> {
       endedAt,
       durationMs:
         (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-      inputTokens: (usage.input_tokens as number | undefined) ?? 0,
-      outputTokens: (usage.output_tokens as number | undefined) ?? 0,
-      cacheReadTokens:
-        (usage.cache_read_input_tokens as number | undefined) ?? 0,
-      cacheCreationTokens:
-        (usage.cache_creation_input_tokens as number | undefined) ?? 0,
-      costUsd:
-        (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
+      inputTokens: aggregated.inputTokens,
+      outputTokens: aggregated.outputTokens,
+      cacheReadTokens: aggregated.cacheReadTokens,
+      cacheCreationTokens: aggregated.cacheCreationTokens,
+      costUsd: aggregated.costUsd,
       numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
       isError,
     });
@@ -1930,15 +2123,11 @@ export async function main(): Promise<void> {
         endedAt,
         durationMs:
           (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-        inputTokens: (usage.input_tokens as number | undefined) ?? 0,
-        outputTokens: (usage.output_tokens as number | undefined) ?? 0,
-        cacheReadTokens:
-          (usage.cache_read_input_tokens as number | undefined) ?? 0,
-        cacheCreationTokens:
-          (usage.cache_creation_input_tokens as number | undefined) ?? 0,
-        costUsd:
-          (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ??
-          0,
+        inputTokens: aggregated.inputTokens,
+        outputTokens: aggregated.outputTokens,
+        cacheReadTokens: aggregated.cacheReadTokens,
+        cacheCreationTokens: aggregated.cacheCreationTokens,
+        costUsd: aggregated.costUsd,
         numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
         isError,
       },
