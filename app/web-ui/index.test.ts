@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages } from "./index";
+import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso } from "./index";
 
 describe("sqliteToIso", () => {
   test("converts SQLite UTC timestamp to ISO with Z", () => {
@@ -235,5 +235,139 @@ describe("isClaudeProcessRunning", () => {
   test("does not throw on /proc absence (e.g. macOS dev environment)", () => {
     // Just call it — readdir failures should swallow and return false
     expect(() => isClaudeProcessRunning("any-session-id")).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// analyticsWhere helper
+// ---------------------------------------------------------------------------
+
+describe("analyticsWhere", () => {
+  test("always includes date range guards", () => {
+    const { clause, values } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: [], trigger: "", minCost: "", status: "" });
+    expect(clause).toContain("date(created_at) >=");
+    expect(clause).toContain("date(created_at) <=");
+    expect(values).toContain("2024-01-01");
+    expect(values).toContain("2024-12-31");
+  });
+
+  test("includes session_type IN clause for multiple types", () => {
+    const { clause, values } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: ["trigger", "subagent"], trigger: "", minCost: "", status: "" });
+    expect(clause).toContain("session_type IN");
+    expect(values).toContain("trigger");
+    expect(values).toContain("subagent");
+  });
+
+  test("includes LIKE clause for trigger filter", () => {
+    const { clause, values } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: [], trigger: "email", minCost: "", status: "" });
+    expect(clause).toContain("trigger_name LIKE");
+    expect(values.some(v => String(v).includes("email"))).toBe(true);
+  });
+
+  test("includes is_error filter for status=ok", () => {
+    const { clause } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: [], trigger: "", minCost: "", status: "ok" });
+    expect(clause).toContain("is_error = 0");
+  });
+
+  test("includes is_error filter for status=err", () => {
+    const { clause } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: [], trigger: "", minCost: "", status: "err" });
+    expect(clause).toContain("is_error = 1");
+  });
+
+  test("includes cost filter for min_cost", () => {
+    const { clause, values } = analyticsWhere({ from: "2024-01-01", to: "2024-12-31", types: [], trigger: "", minCost: "0.5", status: "" });
+    expect(clause).toContain("cost_usd >=");
+    expect(values).toContain(0.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// daysAgo / todayIso
+// ---------------------------------------------------------------------------
+
+describe("daysAgo / todayIso", () => {
+  test("daysAgo(0) returns today in YYYY-MM-DD format", () => {
+    const today = todayIso();
+    const ago0 = daysAgo(0);
+    expect(ago0).toBe(today);
+  });
+
+  test("daysAgo(7) returns a date 7 days before today", () => {
+    const today = new Date(todayIso());
+    const sevenDaysAgo = new Date(daysAgo(7));
+    const diffDays = Math.round((today.getTime() - sevenDaysAgo.getTime()) / 86400000);
+    expect(diffDays).toBe(7);
+  });
+
+  test("todayIso() returns YYYY-MM-DD format", () => {
+    const today = todayIso();
+    expect(today).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /analytics endpoint — integration smoke test
+// ---------------------------------------------------------------------------
+
+describe("/analytics endpoint", () => {
+  test("responds with HTML containing filter form and sessions section", async () => {
+    const req = new Request("http://localhost/analytics?from=2024-01-01&to=2030-01-01");
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Basic structure checks
+    expect(html).toContain("Analytics");
+    expect(html).toContain("Sessions");
+    expect(html).toContain("analytics-form");
+  });
+
+  test("responds with HTML showing subagent type in type checkboxes", async () => {
+    const req = new Request("http://localhost/analytics?from=2024-01-01&to=2030-01-01");
+    const res = await app.fetch(req);
+    const html = await res.text();
+    // The type checkboxes should include 'subagent'
+    expect(html).toContain("subagent");
+  });
+
+  test("group_by=day returns grouped table", async () => {
+    const req = new Request("http://localhost/analytics?from=2024-01-01&to=2030-01-01&group_by=day");
+    const res = await app.fetch(req);
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain("Grouped by day");
+  });
+
+  test("group_by=trigger returns grouped table with trigger label", async () => {
+    const req = new Request("http://localhost/analytics?from=2024-01-01&to=2030-01-01&group_by=trigger");
+    const res = await app.fetch(req);
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain("Grouped by trigger");
+  });
+
+  test("defaults to last 7 days when no date params given", async () => {
+    const req = new Request("http://localhost/analytics");
+    const res = await app.fetch(req);
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    // The filter form should show a 'from' input
+    expect(html).toContain('name="from"');
+    expect(html).toContain('name="to"');
+  });
+
+  test("CSV export returns proper content-type header", async () => {
+    const req = new Request("http://localhost/analytics.csv?from=2024-01-01&to=2030-01-01");
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/csv");
+    expect(res.headers.get("content-disposition")).toContain("attachment");
+    expect(res.headers.get("content-disposition")).toContain(".csv");
+  });
+
+  test("CSV export body has expected header row", async () => {
+    const req = new Request("http://localhost/analytics.csv?from=2024-01-01&to=2030-01-01");
+    const res = await app.fetch(req);
+    const text = await res.text();
+    expect(text.startsWith("session_type,session_id,parent_session_id")).toBe(true);
   });
 });

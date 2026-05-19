@@ -476,7 +476,7 @@ function renderConversation(messages: ParsedMessage[]): string {
 }
 
 // --- App ---
-const app = new Hono();
+export const app = new Hono();
 
 // ============ HEALTH CHECK ============
 app.get("/healthz", (c) => {
@@ -1162,24 +1162,69 @@ app.post("/settings/extensions", async (c) => {
   return c.redirect("/settings?saved=extensions");
 });
 
-// --- Analytics ---
-app.get("/analytics", (c) => {
-  const filterDate = c.req.query("date") || "";
-  const filterType = c.req.query("type") || "";
+// --- Analytics helpers ---
+export function analyticsWhere(params: {
+  from: string; to: string; types: string[]; trigger: string;
+  minCost: string; status: string;
+}): { clause: string; values: any[] } {
+  const parts: string[] = [];
+  const values: any[] = [];
+  // Default date range guards: always apply from/to
+  parts.push("date(created_at) >= ?");
+  values.push(params.from);
+  parts.push("date(created_at) <= ?");
+  values.push(params.to);
+  if (params.types.length > 0) {
+    parts.push(`session_type IN (${params.types.map(() => "?").join(",")})`);
+    values.push(...params.types);
+  }
+  if (params.trigger) {
+    parts.push("trigger_name LIKE ?");
+    values.push(`%${params.trigger}%`);
+  }
+  if (params.minCost) {
+    const n = parseFloat(params.minCost);
+    if (!isNaN(n)) { parts.push("cost_usd >= ?"); values.push(n); }
+  }
+  if (params.status === "ok")  { parts.push("is_error = 0"); }
+  if (params.status === "err") { parts.push("is_error = 1"); }
+  return { clause: `WHERE ${parts.join(" AND ")}`, values };
+}
 
-  // Build WHERE clause for filtered queries
-  const whereParts: string[] = [];
-  const whereParams: any[] = [];
-  if (filterDate) { whereParts.push("date(created_at) = ?"); whereParams.push(filterDate); }
-  if (filterType) { whereParts.push("session_type = ?"); whereParams.push(filterType); }
-  const where = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+// ISO date string for N days ago (UTC)
+export function daysAgo(n: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+export function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// --- Analytics route ---
+app.get("/analytics", (c) => {
+  const from       = c.req.query("from")      || daysAgo(7);
+  const to         = c.req.query("to")        || todayIso();
+  const rawTypes   = c.req.query("types")     || "";
+  const filterTrig = c.req.query("trigger")   || "";
+  const minCost    = c.req.query("min_cost")  || "";
+  const statusFilt = c.req.query("status")    || "";
+  const groupBy    = c.req.query("group_by")  || "";
+
+  const types = rawTypes ? rawTypes.split(",").filter(Boolean) : [];
+
+  const { clause: where, values: whereParams } = analyticsWhere({
+    from, to, types, trigger: filterTrig, minCost, status: statusFilt,
+  });
 
   let metrics: any[] = [];
   let totals: any = {};
   let week7: any = {};
+  let realCostAll: any = {};
+  let grouped: any[] = [];
+
   try {
-    // Rows: cache_read_tokens excluded from "unique work" sum to avoid double-counting
-    // repeated context on session resume. cost_usd is always accurate (per API call).
     totals = db.prepare(`
       SELECT
         COUNT(*) as sessions,
@@ -1197,9 +1242,50 @@ app.get("/analytics", (c) => {
       WHERE created_at >= datetime('now', '-7 days')
     `).get() as any || {};
 
-    metrics = db.prepare(
-      `SELECT * FROM session_metrics ${where} ORDER BY created_at DESC LIMIT 100`
-    ).all(...whereParams) as any[];
+    // "Real cost" tile: always sums trigger + subagent rows within the date range
+    // regardless of the type filter, so users can see the full picture even when
+    // filtering to just trigger rows.
+    const { clause: realWhere, values: realParams } = analyticsWhere({
+      from, to, types: [], trigger: filterTrig, minCost, status: statusFilt,
+    });
+    realCostAll = db.prepare(`
+      SELECT SUM(cost_usd) as cost FROM session_metrics ${realWhere}
+    `).get(...realParams) as any || {};
+
+    if (groupBy === "day") {
+      grouped = db.prepare(`
+        SELECT date(created_at) as group_label,
+          SUM(cost_usd) as cost,
+          COUNT(*) as sessions,
+          SUM(input_tokens + output_tokens) as tokens
+        FROM session_metrics ${where}
+        GROUP BY date(created_at) ORDER BY cost DESC
+      `).all(...whereParams) as any[];
+    } else if (groupBy === "trigger") {
+      grouped = db.prepare(`
+        SELECT COALESCE(trigger_name,'(none)') as group_label,
+          SUM(cost_usd) as cost,
+          COUNT(*) as sessions,
+          SUM(input_tokens + output_tokens) as tokens
+        FROM session_metrics ${where}
+        GROUP BY trigger_name ORDER BY cost DESC
+      `).all(...whereParams) as any[];
+    } else if (groupBy === "type") {
+      grouped = db.prepare(`
+        SELECT session_type as group_label,
+          SUM(cost_usd) as cost,
+          COUNT(*) as sessions,
+          SUM(input_tokens + output_tokens) as tokens
+        FROM session_metrics ${where}
+        GROUP BY session_type ORDER BY cost DESC
+      `).all(...whereParams) as any[];
+    }
+
+    if (!groupBy) {
+      metrics = db.prepare(
+        `SELECT * FROM session_metrics ${where} ORDER BY created_at DESC LIMIT 200`
+      ).all(...whereParams) as any[];
+    }
   } catch {}
 
   function fmtCost(v: number | null | undefined, decimals = 4): string {
@@ -1224,6 +1310,7 @@ app.get("/analytics", (c) => {
       reviewer: "#e040fb",
       trigger: "#7c6ef0",
       "trigger-relay": "#ff9800",
+      subagent: "#4caf50",
     };
     return `<span class="badge" style="background:${colors[t] || "#3a3b55"};color:#fff">${safe(t)}</span>`;
   }
@@ -1234,37 +1321,122 @@ app.get("/analytics", (c) => {
     ? (totalCost / totalDurationMs) * 3_600_000
     : null;
 
-  // Filter bar
-  const filterQs = (extra: Record<string, string>) => {
+  // Build current filter query string (for links and CSV)
+  const currentQs = (): string => {
     const p = new URLSearchParams();
-    if (filterDate) p.set("date", filterDate);
-    if (filterType) p.set("type", filterType);
-    for (const [k, v] of Object.entries(extra)) {
-      if (v) p.set(k, v); else p.delete(k);
-    }
-    const s = p.toString();
-    return s ? `?${s}` : "/analytics";
+    p.set("from", from); p.set("to", to);
+    if (rawTypes)    p.set("types", rawTypes);
+    if (filterTrig)  p.set("trigger", filterTrig);
+    if (minCost)     p.set("min_cost", minCost);
+    if (statusFilt)  p.set("status", statusFilt);
+    if (groupBy)     p.set("group_by", groupBy);
+    return p.toString();
   };
 
-  const typeOptions = ["", "worker", "reviewer", "trigger", "trigger-relay"];
-  const typeSelect = `<select name="type" onchange="this.form.submit()" style="width:auto;padding:4px 8px;font-size:12px">
-    ${typeOptions.map(t => `<option value="${t}"${filterType === t ? " selected" : ""}>${t || "All types"}</option>`).join("")}
-  </select>`;
+  const isFiltered = rawTypes || filterTrig || minCost || statusFilt || groupBy ||
+    from !== daysAgo(7) || to !== todayIso();
+  const activeLabel = isFiltered
+    ? ` <span class="text-muted" style="font-size:12px">(filtered)</span>` : "";
+
+  // Type multi-select checkboxes
+  const typeOptions = ["trigger", "subagent", "worker", "reviewer", "trigger-relay"];
+  const typeCheckboxes = typeOptions.map(t => {
+    const checked = types.includes(t) ? " checked" : "";
+    return `<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+      <input type="checkbox" name="types_cb" value="${t}"${checked} style="width:auto;margin:0">
+      ${typeBadge(t)}
+    </label>`;
+  }).join(" ");
+
+  // Group-by options
+  const groupByOptions = ["", "day", "trigger", "type"].map(g =>
+    `<option value="${g}"${groupBy === g ? " selected" : ""}>${g || "None (table)"}</option>`
+  ).join("");
+
+  // Status options
+  const statusOptions = ["", "ok", "err"].map(s =>
+    `<option value="${s}"${statusFilt === s ? " selected" : ""}>${s || "All"}</option>`
+  ).join("");
 
   const filterForm = `
-    <form method="GET" action="/analytics" class="flex mb-16" style="gap:8px;flex-wrap:wrap;align-items:center">
-      <span class="text-muted" style="font-size:12px">Filter:</span>
-      <input type="date" name="date" value="${safe(filterDate)}" onchange="this.form.submit()"
-        style="width:auto;padding:4px 8px;font-size:12px">
-      ${typeSelect}
-      ${(filterDate || filterType) ? `<a href="/analytics" class="btn btn-sm btn-outline">Clear</a>` : ""}
-    </form>`;
+    <form method="GET" action="/analytics" id="analytics-form" style="background:#252640;border:1px solid #3a3b55;border-radius:6px;padding:12px 16px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end">
+        <div>
+          <div class="text-muted" style="margin-bottom:4px">From</div>
+          <input type="date" name="from" value="${safe(from)}" style="width:100%;padding:4px 8px;font-size:12px">
+        </div>
+        <div>
+          <div class="text-muted" style="margin-bottom:4px">To</div>
+          <input type="date" name="to" value="${safe(to)}" style="width:100%;padding:4px 8px;font-size:12px">
+        </div>
+        <div>
+          <div class="text-muted" style="margin-bottom:4px">Trigger (partial match)</div>
+          <input type="text" name="trigger" value="${safe(filterTrig)}" placeholder="e.g. email" style="width:100%;padding:4px 8px;font-size:12px">
+        </div>
+        <div>
+          <div class="text-muted" style="margin-bottom:4px">Min cost ($)</div>
+          <input type="number" name="min_cost" value="${safe(minCost)}" min="0" step="0.001" placeholder="0.00" style="width:100%;padding:4px 8px;font-size:12px">
+        </div>
+        <div>
+          <div class="text-muted" style="margin-bottom:4px">Status</div>
+          <select name="status" style="width:100%;padding:4px 8px;font-size:12px">${statusOptions}</select>
+        </div>
+        <div>
+          <div class="text-muted" style="margin-bottom:4px">Group by</div>
+          <select name="group_by" style="width:100%;padding:4px 8px;font-size:12px">${groupByOptions}</select>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="text-muted" style="margin-bottom:6px;font-size:12px">Types</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${typeCheckboxes}</div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+        <button type="submit" onclick="syncTypeField()" class="btn btn-sm">Apply</button>
+        <a href="/analytics" class="btn btn-sm btn-outline">Reset</a>
+        <a href="/analytics.csv?${safe(currentQs())}" class="btn btn-sm btn-outline" style="margin-left:auto">CSV export</a>
+      </div>
+      <input type="hidden" name="types" id="types-hidden" value="${safe(rawTypes)}">
+    </form>
+    <script>
+    function syncTypeField() {
+      const cbs = document.querySelectorAll('input[name=types_cb]:checked');
+      document.getElementById('types-hidden').value = Array.from(cbs).map(c => c.value).join(',');
+    }
+    </script>`;
 
-  const rows = metrics.map((m) => `
+  // Grouped view
+  const groupedTable = grouped.length > 0 ? `
+    <div class="card">
+      <h3>Grouped by ${safe(groupBy)}${activeLabel}</h3>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>${safe(groupBy === "day" ? "Date" : groupBy === "trigger" ? "Trigger" : "Type")}</th>
+          <th>Sessions</th><th>Tokens</th><th>Cost</th></tr></thead>
+        <tbody>
+          ${grouped.map(g => `<tr>
+            <td>${safe(String(g.group_label))}</td>
+            <td>${g.sessions || 0}</td>
+            <td>${fmtNum(g.tokens)}</td>
+            <td>${fmtCost(g.cost)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>` : "";
+
+  // Sessions table
+  const rows = metrics.map((m) => {
+    const isSubagent = m.session_type === "subagent";
+    const indent = isSubagent ? `style="padding-left:24px"` : "";
+    const sourceCell = isSubagent
+      ? `<td title="subagent of ${safe(m.parent_session_id || "")}" style="color:#4caf50;font-size:11px">
+           <span style="opacity:0.5">↳</span> ${safe((m.parent_session_id || "").slice(0, 8))}…
+         </td>`
+      : `<td class="text-muted" style="font-size:11px">parent</td>`;
+    return `
     <tr>
       <td class="text-muted" style="white-space:nowrap">${safe(timeAgo(m.created_at))}</td>
       <td>${typeBadge(m.session_type)}</td>
-      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.trigger_name ? `<a href="${filterQs({ type: "", date: "" })}&type=${encodeURIComponent(m.session_type)}" style="color:#7c6ef0;text-decoration:none">${safe(m.trigger_name)}</a>` : '<span class="text-muted">—</span>'}</td>
+      ${sourceCell}
+      <td ${indent} style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.trigger_name ? safe(m.trigger_name) : '<span class="text-muted">—</span>'}</td>
       <td>${fmtDuration(m.duration_ms)}</td>
       <td title="new input">${fmtNum(m.input_tokens)}</td>
       <td title="output">${fmtNum(m.output_tokens)}</td>
@@ -1272,23 +1444,31 @@ app.get("/analytics", (c) => {
       <td title="cache reads" style="color:#5c9cf5">${fmtNum(m.cache_read_tokens)}</td>
       <td>${fmtCost(m.cost_usd)}</td>
       <td><span class="dot" style="background:${m.is_error ? "#f44336" : "#4caf50"}"></span>${m.is_error ? "err" : "ok"}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 
-  const activeLabel = filterDate || filterType
-    ? ` <span class="text-muted" style="font-size:12px">(filtered)</span>` : "";
+  // Real cost supplemental note (shown when type filter excludes subagents)
+  const showingSubagents = types.length === 0 || types.includes("subagent");
+  const realCostNote = !showingSubagents && realCostAll.cost > 0
+    ? `<div class="text-muted" style="font-size:12px;margin-top:4px">incl. subagents: ${fmtCost(realCostAll.cost)}</div>`
+    : "";
 
   const html = `
     <h1>Analytics</h1>
     ${filterForm}
 
-    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:8px">
-      <div class="stat"><div class="num">${fmtCost(totalCost)}</div><div class="label">Cost${activeLabel}</div></div>
-      <div class="stat"><div class="num">${fmtCost(week7.cost)}</div><div class="label">Cost (7d)</div></div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:8px">
+      <div class="stat">
+        <div class="num">${fmtCost(totalCost)}</div>
+        <div class="label">Cost${activeLabel}</div>
+        ${realCostNote}
+      </div>
+      <div class="stat"><div class="num">${fmtCost(week7.cost)}</div><div class="label">Cost (7d, all types)</div></div>
       <div class="stat"><div class="num">${costPerHour != null ? fmtCost(costPerHour, 4) : "—"}</div><div class="label">Est. $/hr${activeLabel}</div></div>
-      <div class="stat"><div class="num">${totals.sessions || 0}</div><div class="label">Sessions${activeLabel}</div></div>
     </div>
 
-    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+    <div class="grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
+      <div class="stat"><div class="num">${totals.sessions || 0}</div><div class="label">Sessions${activeLabel}</div></div>
       <div class="stat">
         <div class="num" style="font-size:20px">${fmtNum(totals.input_tokens)}</div>
         <div class="label">Input tokens</div>
@@ -1297,23 +1477,17 @@ app.get("/analytics", (c) => {
         <div class="num" style="font-size:20px">${fmtNum(totals.output_tokens)}</div>
         <div class="label">Output tokens</div>
       </div>
-      <div class="stat">
-        <div class="num" style="font-size:20px;color:#f0a500">${fmtNum(totals.cache_write_tokens)}</div>
-        <div class="label">Cache writes</div>
-      </div>
-      <div class="stat">
-        <div class="num" style="font-size:20px;color:#5c9cf5">${fmtNum(totals.cache_read_tokens)}</div>
-        <div class="label">Cache reads <span title="Repeated context loaded from cache on session resume — not double-counted in cost" style="cursor:help;opacity:0.5">ⓘ</span></div>
-      </div>
     </div>
 
-    <div class="card">
+    ${groupedTable}
+
+    ${!groupBy ? `<div class="card">
       <h3>Sessions${activeLabel}</h3>
       ${metrics.length === 0
         ? '<div class="text-muted">No sessions match the current filter.</div>'
         : `<div style="overflow-x:auto"><table>
         <thead><tr>
-          <th>Time</th><th>Type</th><th>Trigger</th><th>Duration</th>
+          <th>Time</th><th>Type</th><th>Source</th><th>Trigger</th><th>Duration</th>
           <th title="New input tokens">Input</th>
           <th>Output</th>
           <th title="Cache creation tokens (billed at write rate)" style="color:#f0a500">Cache↑</th>
@@ -1322,9 +1496,51 @@ app.get("/analytics", (c) => {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table></div>`}
-    </div>`;
+    </div>` : ""}`;
 
   return c.html(layout("Analytics", html, "analytics"));
+});
+
+// --- Analytics CSV export ---
+app.get("/analytics.csv", (c) => {
+  const from       = c.req.query("from")      || daysAgo(7);
+  const to         = c.req.query("to")        || todayIso();
+  const rawTypes   = c.req.query("types")     || "";
+  const filterTrig = c.req.query("trigger")   || "";
+  const minCost    = c.req.query("min_cost")  || "";
+  const statusFilt = c.req.query("status")    || "";
+
+  const types = rawTypes ? rawTypes.split(",").filter(Boolean) : [];
+  const { clause: where, values: whereParams } = analyticsWhere({
+    from, to, types, trigger: filterTrig, minCost, status: statusFilt,
+  });
+
+  let rows: any[] = [];
+  try {
+    rows = db.prepare(
+      `SELECT session_type, session_id, parent_session_id, trigger_name,
+              started_at, ended_at, duration_ms,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              cost_usd, num_turns, is_error, created_at
+       FROM session_metrics ${where} ORDER BY created_at DESC LIMIT 10000`
+    ).all(...whereParams) as any[];
+  } catch {}
+
+  const header = "session_type,session_id,parent_session_id,trigger_name,started_at,ended_at,duration_ms,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_usd,num_turns,is_error,created_at";
+  const csvRows = rows.map(r => [
+    r.session_type, r.session_id, r.parent_session_id ?? "",
+    r.trigger_name ?? "", r.started_at, r.ended_at, r.duration_ms,
+    r.input_tokens, r.output_tokens, r.cache_read_tokens, r.cache_creation_tokens,
+    r.cost_usd, r.num_turns, r.is_error, r.created_at,
+  ].map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","));
+
+  const csv = [header, ...csvRows].join("\n");
+  return new Response(csv, {
+    headers: {
+      "Content-Type": "text/csv",
+      "Content-Disposition": `attachment; filename="analytics-${from}-${to}.csv"`,
+    },
+  });
 });
 
 // ============ SESSIONS ============
