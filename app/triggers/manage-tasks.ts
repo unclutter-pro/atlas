@@ -414,6 +414,44 @@ export function taskCancel(db: Database, opts: {
 const MAX_VALIDATIONS = 3;
 const VALIDATOR_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Parse the validator's verdict from a spawned trigger-runner's stdout.
+ *
+ * Scans lines from last to first and extracts the first {…} object found.
+ * This handles trigger-runner's log prefix (`[<iso-timestamp>] Result: {…}`)
+ * which would otherwise prevent a strict line-starts-with-{ check from
+ * matching. Returns a fail result if no parseable verdict is found.
+ *
+ * Exported for unit testing.
+ */
+export function parseValidatorOutput(stdout: string): ValidatorResult {
+  const fallback: ValidatorResult = {
+    verdict: "fail",
+    feedback: "Validator produced no parseable output",
+  };
+  const lines = stdout.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    const firstBrace = line.indexOf("{");
+    if (firstBrace === -1) continue;
+    const lastBrace = line.lastIndexOf("}");
+    if (lastBrace <= firstBrace) continue;
+    const candidate = line.slice(firstBrace, lastBrace + 1);
+    try {
+      const parsed = JSON.parse(candidate) as { verdict?: string; feedback?: string };
+      if (parsed.verdict === "pass" || parsed.verdict === "fail") {
+        return {
+          verdict: parsed.verdict,
+          feedback: (parsed.feedback ?? "").slice(0, 200),
+        };
+      }
+    } catch {
+      continue;
+    }
+  }
+  return fallback;
+}
+
 export async function runValidator(opts: {
   goal: Goal;
   reason: string;
@@ -516,26 +554,7 @@ export async function runValidator(opts: {
 
   const durationMs = Date.now() - startMs;
 
-  // Parse the last JSON line from stdout
-  let result: ValidatorResult = { verdict: "fail", feedback: "Validator produced no parseable output" };
-
-  const lines = stdout.trim().split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line.startsWith("{")) continue;
-    try {
-      const parsed = JSON.parse(line) as { verdict?: string; feedback?: string };
-      if (parsed.verdict === "pass" || parsed.verdict === "fail") {
-        result = {
-          verdict: parsed.verdict,
-          feedback: (parsed.feedback ?? "").slice(0, 200),
-        };
-        break;
-      }
-    } catch {
-      continue;
-    }
-  }
+  const result = parseValidatorOutput(stdout);
 
   // Record validation attempt
   db.prepare(

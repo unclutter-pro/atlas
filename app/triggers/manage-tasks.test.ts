@@ -19,6 +19,7 @@ import {
   taskCancel,
   parseArgs,
   getSessionScope,
+  parseValidatorOutput,
   type Goal,
   type Task,
 } from "./manage-tasks.ts";
@@ -335,6 +336,45 @@ describe("Validator mock mode", () => {
 
     const updated = goalGet(db, goal.id)!;
     expect(updated.validation_count).toBe(1);
+  });
+
+  test("parseValidatorOutput: extracts JSON even when trigger-runner prefixes it with [ISO] Result:", () => {
+    // Regression: in real validator runs, trigger-runner.ts logs the final
+    // assistant message as `[2026-05-20T11:34:08.868Z] Result: {…}` to stdout.
+    // The earlier parser checked `line.startsWith("{")` and missed the JSON,
+    // causing every real validation to fall back to "no parseable output".
+    const stdout = [
+      `[2026-05-20T11:33:43.868Z] Direct session starting (channel=validator, model=opus)`,
+      `[2026-05-20T11:34:08.868Z] Result: {"verdict": "pass", "feedback": "Done condition verified end-to-end"}`,
+      `[2026-05-20T11:34:08.880Z] Direct session done (error=false)`,
+    ].join("\n");
+    const out = parseValidatorOutput(stdout);
+    expect(out.verdict).toBe("pass");
+    expect(out.feedback).toBe("Done condition verified end-to-end");
+  });
+
+  test("parseValidatorOutput: picks the LAST verdict line when validator reasons in JSON before committing", () => {
+    const stdout = [
+      `[ts] Result: {"thought":"checking files"}`,
+      `[ts] Result: {"verdict":"fail","feedback":"final-verdict"}`,
+    ].join("\n");
+    const out = parseValidatorOutput(stdout);
+    expect(out.verdict).toBe("fail");
+    expect(out.feedback).toBe("final-verdict");
+  });
+
+  test("parseValidatorOutput: returns fallback fail when no JSON is found", () => {
+    const out = parseValidatorOutput("no json here\njust prose\n");
+    expect(out.verdict).toBe("fail");
+    expect(out.feedback).toContain("no parseable output");
+  });
+
+  test("parseValidatorOutput: truncates feedback to 200 chars", () => {
+    const longFeedback = "x".repeat(500);
+    const stdout = `Result: {"verdict":"pass","feedback":"${longFeedback}"}`;
+    const out = parseValidatorOutput(stdout);
+    expect(out.verdict).toBe("pass");
+    expect(out.feedback.length).toBe(200);
   });
 
   test("max 3 validations → validation_exhausted on close attempt", () => {
