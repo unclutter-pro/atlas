@@ -3,76 +3,46 @@ name: tasks
 description: Task management with the `task` CLI. Use when planning multi-step work, tracking goals with done-conditions, managing dependencies, or gating session exit on completion. Triggers on 'create task', 'track progress', 'plan work', 'open goals', 'what tasks are open', or any work that benefits from structured decomposition.
 ---
 
-# Atlas Task Management
+# Task Management
 
-The `task` CLI manages goals and tasks scoped to the current session (`ATLAS_TRIGGER` + `ATLAS_TRIGGER_SESSION_KEY`). The StopHook blocks exit while active goals or open tasks exist — close them or set a reminder to defer.
+Use `task` for goals (longer-running outcomes with measurable done-conditions) and tasks (concrete steps). The session can't end while goals or open tasks remain — close them with a thorough `--reason`, or set a `reminder` to continue later.
 
-## Goal Lifecycle
-
-Goals represent a defined outcome with a prose done-condition. Use them for multi-step work.
+## Goals
 
 ```bash
-# Create a goal
-task goal create --title="Refactor auth module" \
-  --done="All auth tests pass, no regressions in CI" \
-  --description="Auth module is brittle and hard to test; needs interface redesign"
+task goal create \
+  --title="Lift mapstudio.ai organic traffic to 1k clicks/day" \
+  --done="GSC: ≥1000 average daily clicks over a 7-day window for organic search, top-10 ranking for 'tile map studio'" \
+  --description="Strategy: technical SEO audit (Core Web Vitals, sitemap, structured data) first, then content gaps for top-5 commercial intents. Priorities: real measurable traffic over vanity rankings; user prefers iterative shipping over big-bang."
 
-# View goals
-task goal list            # active goals this session
-task goal show 3          # full detail for goal #3
-
-# Close a goal — always runs the validator (max 3 attempts)
-task goal close 3 --reason="Refactor complete, all 47 tests pass"
-# With open tasks: use --cascade-cancel to auto-cancel them
-task goal close 3 --reason="Abandoned: scope changed" --cascade-cancel
+task goal list                         # active goals this session
+task goal show 3
+task goal close 3 --reason="<thorough explanation of why the done-condition is genuinely met, with concrete evidence — short reasons are rejected>"
+task goal close 3 --reason="..." --cascade-cancel   # also cancels still-open tasks
 ```
 
-**Statuses**: `active` → `done` | `abandoned` | `validation_exhausted`
+A goal's `--description` carries the *strategy + user priorities* (broader context for a re-spawned session); `--done` is the *measurable acceptance criteria*. Write both for any goal worth opening.
 
-## Task Lifecycle
+When closing a goal, provide an **extensive `--reason`** — explain why the done-condition is actually met, with concrete evidence. Short reasons get rejected.
 
-Tasks are concrete units of work, optionally linked to a goal.
+## Tasks
 
 ```bash
-# Add tasks
-task add --title="Write unit tests for auth service" --goal=3 --priority=1
-task add --title="Update README" --priority=3
-task add --title="Deploy to staging" --goal=3 --depends-on=12,13
+task add --title="Run Lighthouse audit on /maps and /pricing" --goal=3 --priority=1
+task add --title="Fix Largest Contentful Paint on /maps" --goal=3 --depends-on=12
+task add --title="Draft 'tile map studio' landing page copy" --goal=3 --priority=2
 
-# Find unblocked work
-task ready                          # open tasks with all deps closed
-
-# View and update
-task list                           # open + in_progress tasks
-task list --status=done,cancelled   # closed tasks
-task show 12                        # full detail
-
-# Close or cancel
-task close 12 --reason="Tests written, 100% coverage"
-task cancel 15 --reason="No longer needed"
+task ready                          # tasks with no open deps
+task list                           # open + in_progress
+task list --status=done,cancelled
+task show 12
+task close 12 --reason="LCP now 1.8s on 4G profile, was 3.4s"
+task cancel 15 --reason="Subsumed by #18"
 ```
 
-**Statuses**: `open` → `in_progress` → `done` | `cancelled`
-**Priority**: 0=critical, 1=high, 2=normal (default), 3=low, 4=backlog
+**Statuses**: tasks `open → in_progress → done | cancelled`; goals `active → done | abandoned | validation_exhausted`.
+**Priority**: 0=critical, 1=high, 2=normal (default), 3=low, 4=backlog.
 
-## Dependencies
+## Session scope
 
-```bash
-# Task #14 is blocked until #12 and #13 are done/cancelled
-task add --title="Final integration test" --depends-on=12,13
-
-task ready   # only shows tasks whose deps are all closed
-```
-
-## Validation Gate
-
-Closing a goal **always** spawns an isolated validator session (ephemeral, not analyzed by dreaming) that reads the filesystem read-only and checks whether the done-condition is met. The validator returns `pass` (goal closes) or `fail` (CLI error with feedback — refine and retry). After 3 failed validations the goal is marked `validation_exhausted`. Provide a thorough `--reason` so the validator has context.
-
-## Session Scope
-
-All commands default to `(ATLAS_TRIGGER, ATLAS_TRIGGER_SESSION_KEY)`. Use `--all` to inspect across all sessions (debug only).
-
-```bash
-task goal list --all   # all goals across all sessions
-task list --all        # all tasks across all sessions
-```
+Everything scopes to the current session automatically. Use `--all` only when debugging across sessions.

@@ -92,15 +92,15 @@ For any external resources referenced in today's sessions, verify that your memo
 
 This is not monitoring. Don't check if things are "working" — check if your *records* about them are still true.
 
-## Phase 5: Task Hygiene
+## Phase 5: Memory Hygiene
 
-Review open goals and tasks across all sessions:
-```bash
-task goal list --all
-task list --all --status=open,in_progress
-```
+Goals and tasks are session-bound and clean themselves up — don't touch them here. Instead, look for **stale or inconsistent memory** that future sessions would trip over:
 
-Close any goals/tasks that are clearly completed based on today's sessions. Use `task goal close <id> --reason=...` and `task close <id> --reason=...` to close completed items. Use `task cancel <id>` for items that are no longer relevant.
+- Responsibilities (`~/memory/responsibilities/`) whose stated focus or scope no longer matches today's activity — flag, refine, or archive.
+- Project notes (`~/memory/projects/`) that contradict what actually shipped today (e.g. described architecture vs. current code).
+- Open-loop notes ("TODO: ...", "next: ...") that are clearly resolved by today's work but never updated.
+
+Update or archive the conflicting entries — don't rewrite history, just bring the *active* memory into agreement with reality.
 
 ## Rules
 

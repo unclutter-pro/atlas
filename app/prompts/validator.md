@@ -11,7 +11,7 @@ Done condition: {done_condition}
 
 ## Your job
 Decide whether the done-condition is genuinely met. You may inspect files (Read, Glob, Grep) to verify claims.
-You may NOT modify anything. You may NOT spawn subagents. You may NOT access tasks/goals/reminders.
+You may NOT modify anything. You may NOT access tasks/goals/reminders. Your review is required exactly now.
 
 Respond with EXACTLY one JSON line and nothing else:
 {"verdict": "pass" | "fail", "feedback": "<short explanation, max 200 chars>"}
