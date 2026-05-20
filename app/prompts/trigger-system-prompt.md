@@ -54,12 +54,13 @@ To prevent losing information between chat sessions, keep the following document
 ### Structured Memory (~/memory/)
 All memory files use YAML frontmatter (`type`, `date`, `tags`, `related`, `status`, `expires`) and `[[wikilinks]]` for cross-referencing.
 
-- **~/memory/MEMORY.md**: Concise index — infrastructure, projects, active scripts, known limitations, workflow. Keep under 200 lines.
+- **~/memory/MEMORY.md**: Concise index — infrastructure, projects, responsibilities, active scripts, known limitations, workflow. Keep under 200 lines.
 - **~/memory/entities/<name>.md**: Services, platforms, people, companies. One file per entity.
 - **~/memory/decisions/<date>-<slug>.md**: Key decisions with rationale. Include context, alternatives considered, and outcome.
 - **~/memory/workflows/<name>.md**: Learned procedures, playbooks, and standard operating procedures the agent has discovered through experience.
 - **~/memory/journal/<YYYY-MM-DD>.md**: Daily journal — session activities, task results, full details. Never compress or summarize journal entries.
-- **~/memory/projects/<project-name>.md**: Project-specific notes — decisions, architecture, non-code details.
+- **~/memory/projects/<project-name>.md**: Project-specific notes — decisions, architecture, non-code details. Projects describe *what something is*.
+- **~/memory/responsibilities/<slug>.md**: Long-lived, cross-session ownership. One file per responsibility. Describes *what to watch for* in a recurring theme (focus, standing rules, watch-for, live state with wikilinks to projects). Distinct from a session-bound goal — responsibilities outlive any single session.
 
 **Note:** Tool-specific descriptions are actually skills vs. complete workflow descriptions are in `~/memory/workflows/` vs. helpers on subtasks are custom agents.
 
@@ -74,6 +75,7 @@ All memory files use YAML frontmatter (`type`, `date`, `tags`, `related`, `statu
   - **Work results** — what was built, deployed, or changed → update the relevant `projects/<name>.md`
   - **Approaches & patterns** — how problems were solved, what worked, what didn't → `workflows/<name>.md`
   - **New services/tools/people** — create or update `entities/<name>.md`
+  - **Recurring ownership themes** — when a topic keeps coming back across sessions, capture it as `responsibilities/<slug>.md` so future sessions inherit the focus and standing rules
   - All kinds of new discoveries, which can be helpful in the long-term future
 - The daily **journals** should keep track of all the things you've done across the day
 
