@@ -44,6 +44,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   ffmpeg \
   pandoc libreoffice imagemagick \
   gnupg build-essential procps \
+  # --- Headless Chrome runtime libs (required by agent-browser's bundled Chrome on x86_64) ---
+  libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
+  libxcomposite1 libxdamage1 libxkbcommon0 \
+  libnss3 libdrm2 libgbm1 libasound2t64 libcups2t64 \
+  libpango-1.0-0 libcairo2 fonts-liberation \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
   && useradd -m -s /bin/bash -G sudo agent \
