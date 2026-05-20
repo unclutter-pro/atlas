@@ -239,6 +239,7 @@ def get_email_db(config):
             references_chain TEXT NOT NULL DEFAULT '[]',
             last_sender     TEXT NOT NULL DEFAULT '',
             last_sender_full TEXT NOT NULL DEFAULT '',
+            last_cc         TEXT NOT NULL DEFAULT '',
             participants    TEXT NOT NULL DEFAULT '[]',
             message_count   INTEGER NOT NULL DEFAULT 0,
             created_at      TEXT NOT NULL DEFAULT (datetime('now')),
@@ -252,6 +253,7 @@ def get_email_db(config):
             direction       TEXT NOT NULL DEFAULT 'in',
             sender          TEXT NOT NULL DEFAULT '',
             recipient       TEXT NOT NULL DEFAULT '',
+            cc              TEXT NOT NULL DEFAULT '',
             subject         TEXT NOT NULL DEFAULT '',
             body            TEXT NOT NULL DEFAULT '',
             body_html       TEXT NOT NULL DEFAULT '',
@@ -270,11 +272,16 @@ def get_email_db(config):
         CREATE INDEX IF NOT EXISTS idx_emails_direction ON emails(direction);
     """)
 
-    # Migration: add body_html column for existing databases
-    try:
-        db.execute("SELECT body_html FROM emails LIMIT 0")
-    except sqlite3.OperationalError:
-        db.execute("ALTER TABLE emails ADD COLUMN body_html TEXT NOT NULL DEFAULT ''")
+    # Migrations for existing databases — each probe-and-alter is idempotent
+    for table, column, ddl in (
+        ("emails",  "body_html", "ALTER TABLE emails  ADD COLUMN body_html TEXT NOT NULL DEFAULT ''"),
+        ("emails",  "cc",        "ALTER TABLE emails  ADD COLUMN cc        TEXT NOT NULL DEFAULT ''"),
+        ("threads", "last_cc",   "ALTER TABLE threads ADD COLUMN last_cc   TEXT NOT NULL DEFAULT ''"),
+    ):
+        try:
+            db.execute(f"SELECT {column} FROM {table} LIMIT 0")
+        except sqlite3.OperationalError:
+            db.execute(ddl)
 
     return db
 
@@ -365,10 +372,24 @@ def build_references_chain(msg):
     return refs
 
 
+def _parse_address_list(header_value):
+    """Parse a To/Cc/Bcc header value into a list of plain addresses.
+
+    Handles RFC 5322 forms like ``"Alice <a@x>, b@x"`` correctly via
+    ``email.utils.getaddresses``. Empty header → empty list.
+    """
+    if not header_value:
+        return []
+    pairs = emaillib.utils.getaddresses([header_value])
+    return [addr.strip() for _, addr in pairs if addr and addr.strip()]
+
+
 def update_thread(db, thread_id, msg):
     """Update thread state in the email DB."""
     sender = msg.get("From", "")
     _, sender_addr = emaillib.utils.parseaddr(sender)
+    cc_header = msg.get("Cc", "").strip()
+    cc_addrs = _parse_address_list(cc_header)
     subject = msg.get("Subject", "(no subject)")
     subject_clean = _clean_subject(subject)
     message_id = msg.get("Message-ID", "").strip()
@@ -386,23 +407,25 @@ def update_thread(db, thread_id, msg):
 
     if sender_addr:
         participants.add(sender_addr)
+    participants.update(cc_addrs)
 
     db.execute("""
         INSERT INTO threads (thread_id, subject, last_message_id, references_chain,
-                             last_sender, last_sender_full, participants, message_count, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             last_sender, last_sender_full, last_cc, participants, message_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
             subject = excluded.subject,
             last_message_id = excluded.last_message_id,
             references_chain = excluded.references_chain,
             last_sender = excluded.last_sender,
             last_sender_full = excluded.last_sender_full,
+            last_cc = excluded.last_cc,
             participants = excluded.participants,
             message_count = excluded.message_count,
             updated_at = excluded.updated_at
     """, (
         thread_id, subject_clean, message_id,
-        json.dumps(references), sender_addr, sender,
+        json.dumps(references), sender_addr, sender, cc_header,
         json.dumps(sorted(participants)), count,
         datetime.now().isoformat(),
     ))
@@ -413,6 +436,7 @@ def update_thread(db, thread_id, msg):
         "last_message_id": message_id,
         "references": references,
         "last_sender": sender_addr,
+        "cc": cc_header,
     }
 
 
@@ -651,6 +675,7 @@ def _fetch_new_emails(mail, db, config):
         msg = emaillib.message_from_bytes(raw)
 
         sender = msg.get("From", "unknown")
+        cc_header = msg.get("Cc", "").strip()
         subject = msg.get("Subject", "(no subject)")
         body, body_html = get_body(msg)
         thread_id = extract_thread_id(msg, db)
@@ -670,15 +695,19 @@ def _fetch_new_emails(mail, db, config):
         # 2. Store email in email DB
         _, sender_addr = emaillib.utils.parseaddr(sender)
         db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, subject, body, body_html)
-            VALUES (?, ?, 'in', ?, ?, ?, ?)
-        """, (thread_id, message_id_hdr, sender_addr, subject, body[:8000], body_html[:50000]))
+            INSERT INTO emails (thread_id, message_id, direction, sender, cc, subject, body, body_html)
+            VALUES (?, ?, 'in', ?, ?, ?, ?, ?)
+        """, (thread_id, message_id_hdr, sender_addr, cc_header,
+              subject, body[:8000], body_html[:50000]))
 
         # 2b. Save as searchable file
         save_email_file(thread_id, sender, subject, msg.get("Date", ""), body, attachments)
 
         # 3. Write to agent inbox
-        inbox_content = f"From: {sender}\nSubject: {subject}\n\n{body[:20000]}"
+        inbox_content = f"From: {sender}\n"
+        if cc_header:
+            inbox_content += f"Cc: {cc_header}\n"
+        inbox_content += f"Subject: {subject}\n\n{body[:20000]}"
         if attachments:
             att_summary = "\n".join(f"  - {a['filename']} ({a['content_type']}, {a['size']} bytes): {a['path']}" for a in attachments)
             inbox_content += f"\n\nAttachments:\n{att_summary}"
@@ -695,6 +724,7 @@ def _fetch_new_emails(mail, db, config):
         payload_data = {
             "inbox_message_id": inbox_msg_id,
             "sender": sender,
+            "cc": cc_header,
             "subject": subject,
             "body": body[:20000],
             "thread_id": thread_id,
@@ -976,7 +1006,7 @@ def build_message(body, attachments=None):
     return msg
 
 
-def cmd_send(config, to, subject, body, attachments=None):
+def cmd_send(config, to, subject, body, attachments=None, cc=None, bcc=None):
     """Send a new email (not a reply)."""
     if not config["smtp_host"] or not config["username"] or not config["password"]:
         print("ERROR: SMTP not configured. Set email section in config.yml", file=sys.stderr)
@@ -984,9 +1014,19 @@ def cmd_send(config, to, subject, body, attachments=None):
 
     db = get_email_db(config)
 
+    cc = cc or []
+    bcc = bcc or []
+    cc_str = ", ".join(cc)
+
     msg = build_message(body, attachments)
     msg["From"] = config["username"]
     msg["To"] = to
+    if cc:
+        msg["Cc"] = cc_str
+    if bcc:
+        # smtplib.send_message() reads Bcc from headers, strips it before
+        # transmission, and uses it only to compute envelope recipients.
+        msg["Bcc"] = ", ".join(bcc)
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
     domain = config["username"].split("@")[-1] if "@" in config["username"] else "atlas.local"
@@ -996,28 +1036,37 @@ def cmd_send(config, to, subject, body, attachments=None):
         with _smtp_connect(config) as server:
             server.send_message(msg)
 
-        # Create thread in DB
+        # Create thread in DB. BCC is intentionally excluded from
+        # participants — it's a hidden delivery, not a thread member.
         thread_id = sanitize_thread_id(msg["Message-ID"])
+        participants = sorted(set([config["username"], to] + cc))
         db.execute("""
             INSERT OR IGNORE INTO threads
             (thread_id, subject, last_message_id, references_chain,
-             last_sender, last_sender_full, participants, message_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+             last_sender, last_sender_full, last_cc, participants, message_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
         """, (
             thread_id, subject, msg["Message-ID"],
             json.dumps([msg["Message-ID"]]),
-            config["username"], config["username"],
-            json.dumps(sorted([config["username"], to])),
+            config["username"], config["username"], cc_str,
+            json.dumps(participants),
         ))
 
         # Store email record
         db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, subject, body)
-            VALUES (?, ?, 'out', ?, ?, ?, ?)
-        """, (thread_id, msg["Message-ID"], config["username"], to, subject, body[:8000]))
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES (?, ?, 'out', ?, ?, ?, ?, ?)
+        """, (thread_id, msg["Message-ID"], config["username"], to, cc_str, subject, body[:8000]))
 
         db.commit()
-        print(f"Email sent to {to} (subject=\"{subject}\", thread={thread_id})")
+        print(f"Email sent to {to}")
+        if cc:
+            print(f"  Cc:  {cc_str}")
+        if bcc:
+            print(f"  Bcc: {', '.join(bcc)}")
+        print(f"  Subject: {subject}")
+        print(f"  Thread:  {thread_id}")
+        print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     except Exception as e:
         print(f"ERROR: Failed to send: {e}", file=sys.stderr)
@@ -1028,8 +1077,15 @@ def cmd_send(config, to, subject, body, attachments=None):
 
 # --- REPLY command ---
 
-def cmd_reply(config, thread_id, body, attachments=None):
-    """Reply to an existing email thread with proper threading headers."""
+def cmd_reply(config, thread_id, body, attachments=None, cc=None, bcc=None, no_cc=False):
+    """Reply to an existing email thread with proper threading headers.
+
+    CC behavior:
+      - ``no_cc=True``        → reply only to the sender, no CCs.
+      - ``cc=[...]`` given    → use exactly those (replaces auto reply-all list).
+      - otherwise (default)   → reply-all: CC the thread's last_cc list, minus
+        ourselves and the To: recipient (to avoid duplicate delivery).
+    """
     if not config["smtp_host"] or not config["username"] or not config["password"]:
         print("ERROR: SMTP not configured. Set email section in config.yml", file=sys.stderr)
         sys.exit(1)
@@ -1050,10 +1106,30 @@ def cmd_reply(config, thread_id, body, attachments=None):
     subject = thread_data["subject"]
     last_message_id = thread_data["last_message_id"]
     references = json.loads(thread_data["references_chain"])
+    last_cc = thread_data.get("last_cc", "") or ""
+
+    bcc = bcc or []
+
+    # Resolve the CC list.
+    if no_cc:
+        cc_list = []
+    elif cc:
+        cc_list = list(cc)
+    else:
+        # Reply-all default: keep everyone from the last CC line except
+        # ourselves and the new To: recipient (already addressed once each).
+        skip = {config["username"].lower(), (recipient or "").lower()}
+        cc_list = [a for a in _parse_address_list(last_cc) if a.lower() not in skip]
+
+    cc_str = ", ".join(cc_list)
 
     msg = build_message(body, attachments)
     msg["From"] = config["username"]
     msg["To"] = recipient
+    if cc_list:
+        msg["Cc"] = cc_str
+    if bcc:
+        msg["Bcc"] = ", ".join(bcc)
     msg["Subject"] = f"Re: {subject}"
     msg["Date"] = formatdate(localtime=True)
     domain = config["username"].split("@")[-1] if "@" in config["username"] else "atlas.local"
@@ -1068,27 +1144,43 @@ def cmd_reply(config, thread_id, body, attachments=None):
         with _smtp_connect(config) as server:
             server.send_message(msg)
 
-        # Update thread state: append our Message-ID to references
+        # Update thread state: append our Message-ID to references, and
+        # refresh last_cc so the next reply defaults to the new list.
         references.append(msg["Message-ID"])
         db.execute("""
             UPDATE threads SET
                 last_message_id = ?,
                 references_chain = ?,
+                last_cc = ?,
                 message_count = message_count + 1,
                 updated_at = ?
             WHERE thread_id = ?
-        """, (msg["Message-ID"], json.dumps(references), datetime.now().isoformat(), thread_id))
+        """, (msg["Message-ID"], json.dumps(references), cc_str,
+              datetime.now().isoformat(), thread_id))
+
+        # Also fold any new CC addresses into participants
+        if cc_list:
+            existing_participants = set(json.loads(thread_data.get("participants") or "[]"))
+            existing_participants.update(cc_list)
+            db.execute("UPDATE threads SET participants = ? WHERE thread_id = ?",
+                       (json.dumps(sorted(existing_participants)), thread_id))
 
         # Store email record
         db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, subject, body)
-            VALUES (?, ?, 'out', ?, ?, ?, ?)
-        """, (thread_id, msg["Message-ID"], config["username"], recipient,
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES (?, ?, 'out', ?, ?, ?, ?, ?)
+        """, (thread_id, msg["Message-ID"], config["username"], recipient, cc_str,
               f"Re: {subject}", body[:8000]))
 
         db.commit()
-        print(f"Reply sent to {recipient} (thread={thread_id}, "
-              f"In-Reply-To={last_message_id or 'none'})")
+        print(f"Reply sent to {recipient}")
+        if cc_list:
+            print(f"  Cc:  {cc_str}")
+        if bcc:
+            print(f"  Bcc: {', '.join(bcc)}")
+        print(f"  Subject: Re: {subject}")
+        print(f"  Thread:  {thread_id}")
+        print(f"Follow up on this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     except Exception as e:
         print(f"ERROR: Failed to send reply: {e}", file=sys.stderr)
@@ -1112,22 +1204,19 @@ def cmd_threads(config, limit=20):
         db.close()
         return
 
-    print(f"{'Thread ID':<40} {'Subject':<30} {'From':<25} {'Msgs':>4}  {'Updated'}")
-    print("-" * 130)
     for row in rows:
-        tid = row[0][:38]
-        subj = row[1][:28]
-        sender = row[2][:23]
-        count = row[3]
-        updated = row[4][:16]
-        print(f"{tid:<40} {subj:<30} {sender:<25} {count:>4}  {updated}")
+        tid, subj, sender, count, updated = row
+        print(f"{tid}  \"{subj}\"  from {sender}  {count} msg{'s' if count != 1 else ''}  {updated[:10]}")
+
+    print("")
+    print('email thread "<thread_id>" | email reply "<thread_id>" "<body>"')
 
     db.close()
 
 
 # --- Format a single email as Markdown ---
 
-def _format_email_md(direction, sender, recipient, subject, date, body, email_id=None):
+def _format_email_md(direction, sender, recipient, cc, subject, date, body, email_id=None):
     """Format a single email as clean Markdown."""
     arrow = "→" if direction == "out" else "←"
     who = f"**To:** {recipient}" if direction == "out" else f"**From:** {sender}"
@@ -1138,6 +1227,8 @@ def _format_email_md(direction, sender, recipient, subject, date, body, email_id
         lines.append(f"### {arrow} {subject}")
     lines.append("")
     lines.append(f"{who}  ")
+    if cc:
+        lines.append(f"**Cc:** {cc}  ")
     lines.append(f"**Date:** {date}  ")
     lines.append("")
     lines.append(body or "*(empty)*")
@@ -1161,7 +1252,7 @@ def cmd_thread_detail(config, thread_id, raw=False):
     tdata = dict(zip(cols, thread))
 
     emails = db.execute("""
-        SELECT id, direction, sender, recipient, subject, created_at, body, body_html
+        SELECT id, direction, sender, recipient, cc, subject, created_at, body, body_html
         FROM emails WHERE thread_id = ? ORDER BY created_at
     """, (thread_id,)).fetchall()
 
@@ -1182,15 +1273,17 @@ def cmd_thread_detail(config, thread_id, raw=False):
 
     # Print each email
     for e in emails:
-        eid, direction, sender, recipient, subject, date, body, body_html = e
+        eid, direction, sender, recipient, cc, subject, date, body, body_html = e
         if raw and body_html:
             print(f"<!-- Email #{eid} from {sender} ({date}) -->")
             print(body_html)
             print("")
         else:
-            print(_format_email_md(direction, sender, recipient, subject, date, body, email_id=eid))
+            print(_format_email_md(direction, sender, recipient, cc, subject, date, body, email_id=eid))
         print("---")
         print("")
+
+    print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     db.close()
 
@@ -1202,7 +1295,7 @@ def cmd_read_email(config, email_id, raw=False):
     db = get_email_db(config)
 
     email = db.execute("""
-        SELECT id, thread_id, direction, sender, recipient, subject, created_at, body, body_html
+        SELECT id, thread_id, direction, sender, recipient, cc, subject, created_at, body, body_html
         FROM emails WHERE id = ?
     """, (email_id,)).fetchone()
 
@@ -1211,7 +1304,7 @@ def cmd_read_email(config, email_id, raw=False):
         db.close()
         sys.exit(1)
 
-    eid, thread_id, direction, sender, recipient, subject, date, body, body_html = email
+    eid, thread_id, direction, sender, recipient, cc, subject, date, body, body_html = email
 
     if raw and body_html:
         print(body_html)
@@ -1224,10 +1317,14 @@ def cmd_read_email(config, email_id, raw=False):
             print(f"**To:** {recipient}  ")
         else:
             print(f"**From:** {sender}  ")
+        if cc:
+            print(f"**Cc:** {cc}  ")
         print(f"**Date:** {date}  ")
         print(f"**Thread:** {thread_id}  ")
         print("")
         print(body or "*(empty)*")
+        print("")
+        print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
 
     db.close()
 
@@ -1243,7 +1340,10 @@ Examples:
   email-addon.py poll --once          # Check IMAP once
   email-addon.py poll                 # Continuous via IMAP IDLE
   email-addon.py send alice@x.com "Subject" "Body text"
-  email-addon.py reply <thread_id> "Reply body"
+  email-addon.py send alice@x.com "Subject" "Body" --cc bob@x.com --bcc carol@x.com
+  email-addon.py reply <thread_id> "Reply body"             # Reply-all (auto CCs the thread's CC list)
+  email-addon.py reply <thread_id> "Reply body" --no-cc     # Reply only to sender
+  email-addon.py reply <thread_id> "Reply body" --cc new@x.com  # Custom CC list
   email-addon.py threads              # List all threads
   email-addon.py thread <thread_id>   # Thread detail (Markdown)
   email-addon.py thread <id> --raw    # Thread detail (raw HTML)
@@ -1264,6 +1364,10 @@ Examples:
     p_send.add_argument("body", help="Email body text")
     p_send.add_argument("--attach", action="append", default=[], metavar="FILE",
                         help="Attach a file (can be used multiple times)")
+    p_send.add_argument("--cc", action="append", default=[], metavar="ADDR",
+                        help="CC recipient (can be used multiple times)")
+    p_send.add_argument("--bcc", action="append", default=[], metavar="ADDR",
+                        help="BCC recipient (can be used multiple times)")
 
     # reply
     p_reply = sub.add_parser("reply", help="Reply to an email thread")
@@ -1271,10 +1375,17 @@ Examples:
     p_reply.add_argument("body", help="Reply body text")
     p_reply.add_argument("--attach", action="append", default=[], metavar="FILE",
                         help="Attach a file (can be used multiple times)")
+    p_reply.add_argument("--cc", action="append", default=[], metavar="ADDR",
+                        help="CC recipient (overrides the auto reply-all list)")
+    p_reply.add_argument("--bcc", action="append", default=[], metavar="ADDR",
+                        help="BCC recipient (can be used multiple times)")
+    p_reply.add_argument("--no-cc", dest="no_cc", action="store_true",
+                        help="Don't CC anyone — reply only to the sender")
 
-    # threads
-    p_threads = sub.add_parser("threads", help="List email threads")
-    p_threads.add_argument("--limit", type=int, default=20, help="Max threads to show")
+    # threads / inbox (alias)
+    for _cmd in ("threads", "inbox"):
+        _p = sub.add_parser(_cmd, help="List email threads" + (" (alias for 'threads')" if _cmd == "inbox" else ""))
+        _p.add_argument("--limit", type=int, default=20, help="Max threads to show")
 
     # thread detail
     p_thread = sub.add_parser("thread", help="Show full thread (Markdown or --raw HTML)")
@@ -1297,13 +1408,16 @@ Examples:
 
     elif args.command == "send":
         cmd_send(config, args.to, args.subject, args.body,
-                 attachments=args.attach or None)
+                 attachments=args.attach or None,
+                 cc=args.cc or None, bcc=args.bcc or None)
 
     elif args.command == "reply":
         cmd_reply(config, args.thread_id, args.body,
-                  attachments=args.attach or None)
+                  attachments=args.attach or None,
+                  cc=args.cc or None, bcc=args.bcc or None,
+                  no_cc=args.no_cc)
 
-    elif args.command == "threads":
+    elif args.command in ("threads", "inbox"):
         cmd_threads(config, limit=args.limit)
 
     elif args.command == "thread":

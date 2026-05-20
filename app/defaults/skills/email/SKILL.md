@@ -14,14 +14,24 @@ Send, receive, and manage emails via the configured mail server (IMAP/SMTP).
 email send "recipient@example.com" "Subject line" "Email body text"
 ```
 
+### Send with CC / BCC
+```bash
+email send "alice@example.com" "Subject" "Body" --cc bob@example.com --cc carol@example.com --bcc audit@example.com
+```
+
 ### Send with attachments
 ```bash
 email send "recipient@example.com" "Report" "Please find attached." --attach /path/to/file.pdf --attach /path/to/other.csv
 ```
 
 ### Reply to a thread
+By default replies are **reply-all** — anyone on the original `Cc:` line is automatically CC'd again (minus yourself and the new `To:` recipient).
+
 ```bash
-email reply "thread-id-here" "Reply body text"
+email reply "thread-id-here" "Reply body text"               # Reply-all (default)
+email reply "thread-id-here" "Reply body text" --no-cc       # Reply only to the sender
+email reply "thread-id-here" "Reply body" --cc new@x.com     # Replace auto CC list
+email reply "thread-id-here" "Reply body" --bcc audit@x.com  # Add a BCC
 ```
 
 ### Reply with attachments

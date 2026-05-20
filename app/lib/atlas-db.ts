@@ -446,6 +446,63 @@ function migrateSchema(database: Database): void {
   // Goals, tasks, task_deps, goal_validations are created by createTables() via
   // CREATE TABLE IF NOT EXISTS. No destructive migration needed on new columns.
 
+  // --- v5 migration: drop subagent rows and clean up subagent-specific schema ---
+  // Subagent cost is now aggregated into the parent trigger row via JSONL scanning.
+  // Remove any subagent rows and drop the now-unused indexes if they exist.
+  try {
+    database.exec(`DELETE FROM session_metrics WHERE session_type='subagent'`);
+  } catch {}
+  try {
+    database.exec(`DROP INDEX IF EXISTS idx_session_metrics_parent`);
+  } catch {}
+  try {
+    database.exec(`DROP INDEX IF EXISTS idx_session_metrics_subagent_unique`);
+  } catch {}
+  // Drop parent_session_id column if it was added by an older migration
+  const metricsInfoV5 = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_metrics'"
+  ).get() as { sql: string } | undefined;
+  if (metricsInfoV5?.sql?.includes("parent_session_id")) {
+    database.exec("BEGIN");
+    try {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS _session_metrics_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_type TEXT NOT NULL,
+          session_id TEXT,
+          trigger_name TEXT,
+          started_at TEXT NOT NULL,
+          ended_at TEXT NOT NULL,
+          duration_ms INTEGER DEFAULT 0,
+          input_tokens INTEGER DEFAULT 0,
+          output_tokens INTEGER DEFAULT 0,
+          cache_read_tokens INTEGER DEFAULT 0,
+          cache_creation_tokens INTEGER DEFAULT 0,
+          cost_usd REAL DEFAULT 0,
+          num_turns INTEGER DEFAULT 0,
+          is_error INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now'))
+        );
+        INSERT INTO _session_metrics_new
+          (id, session_type, session_id, trigger_name, started_at, ended_at,
+           duration_ms, input_tokens, output_tokens, cache_read_tokens,
+           cache_creation_tokens, cost_usd, num_turns, is_error, created_at)
+          SELECT id, session_type, session_id, trigger_name, started_at, ended_at,
+                 duration_ms, input_tokens, output_tokens, cache_read_tokens,
+                 cache_creation_tokens, cost_usd, num_turns, is_error, created_at
+          FROM session_metrics
+          WHERE session_type != 'subagent';
+        DROP TABLE session_metrics;
+        ALTER TABLE _session_metrics_new RENAME TO session_metrics;
+        CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
+      `);
+      database.exec("COMMIT");
+    } catch (e) {
+      database.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
 }
 
 export function initDb(): Database {

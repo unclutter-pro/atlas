@@ -12,7 +12,7 @@ You're handling an **incoming email**. Replies thread automatically via SMTP hea
 
 ### CLI Tools
 
-- `email reply "<thread_id>" "<body>"` — Reply to an email thread (threading is automatic)
-- `email send "<to>" "<subject>" "<body>"` — Start a new email thread
+- `email reply "<thread_id>" "<body>"` — Reply to an email thread (reply-all by default; threading is automatic).
+- `email send "<to>" "<subject>" "<body>"` — Start a new email thread. Add `--cc addr` / `--bcc addr` (repeatable) for additional recipients.
 - `email threads` — List tracked email threads
 - `email thread "<thread_id>"` — Show full thread detail
