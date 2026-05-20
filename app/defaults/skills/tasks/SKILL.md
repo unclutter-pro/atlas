@@ -15,19 +15,16 @@ Goals represent a defined outcome with a prose done-condition. Use them for mult
 # Create a goal
 task goal create --title="Refactor auth module" \
   --done="All auth tests pass, no regressions in CI" \
-  --description="Auth module is brittle and hard to test; needs interface redesign" \
-  --validate   # optional: triggers isolated quality check on close
+  --description="Auth module is brittle and hard to test; needs interface redesign"
 
 # View goals
 task goal list            # active goals this session
 task goal show 3          # full detail for goal #3
 
-# Close a goal
+# Close a goal — always runs the validator (max 3 attempts)
 task goal close 3 --reason="Refactor complete, all 47 tests pass"
 # With open tasks: use --cascade-cancel to auto-cancel them
 task goal close 3 --reason="Abandoned: scope changed" --cascade-cancel
-# Skip validation (logs override row):
-task goal close 3 --reason="..." --skip-validation
 ```
 
 **Statuses**: `active` → `done` | `abandoned` | `validation_exhausted`
@@ -69,7 +66,7 @@ task ready   # only shows tasks whose deps are all closed
 
 ## Validation Gate
 
-When a goal is created with `--validate`, closing it spawns an isolated validator agent that reads the filesystem and checks whether the done-condition is met. The validator returns `pass` (goal closes) or `fail` (error with feedback — refine and retry). After 3 failed validations the goal is marked `validation_exhausted`. Use `--skip-validation` to bypass with an explicit override log.
+Closing a goal **always** spawns an isolated validator session (ephemeral, not analyzed by dreaming) that reads the filesystem read-only and checks whether the done-condition is met. The validator returns `pass` (goal closes) or `fail` (CLI error with feedback — refine and retry). After 3 failed validations the goal is marked `validation_exhausted`. Provide a thorough `--reason` so the validator has context.
 
 ## Session Scope
 

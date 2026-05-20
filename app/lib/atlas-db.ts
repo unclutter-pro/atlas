@@ -188,7 +188,6 @@ function createTables(database: Database): void {
       done_condition TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active', 'done', 'abandoned', 'validation_exhausted')),
-      validation_required INTEGER NOT NULL DEFAULT 0,
       validation_count INTEGER NOT NULL DEFAULT 0,
       trigger_name TEXT NOT NULL,
       session_key TEXT NOT NULL,

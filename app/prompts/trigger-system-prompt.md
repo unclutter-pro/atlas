@@ -21,7 +21,7 @@ Communicate your results in a minimal way - the user will mostly not care about 
 </tasks>
 
 <task_management>
-Use the `task` CLI for goals and tasks within this session. `task goal create --title=... --done=... [--description=...] [--validate]` opens a goal; `task add --title=... [--goal=<id>] [--depends-on=<ids>] [--priority=N]` adds tasks. The session can't end while goals/tasks are open (StopHook blocks); close them via `task close <id> --reason=...` and `task goal close <id> --reason=...` (or set a reminder if work needs to continue later). Use `task ready` for unblocked tasks. Validation-gated goals (`--validate`) trigger an isolated quality check on close — provide a thorough `--reason`. Use `task --help` for full CLI reference.
+Use the `task` CLI for goals and tasks within this session. `task goal create --title=... --done=... [--description=...]` opens a goal; `task add --title=... [--goal=<id>] [--depends-on=<ids>] [--priority=N]` adds tasks. The session can't end while goals/tasks are open (StopHook blocks); close them via `task close <id> --reason=...` and `task goal close <id> --reason=...` (or set a reminder if work needs to continue later). Use `task ready` for unblocked tasks. Closing a goal always triggers an isolated validator (max 3 attempts) that checks whether the done-condition is met — provide a thorough `--reason`. Use `task --help` for full CLI reference.
 </task_management>
 
 <future-events>

@@ -39,7 +39,6 @@ function createTestDb(): Database {
       done_condition TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active', 'done', 'abandoned', 'validation_exhausted')),
-      validation_required INTEGER NOT NULL DEFAULT 0,
       validation_count INTEGER NOT NULL DEFAULT 0,
       trigger_name TEXT NOT NULL,
       session_key TEXT NOT NULL,
@@ -121,7 +120,6 @@ describe("Schema + DB", () => {
           description TEXT,
           done_condition TEXT NOT NULL,
           status TEXT NOT NULL DEFAULT 'active',
-          validation_required INTEGER NOT NULL DEFAULT 0,
           validation_count INTEGER NOT NULL DEFAULT 0,
           trigger_name TEXT NOT NULL,
           session_key TEXT NOT NULL,
@@ -145,11 +143,6 @@ describe("CLI parsing", () => {
     expect(flags["done"]).toBe("All tests pass");
   });
 
-  test("parses boolean flags", () => {
-    const { flags } = parseArgs(["goal", "create", "--validate"]);
-    expect(flags["validate"]).toBe(true);
-  });
-
   test("parses --depends-on with multiple IDs", () => {
     const { flags } = parseArgs(["add", "--title=x", "--depends-on=1,2,3"]);
     expect(flags["depends-on"]).toBe("1,2,3");
@@ -160,9 +153,8 @@ describe("CLI parsing", () => {
     expect(flags["priority"]).toBe("0");
   });
 
-  test("parses --skip-validation and --cascade-cancel", () => {
-    const { flags } = parseArgs(["goal", "close", "1", "--reason=done", "--skip-validation", "--cascade-cancel"]);
-    expect(flags["skip-validation"]).toBe(true);
+  test("parses --cascade-cancel boolean flag", () => {
+    const { flags } = parseArgs(["goal", "close", "1", "--reason=done", "--cascade-cancel"]);
     expect(flags["cascade-cancel"]).toBe(true);
   });
 
@@ -212,16 +204,6 @@ describe("Goal lifecycle", () => {
     expect(goals[0].title).toBe("Goal A");
   });
 
-  test("create with --validate sets validation_required=1", () => {
-    const goal = goalCreate(db, { title: "Validated goal", done: "Tests pass", validate: true, ...scope });
-    expect(goal.validation_required).toBe(1);
-  });
-
-  test("create without --validate sets validation_required=0", () => {
-    const goal = goalCreate(db, { title: "Simple goal", done: "Done", ...scope });
-    expect(goal.validation_required).toBe(0);
-  });
-
   test("goal description is stored correctly", () => {
     const goal = goalCreate(db, {
       title: "Documented goal",
@@ -252,7 +234,7 @@ describe("Goal lifecycle", () => {
     expect(result.closed).toBe(false);
   });
 
-  test("close with --cascade-cancel marks open tasks as cancelled", () => {
+  test("close with --cascade-cancel marks open tasks as cancelled (still needs validation)", () => {
     const goal = goalCreate(db, { title: "Goal", done: "Done", ...scope });
     const task1 = taskAdd(db, { title: "T1", goalId: goal.id, ...scope });
     const task2 = taskAdd(db, { title: "T2", goalId: goal.id, ...scope });
@@ -262,7 +244,10 @@ describe("Goal lifecycle", () => {
       reason: "Done",
       cascadeCancel: true,
     });
-    expect(result.closed).toBe(true);
+    // cascade-cancel handles the task side effects, but the goal itself
+    // still requires validator approval (orchestrated by the CLI handler).
+    expect(result.closed).toBe(false);
+    expect(result.needsValidation).toBe(true);
 
     const t1 = taskGet(db, task1.id)!;
     const t2 = taskGet(db, task2.id)!;
@@ -271,13 +256,14 @@ describe("Goal lifecycle", () => {
     expect(t1.close_reason).toContain("goal closed: Done");
   });
 
-  test("close without open tasks succeeds directly", () => {
+  test("close without open tasks does not close directly — always needs validation", () => {
     const goal = goalCreate(db, { title: "Empty goal", done: "Done", ...scope });
     const result = goalClose(db, { goalId: goal.id, reason: "Done successfully" });
-    expect(result.closed).toBe(true);
-    const updated = goalGet(db, goal.id)!;
-    expect(updated.status).toBe("done");
-    expect(updated.close_reason).toBe("Done successfully");
+    expect(result.closed).toBe(false);
+    expect(result.needsValidation).toBe(true);
+    // Goal stays active until the validator orchestration (in CLI handler) marks it done
+    const stillActive = goalGet(db, goal.id)!;
+    expect(stillActive.status).toBe("active");
   });
 
   test("goalTaskCounts returns correct counts", () => {
@@ -291,24 +277,8 @@ describe("Goal lifecycle", () => {
     expect(counts.done).toBe(1);
   });
 
-  test("close with --skip-validation logs override row and closes", () => {
-    const goal = goalCreate(db, { title: "Validated", done: "Tests pass", validate: true, ...scope });
-
-    const result = goalClose(db, {
-      goalId: goal.id,
-      reason: "Done",
-      skipValidation: true,
-    });
-    expect(result.closed).toBe(true);
-
-    const validations = db.prepare("SELECT * FROM goal_validations WHERE goal_id = ?").all(goal.id) as any[];
-    expect(validations.length).toBe(1);
-    expect(validations[0].verdict).toBe("pass");
-    expect(validations[0].feedback).toContain("skip-validation");
-  });
-
-  test("goalClose returns needsValidation=true when validation required and not skipped", () => {
-    const goal = goalCreate(db, { title: "Needs check", done: "Tests pass", validate: true, ...scope });
+  test("goalClose always returns needsValidation=true (no opt-out)", () => {
+    const goal = goalCreate(db, { title: "Needs check", done: "Tests pass", ...scope });
     const result = goalClose(db, { goalId: goal.id, reason: "Done" });
     expect(result.needsValidation).toBe(true);
     expect(result.closed).toBe(false);
@@ -328,7 +298,7 @@ describe("Validator mock mode", () => {
 
   test("ATLAS_VALIDATOR_MOCK=pass → pass verdict + telemetry row", async () => {
     process.env.ATLAS_VALIDATOR_MOCK = "pass";
-    const goal = goalCreate(db, { title: "Mocked goal", done: "Done", validate: true, ...scope });
+    const goal = goalCreate(db, { title: "Mocked goal", done: "Done", ...scope });
 
     const { runValidator } = await import("./manage-tasks.ts");
     const result = await runValidator({ goal, reason: "I did the work", db });
@@ -342,7 +312,7 @@ describe("Validator mock mode", () => {
 
   test("ATLAS_VALIDATOR_MOCK=fail → fail verdict + telemetry row", async () => {
     process.env.ATLAS_VALIDATOR_MOCK = "fail:Missing test coverage";
-    const goal = goalCreate(db, { title: "Failing goal", done: "100% coverage", validate: true, ...scope });
+    const goal = goalCreate(db, { title: "Failing goal", done: "100% coverage", ...scope });
 
     const { runValidator } = await import("./manage-tasks.ts");
     const result = await runValidator({ goal, reason: "I think it's done", db });
@@ -358,7 +328,7 @@ describe("Validator mock mode", () => {
 
   test("ATLAS_VALIDATOR_MOCK increments validation_count", async () => {
     process.env.ATLAS_VALIDATOR_MOCK = "fail";
-    const goal = goalCreate(db, { title: "Count test", done: "Done", validate: true, ...scope });
+    const goal = goalCreate(db, { title: "Count test", done: "Done", ...scope });
 
     const { runValidator } = await import("./manage-tasks.ts");
     await runValidator({ goal, reason: "try 1", db });
@@ -368,7 +338,7 @@ describe("Validator mock mode", () => {
   });
 
   test("max 3 validations → validation_exhausted on close attempt", () => {
-    const goal = goalCreate(db, { title: "Exhausted goal", done: "Done", validate: true, ...scope });
+    const goal = goalCreate(db, { title: "Exhausted goal", done: "Done", ...scope });
 
     // Manually set validation_count to 3
     db.prepare("UPDATE goals SET validation_count = 3 WHERE id = ?").run(goal.id);

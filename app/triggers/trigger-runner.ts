@@ -1141,6 +1141,12 @@ export type RunDirectOptions = {
   modelKey?: string;
   env?: Record<string, string>;
   resumeId?: string;
+  /**
+   * Override the trigger_name recorded in session_metrics. Defaults to "direct".
+   * When set to a custom value (e.g. "validator"), the session is recorded under
+   * that name so downstream filters (dreaming, memory-cleanup) can exclude it.
+   */
+  triggerName?: string;
 };
 
 /**
@@ -1156,7 +1162,7 @@ export async function runDirect(
 ): Promise<void> {
   const channel = options?.channel ?? "internal";
   const modelKey = options?.modelKey ?? "trigger";
-  const triggerName = "direct";
+  const triggerName = options?.triggerName ?? "direct";
 
   const log = makeLogger(triggerName);
 
@@ -1190,7 +1196,9 @@ export async function runDirect(
   log.log(`Direct session starting (channel=${channel}, model=${model})`);
 
   const startedAt = isoNow();
+  const startedMs = Date.now();
   let resultMsg: SDKResultMessage | null = null;
+  let capturedSessionId: string | null = null;
   let isError = false;
 
   const resumeId = options?.resumeId;
@@ -1219,8 +1227,13 @@ export async function runDirect(
     for await (const msg of q) {
       if (msg.type === "result") {
         resultMsg = msg as SDKResultMessage;
+        capturedSessionId = (msg as { session_id?: string }).session_id ?? capturedSessionId;
         isError = msg.subtype !== "success";
         break;
+      }
+      // Capture session_id from any earlier message that carries it
+      if (!capturedSessionId && "session_id" in msg && (msg as { session_id?: string }).session_id) {
+        capturedSessionId = (msg as { session_id: string }).session_id;
       }
     }
   } catch (err) {
@@ -1235,6 +1248,47 @@ export async function runDirect(
       `Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`,
     );
   }
+
+  // When a custom triggerName was provided (e.g. "validator"), record a
+  // session_metrics row so dreaming/memory-cleanup filters can exclude this
+  // session from later analysis. Default "direct" sessions stay unrecorded
+  // to preserve current behavior.
+  if (options?.triggerName && capturedSessionId) {
+    try {
+      const usage = resultMsg && "usage" in resultMsg
+        ? (resultMsg as { usage?: Record<string, number> }).usage
+        : undefined;
+      const cost = resultMsg && "total_cost_usd" in resultMsg
+        ? (resultMsg as { total_cost_usd?: number }).total_cost_usd ?? 0
+        : 0;
+      const numTurns = resultMsg && "num_turns" in resultMsg
+        ? (resultMsg as { num_turns?: number }).num_turns ?? 0
+        : 0;
+
+      // session_metrics is created by atlas-db.ts; open lazily.
+      // If atlas-db.ts hasn't run for this DB yet the table may be missing —
+      // we wrap the insert in try/catch so it's a no-op on fresh installs.
+      const db = openDb();
+      recordMetrics(db, {
+        sessionType: "direct",
+        sessionId: capturedSessionId,
+        triggerName,
+        startedAt,
+        endedAt: isoNow(),
+        durationMs: Date.now() - startedMs,
+        inputTokens: usage?.input_tokens ?? 0,
+        outputTokens: usage?.output_tokens ?? 0,
+        cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: usage?.cache_creation_input_tokens ?? 0,
+        costUsd: cost,
+        numTurns,
+        isError,
+      });
+    } catch (err) {
+      log.log(`metrics write skipped: ${err}`);
+    }
+  }
+
   log.log(`Direct session done (error=${isError})`);
 }
 
@@ -1253,12 +1307,12 @@ export async function main(): Promise<void> {
 
   const args = process.argv.slice(2);
 
-  // --- Direct mode: --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] ---
+  // --- Direct mode: --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] [--trigger-name <name>] ---
   if (args[0] === "--direct") {
     const prompt = args[1];
     if (!prompt) {
       console.error(
-        'Usage: trigger-runner.ts --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>]',
+        'Usage: trigger-runner.ts --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] [--trigger-name <name>]',
       );
       process.exit(1);
     }
@@ -1266,6 +1320,7 @@ export async function main(): Promise<void> {
     let channel = "internal";
     let modelKey = process.env.ATLAS_CRON === "1" ? "cron" : "trigger";
     let resumeId: string | undefined;
+    let triggerNameOverride: string | undefined;
 
     for (let i = 2; i < args.length; i++) {
       if (args[i] === "--channel" && args[i + 1]) {
@@ -1274,10 +1329,12 @@ export async function main(): Promise<void> {
         modelKey = args[++i];
       } else if (args[i] === "--resume" && args[i + 1]) {
         resumeId = args[++i];
+      } else if (args[i] === "--trigger-name" && args[i + 1]) {
+        triggerNameOverride = args[++i];
       }
     }
 
-    await runDirect(prompt, { channel, modelKey, resumeId });
+    await runDirect(prompt, { channel, modelKey, resumeId, triggerName: triggerNameOverride });
     return;
   }
 

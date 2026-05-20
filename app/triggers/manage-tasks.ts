@@ -4,10 +4,10 @@
  * Usage: task <command> [flags]
  *
  * GOALS
- *   task goal create --title="..." --done="..." [--description="..."] [--validate]
+ *   task goal create --title="..." --done="..." [--description="..."]
  *   task goal list [--all]
  *   task goal show <id>
- *   task goal close <id> --reason="..." [--skip-validation] [--cascade-cancel]
+ *   task goal close <id> --reason="..." [--cascade-cancel]
  *
  * TASKS
  *   task add --title="..." [--description="..."] [--goal=<id>] [--priority=2] [--depends-on=<id>[,<id>...]]
@@ -33,7 +33,6 @@ export type Goal = {
   description: string | null;
   done_condition: string;
   status: "active" | "done" | "abandoned" | "validation_exhausted";
-  validation_required: number;
   validation_count: number;
   trigger_name: string;
   session_key: string;
@@ -166,19 +165,17 @@ export function goalCreate(db: Database, opts: {
   title: string;
   done: string;
   description?: string;
-  validate?: boolean;
   triggerName: string;
   sessionKey: string;
 }): Goal {
   const result = db.prepare(`
-    INSERT INTO goals (title, description, done_condition, validation_required, trigger_name, session_key)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO goals (title, description, done_condition, trigger_name, session_key)
+    VALUES (?, ?, ?, ?, ?)
     RETURNING *
   `).get(
     opts.title,
     opts.description ?? null,
     opts.done,
-    opts.validate ? 1 : 0,
     opts.triggerName,
     opts.sessionKey,
   ) as Goal;
@@ -227,7 +224,6 @@ export function goalTaskCounts(db: Database, goalId: number): Record<string, num
 export function goalClose(db: Database, opts: {
   goalId: number;
   reason: string;
-  skipValidation?: boolean;
   cascadeCancel?: boolean;
   triggerName?: string;
   sessionKey?: string;
@@ -259,26 +255,8 @@ export function goalClose(db: Database, opts: {
     ).run(`goal closed: ${opts.reason}`, opts.goalId);
   }
 
-  const needsValidation =
-    goal.validation_required === 1 && !opts.skipValidation;
-
-  if (opts.skipValidation && goal.validation_required === 1) {
-    // Log explicit override
-    db.prepare(
-      `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback)
-       VALUES (?, ?, 'pass', 'Validation skipped via --skip-validation flag')`
-    ).run(opts.goalId, goal.validation_count + 1);
-  }
-
-  if (!needsValidation) {
-    // Close directly
-    db.prepare(
-      `UPDATE goals SET status = 'done', closed_at = datetime('now'), close_reason = ? WHERE id = ?`
-    ).run(opts.reason, opts.goalId);
-    const updated = goalGet(db, opts.goalId)!;
-    return { closed: true, goal: updated };
-  }
-
+  // Validation is always required (no opt-out). The caller is expected to
+  // run the validator and update the goal status based on the verdict.
   return { closed: false, needsValidation: true, goal };
 }
 
@@ -505,9 +483,12 @@ export async function runValidator(opts: {
     ? triggerRunnerPath
     : "bun";
 
+  // Tag this session with trigger-name=validator so dreaming/memory-cleanup
+  // filters can exclude it (the validator is a quality gate, not a real
+  // session worth analyzing).
   const spawnArgs = existsSync(triggerRunnerPath)
-    ? [triggerRunnerPath, "--direct", prompt, "--channel", "validator"]
-    : ["bun", `${APP_DIR}/triggers/trigger-runner.ts`, "--direct", prompt, "--channel", "validator"];
+    ? [triggerRunnerPath, "--direct", prompt, "--channel", "validator", "--trigger-name", "validator"]
+    : ["bun", `${APP_DIR}/triggers/trigger-runner.ts`, "--direct", prompt, "--channel", "validator", "--trigger-name", "validator"];
 
   const proc = Bun.spawn(spawnArgs, {
     env: strippedEnv,
@@ -590,7 +571,7 @@ function printGoal(goal: Goal, db: Database): void {
   if (goal.description) {
     console.log(`  context:   ${goal.description}`);
   }
-  console.log(`  validate:  ${goal.validation_required ? "yes" : "no"} (checked ${goal.validation_count}x)`);
+  console.log(`  validations: ${goal.validation_count}/${MAX_VALIDATIONS}`);
   console.log(`  tasks:     ${counts.open} open, ${counts.done} done, ${counts.in_progress} in_progress, ${counts.cancelled} cancelled`);
   console.log(`  created:   ${goal.created_at}`);
   if (goal.closed_at) {
@@ -654,14 +635,11 @@ async function main(): Promise<void> {
         title,
         done,
         description: flag(flags, "description"),
-        validate: boolFlag(flags, "validate"),
         triggerName: scope.triggerName,
         sessionKey: scope.sessionKey,
       });
       console.log(`Created goal #${goal.id}: ${goal.title}`);
-      if (goal.validation_required) {
-        console.log("  Validation required on close.");
-      }
+      console.log(`  Closing this goal will trigger an isolated validator (max 3 attempts).`);
       return;
     }
 
@@ -702,15 +680,13 @@ async function main(): Promise<void> {
       const reason = flag(flags, "reason");
       if (!reason) die("--reason is required");
 
-      const skipValidation = boolFlag(flags, "skip-validation");
       const cascadeCancel = boolFlag(flags, "cascade-cancel");
 
       const goal = goalGet(db, id);
       if (!goal) die(`Goal #${id} not found`);
 
-      // Check validation limit first
-      if (goal.validation_required && !skipValidation && goal.validation_count >= MAX_VALIDATIONS) {
-        // Mark exhausted
+      // Check validation limit first — terminal state to prevent infinite loops
+      if (goal.validation_count >= MAX_VALIDATIONS) {
         db.prepare(
           `UPDATE goals SET status = 'validation_exhausted', closed_at = datetime('now'), close_reason = ? WHERE id = ?`
         ).run(reason, id);
@@ -726,7 +702,6 @@ async function main(): Promise<void> {
       const result = goalClose(db, {
         goalId: id,
         reason,
-        skipValidation,
         cascadeCancel,
       });
 
@@ -736,27 +711,23 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (result.needsValidation) {
-        console.log(`Running validator for goal #${id}...`);
-        const freshGoal = goalGet(db, id)!;
-        const validationResult = await runValidator({ goal: freshGoal, reason, db });
+      // Validation is always required — orchestrate the validator run + close.
+      console.log(`Running validator for goal #${id}...`);
+      const freshGoal = goalGet(db, id)!;
+      const validationResult = await runValidator({ goal: freshGoal, reason, db });
 
-        if (validationResult.verdict === "pass") {
-          db.prepare(
-            `UPDATE goals SET status = 'done', closed_at = datetime('now'), close_reason = ? WHERE id = ?`
-          ).run(reason, id);
-          console.log(`Goal #${id} closed. Validator passed: ${validationResult.feedback}`);
-        } else {
-          console.error(
-            `Validator rejected close for goal #${id}: ${validationResult.feedback}\n` +
-            `Refine your work and try again, or use --skip-validation to override.`
-          );
-          process.exit(1);
-        }
-        return;
+      if (validationResult.verdict === "pass") {
+        db.prepare(
+          `UPDATE goals SET status = 'done', closed_at = datetime('now'), close_reason = ? WHERE id = ?`
+        ).run(reason, id);
+        console.log(`Goal #${id} closed. Validator passed: ${validationResult.feedback}`);
+      } else {
+        console.error(
+          `Validator rejected close for goal #${id}: ${validationResult.feedback}\n` +
+          `Refine your work, then run \`task goal close ${id} --reason=...\` again.`
+        );
+        process.exit(1);
       }
-
-      console.log(`Goal #${id} closed.`);
       return;
     }
 
@@ -875,10 +846,10 @@ function printHelp(): void {
 task — Atlas task management CLI
 
 GOALS
-  task goal create --title="..." --done="..." [--description="..."] [--validate]
+  task goal create --title="..." --done="..." [--description="..."]
   task goal list [--all]
   task goal show <id>
-  task goal close <id> --reason="..." [--skip-validation] [--cascade-cancel]
+  task goal close <id> --reason="..." [--cascade-cancel]
 
 TASKS
   task add --title="..." [--description="..."] [--goal=<id>] [--priority=2] [--depends-on=<id>[,<id>...]]
@@ -892,6 +863,7 @@ NOTES
   All commands scope to (ATLAS_TRIGGER, ATLAS_TRIGGER_SESSION_KEY).
   Use --all to see across all sessions (for debugging).
   Priority: 0=critical, 1=high, 2=normal (default), 3=low, 4=backlog.
+  Closing a goal always runs an isolated validator (max 3 attempts).
 `);
 }
 

@@ -2,8 +2,9 @@
 # Skip dreaming if no REAL (non-system) Claude Code sessions ran in the last 24h.
 #
 # A "system session" is one initiated by a periodic introspection trigger
-# (dreaming, memory-cleanup) — these add no new external information and
-# would create a perpetual self-trigger loop if used as activity signal.
+# (dreaming, memory-cleanup) or a quality-gate session (validator) —
+# these add no new external information and would create either a
+# perpetual self-trigger loop or just noise if used as activity signal.
 #
 # Real sessions: anything user-driven (chat, email, signal, web, ad-hoc CLI)
 # or alert-driven (errors, security scans, cluster events).
@@ -17,7 +18,8 @@ LOG=/atlas/logs/trigger-dreaming.log
 if command -v sessions >/dev/null 2>&1; then
     LIST=$(sessions --hours 24 --list \
         --exclude-trigger dreaming \
-        --exclude-trigger memory-cleanup 2>/dev/null)
+        --exclude-trigger memory-cleanup \
+        --exclude-trigger validator 2>/dev/null)
     # Output rows look like:  "main | <id> | <turns> | <time> | ..."
     # We only consider main sessions (subagents are nested within mains).
     if echo "$LIST" | grep -qE "^main \|"; then

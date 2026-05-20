@@ -28,6 +28,10 @@ fi
 export ATLAS_TRIGGER="test"
 export ATLAS_TRIGGER_SESSION_KEY="integration"
 
+# Goal close always runs the validator; for the bulk of the suite we mock-pass it.
+# The dedicated validator test section (7) overrides this to also exercise fail.
+export ATLAS_VALIDATOR_MOCK="pass:integration-test-default"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -232,9 +236,9 @@ echo "--- 7. Validator mock ---"
 
 export ATLAS_TRIGGER_SESSION_KEY="validator-test"
 
-VALIDATED_GOAL_OUT=$($TASK_CLI goal create --title="Validated goal" --done="All tests pass" --validate) 2>&1
+VALIDATED_GOAL_OUT=$($TASK_CLI goal create --title="Validated goal" --done="All tests pass") 2>&1
 VALIDATED_GOAL_ID=$(echo "$VALIDATED_GOAL_OUT" | grep -oP '#\K\d+' | head -1)
-assert_contains "validated goal created" "Validation required" "$VALIDATED_GOAL_OUT"
+assert_contains "goal create mentions validator" "isolated validator" "$VALIDATED_GOAL_OUT"
 
 # Mock: fail
 export ATLAS_VALIDATOR_MOCK="fail:Tests are not written yet"
@@ -266,7 +270,8 @@ else
   fail "goal status should be 'done', got: $VALIDATED_STATUS"
 fi
 
-unset ATLAS_VALIDATOR_MOCK
+# Restore the global mock for any subsequent goal closes in later sections.
+export ATLAS_VALIDATOR_MOCK="pass:integration-test-default"
 export ATLAS_TRIGGER_SESSION_KEY="integration"
 
 # ---------------------------------------------------------------------------

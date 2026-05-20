@@ -7,7 +7,7 @@ This is not a task execution session. Think deeply, reflect, and optimize your k
 First, discover which sessions ran in the last 24 hours:
 
 ```bash
-sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup
+sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup --exclude-trigger validator
 ```
 
 This outputs a lightweight index with session file paths. For each **main session** (not subagents):
