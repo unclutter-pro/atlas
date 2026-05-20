@@ -40,6 +40,19 @@ email:
   whitelist: [] # Empty = accept all, or list of senders/domains/wildcards (e.g. "*@*.example.com")
   mark_read: true # Mark fetched emails as read on server
 
+  # Optional: pin server folder names for the logical role lookup used by
+  # `email archive` / `spam` / `delete` / `move`. Most servers (Mailcow,
+  # Gmail, Outlook, iCloud, Fastmail) advertise these via IMAP SPECIAL-USE
+  # (RFC 6154), so auto-discovery works without overrides — only set this
+  # if your server uses non-standard names or doesn't advertise SPECIAL-USE.
+  # Run `email folders` to see what the server advertises.
+  # folders:
+  #   archive: "Archive"
+  #   junk:    "Junk"      # Gmail uses "[Gmail]/Spam"; Outlook "Junk Email"
+  #   trash:   "Trash"     # Outlook uses "Deleted Items"
+  #   sent:    "Sent"      # Gmail "[Gmail]/Sent Mail"; Outlook "Sent Items"
+  #   drafts:  "Drafts"
+
 daily_cleanup:
   enabled: true
   retention_days: 30 # How long to keep completed tasks, messages, etc.

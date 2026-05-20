@@ -39,19 +39,48 @@ email reply "thread-id-here" "Reply body" --bcc audit@x.com  # Add a BCC
 email reply "thread-id-here" "See attached." --attach /path/to/file.pdf
 ```
 
-### Check for new emails (one-time)
+### Inbox triage
+
+Triage commands accept either a single email id or a thread_id. When given a
+thread_id, the action applies to all incoming messages in that thread.
+
 ```bash
-email poll --once
+# Focused to-do list: threads with unread messages in INBOX
+email inbox
+
+# Generic listing with filters
+email threads                       # All threads (any folder, any state)
+email threads --folder INBOX        # Threads currently in INBOX
+email threads --folder Archive      # Archived threads
+email threads --unread              # Threads with at least one unread message
+email threads --read                # Threads where every incoming msg is read
+
+# Read state (synced to IMAP \Seen)
+email mark-read   <id|thread_id>
+email mark-unread <id|thread_id>
+
+# Folder moves (synced via IMAP UID MOVE)
+email archive <id|thread_id>        # Move to Archive
+email spam    <id|thread_id>        # Move to Junk/Spam
+email delete  <id|thread_id>        # Move to Trash (soft delete)
+email move    <id|thread_id> <folder>   # Move to any folder (role name or literal)
+
+# Discover server folders
+email folders                       # Show server folders + logical role mapping
 ```
 
-### List email threads
+### Reading
+
 ```bash
-email threads --limit 20
+email thread "<thread_id>"          # Full thread (Markdown)
+email thread "<thread_id>" --raw    # Raw HTML
+email read <email_id>               # Single message by #N from thread view
 ```
 
-### Show thread detail
+### Polling (manual)
+
 ```bash
-email thread "thread-id-here"
+email poll --once                   # One-shot check
 ```
 
 ## Configuration
@@ -71,9 +100,32 @@ email:
   folder: "INBOX"
   whitelist: []                                   # Empty = accept all
   mark_read: true
+
+  # Optional: pin server folder names for the role lookup. Most servers
+  # (Mailcow, Gmail, Outlook, iCloud, Fastmail) advertise these via IMAP
+  # SPECIAL-USE (RFC 6154) and auto-discovery just works — only pin if
+  # the defaults don't match your setup.
+  folders:
+    archive: "Archive"
+    junk:    "Junk"
+    trash:   "Trash"
+    sent:    "Sent"
+    drafts:  "Drafts"
 ```
 
 Alternatively, use environment variables: `EMAIL_IMAP_HOST`, `EMAIL_SMTP_HOST`, `EMAIL_USERNAME`, `EMAIL_PASSWORD`, etc.
+
+## Folders and read/unread
+
+The addon mirrors the standard IMAP mental model: every incoming message lives
+in a folder (INBOX, Archive, Junk, Trash, …) and carries a read/unread flag.
+All `mark-read` / `mark-unread` / `archive` / `spam` / `delete` / `move`
+operations sync to the IMAP server (`UID STORE` / `UID MOVE`) so changes show
+up in the user's webmail too.
+
+Folder name discovery uses IMAP `SPECIAL-USE` (RFC 6154) so it works against
+Mailcow/Dovecot, Gmail, Outlook, iCloud, and Fastmail out of the box without
+hard-coded names. Run `email folders` to inspect what the server advertises.
 
 ## Background Polling
 

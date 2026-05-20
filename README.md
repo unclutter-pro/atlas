@@ -192,7 +192,8 @@ Claude has access to these tools via the inbox-mcp server:
 
 **Channel CLI Tools** (external communication):
 - `signal send|contacts|history` — Send Signal messages, list contacts, view history
-- `email reply|send|threads|thread` — Reply to email threads, send emails, list threads
+- `email send|reply|inbox|threads|thread|read` — Compose and read email (`inbox` = unread INBOX threads)
+- `email mark-read|mark-unread|archive|spam|delete|move|folders` — Triage and folder management (synced to IMAP)
 
 **Triggers:**
 - `trigger_list` — List all triggers

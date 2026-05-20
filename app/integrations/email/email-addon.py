@@ -21,11 +21,10 @@ import argparse
 import email as emaillib
 import email.utils
 import fnmatch
-import imaplib
+import imaplib  # for imaplib.IMAP4.error caught at the top of cmd_poll(_idle)
 import json
 import os
 import re
-import select
 import signal
 import smtplib
 import sqlite3
@@ -57,138 +56,45 @@ MESSAGES_DIR = os.environ["HOME"] + "/.index/email/messages"
 
 # --- Config ---
 
+# Configuration handling moved to email_config.EmailConfig. This thin
+# wrapper preserves the legacy ``load_config()`` import path so old call
+# sites keep working — production callers should use ``EmailConfig.load()``
+# directly.
+from email_config import (
+    EmailConfig,
+    extract_password_from_secret_blob as _extract_password_from_secret_blob,  # noqa: F401
+)
+
+
 def load_config():
-    """Load email config from config.yml + runtime config, with env overrides.
+    """Load email config — back-compat shim returning an :class:`EmailConfig`.
 
-    Resolution order (highest priority wins):
-      1. Environment variables
-      2. Runtime config (~/.atlas-runtime-config.json)
-      3. config.yml
-      4. Built-in defaults
-
-    This matches the TypeScript resolveConfig() behavior in config.ts.
+    The returned object behaves like the old plain ``dict`` (``config["foo"]``
+    still works) but is also attribute-accessible (``config.foo``) and
+    immutable. New code should call ``EmailConfig.load()`` directly.
     """
-    cfg = {}
-    if os.path.exists(CONFIG_PATH):
-        try:
-            import yaml
-            with open(CONFIG_PATH) as f:
-                data = yaml.safe_load(f) or {}
-            cfg = data.get("email", {})
-        except ImportError:
-            pass
-
-    # Layer 2: Runtime config overrides (written by /api/v1/config endpoint).
-    #
-    # We surface parse errors to stderr so they show up in the email-poller
-    # log. Silently swallowing them would let a corrupt runtime-config drop
-    # the agent back to config.yml-only state without any signal — and the
-    # next /api/v1/config write would then clobber whatever valid state was
-    # actually meant to be there.
-    rt = {}
-    if os.path.exists(RUNTIME_CONFIG_PATH):
-        try:
-            with open(RUNTIME_CONFIG_PATH) as f:
-                rt_data = json.load(f)
-            rt = rt_data.get("email", {}) if isinstance(rt_data, dict) else {}
-        except json.JSONDecodeError as e:
-            print(
-                f"[email config] ERROR: {RUNTIME_CONFIG_PATH} is corrupt JSON "
-                f"({e}); falling back to config.yml. Manual recovery may be required.",
-                file=sys.stderr,
-                flush=True,
-            )
-        except OSError as e:
-            print(
-                f"[email config] WARN: could not read {RUNTIME_CONFIG_PATH}: {e}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    # Merge: runtime overrides config.yml (for each key, use rt value if present,
-    # else cfg value, else default).  Env vars override both.
-    def _resolve(key, default, env_var=None):
-        """Pick the highest-priority value for a config key."""
-        file_val = cfg.get(key, default)
-        runtime_val = rt.get(key)
-        base = runtime_val if runtime_val is not None else file_val
-        if env_var:
-            env_raw = os.environ.get(env_var)
-            if env_raw is not None:
-                if isinstance(default, int):
-                    return int(env_raw)
-                return env_raw
-        return base
-
-    config = {
-        "imap_host": _resolve("imap_host", "", "EMAIL_IMAP_HOST"),
-        "imap_port": _resolve("imap_port", 993, "EMAIL_IMAP_PORT"),
-        "imap_starttls": _resolve("imap_starttls", False),
-        "smtp_host": _resolve("smtp_host", "", "EMAIL_SMTP_HOST"),
-        "smtp_port": _resolve("smtp_port", 587, "EMAIL_SMTP_PORT"),
-        "username": _resolve("username", "", "EMAIL_USERNAME"),
-        "password": os.environ.get("EMAIL_PASSWORD", ""),
-        "password_file": _resolve("password_file", ""),
-        "folder": _resolve("folder", "INBOX", "EMAIL_FOLDER"),
-        "ssl_verify": _resolve("ssl_verify", True),
-        "whitelist": _resolve("whitelist", []),
-        "mark_read": _resolve("mark_read", True),
-        "idle_timeout": _resolve("idle_timeout", 1500, "EMAIL_IDLE_TIMEOUT"),
-    }
-
-    if not config["password"] and config["password_file"]:
-        pf = Path(config["password_file"])
-        if pf.exists():
-            raw = pf.read_text().strip()
-            config["password"] = _extract_password_from_secret_blob(raw)
-
-    return config
+    return EmailConfig.load(
+        config_path=CONFIG_PATH,
+        runtime_path=RUNTIME_CONFIG_PATH,
+    )
 
 
-def _extract_password_from_secret_blob(raw: str) -> str:
-    """Return the bare password from a password_file content.
+# --- IMAP client + SMTP helpers ---
+#
+# All IMAP protocol details live in imap_client.ImapClient — this file only
+# orchestrates command flow on top of that abstraction. The factory below
+# exists so tests can patch one well-known function to inject a mock client.
 
-    Atlas standardises on a structured secret-file format for forward
-    compatibility with credential managers, vault drivers and sync sidecars
-    that mount richer metadata alongside the value::
-
-        {"type": "api_key", "value": "<password>"}
-        {"type": "login",   "password": "<password>", "username": "..."}
-
-    Bare-string password files keep working unchanged. Parse leniently: if
-    the content looks like JSON, extract the canonical password field; else
-    fall back to the raw text.
-    """
-    if not raw:
-        return raw
-    if not raw.startswith("{"):
-        return raw
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError):
-        return raw
-    if not isinstance(parsed, dict):
-        return raw
-    # Canonical fields by type:
-    #   api_key → "value"
-    #   login   → "password"
-    #
-    # The outer pf.read_text().strip() only cleans whitespace around the
-    # JSON document — values stored with a trailing newline (a common
-    # accident when a value is piped into a credential store) survive
-    # through the JSON layer. Strip the extracted field too so the IMAP
-    # protocol doesn't choke on the rogue `\n` in the password.
-    for key in ("password", "value"):
-        candidate = parsed.get(key)
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    return raw
+from imap_client import ImapClient, ImapError  # re-exported for back-compat
 
 
-# --- SSL / Connection helpers ---
+def _imap_client(config):
+    """Factory for the IMAP client. Tests patch this with a mock."""
+    return ImapClient(config)
 
-def _ssl_context(config):
-    """Create an SSL context, optionally disabling verification for self-signed certs."""
+
+def _ssl_context_for_smtp(config):
+    """SSL context for the SMTP side. IMAP has its own in imap_client."""
     ctx = ssl.create_default_context()
     if not config.get("ssl_verify", True):
         ctx.check_hostname = False
@@ -196,21 +102,9 @@ def _ssl_context(config):
     return ctx
 
 
-def _imap_connect(config):
-    """Connect to IMAP, supporting both implicit TLS (port 993) and STARTTLS (port 143)."""
-    ctx = _ssl_context(config)
-    if config.get("imap_starttls", False):
-        mail = imaplib.IMAP4(config["imap_host"], config["imap_port"])
-        mail.starttls(ssl_context=ctx)
-    else:
-        mail = imaplib.IMAP4_SSL(config["imap_host"], config["imap_port"], ssl_context=ctx)
-    mail.login(config["username"], config["password"])
-    return mail
-
-
 def _smtp_connect(config):
     """Connect to SMTP with STARTTLS, optionally disabling cert verification."""
-    ctx = _ssl_context(config)
+    ctx = _ssl_context_for_smtp(config)
     server = smtplib.SMTP(config["smtp_host"], config["smtp_port"])
     server.starttls(context=ctx)
     server.login(config["username"], config["password"])
@@ -218,72 +112,26 @@ def _smtp_connect(config):
 
 
 # --- Email Database ---
+#
+# Schema, migrations, and every typed query live in :mod:`email_db.EmailDb`.
+# The thin factory below picks the DB directory and forwards through —
+# every cmd_* function opens its DB via this single entry point.
 
-def get_email_db(config):
-    """Open (or create) the per-account email database."""
-    os.makedirs(EMAIL_DB_DIR, exist_ok=True)
+from email_db import Email, EmailDb, EmailTarget, Thread  # noqa: F401
 
-    # Sanitize username for filename
-    account = re.sub(r"[^a-zA-Z0-9@._-]", "_", config.get("username", "default"))
-    db_path = os.path.join(EMAIL_DB_DIR, f"{account}.db")
 
-    db = sqlite3.connect(db_path)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
+def open_email_db(config, *, db_dir: str | None = None) -> "EmailDb":
+    """Open the per-account DB and apply schema + migrations.
 
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS threads (
-            thread_id       TEXT PRIMARY KEY,
-            subject         TEXT NOT NULL DEFAULT '',
-            last_message_id TEXT NOT NULL DEFAULT '',
-            references_chain TEXT NOT NULL DEFAULT '[]',
-            last_sender     TEXT NOT NULL DEFAULT '',
-            last_sender_full TEXT NOT NULL DEFAULT '',
-            last_cc         TEXT NOT NULL DEFAULT '',
-            participants    TEXT NOT NULL DEFAULT '[]',
-            message_count   INTEGER NOT NULL DEFAULT 0,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS emails (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            thread_id       TEXT NOT NULL,
-            message_id      TEXT NOT NULL DEFAULT '',
-            direction       TEXT NOT NULL DEFAULT 'in',
-            sender          TEXT NOT NULL DEFAULT '',
-            recipient       TEXT NOT NULL DEFAULT '',
-            cc              TEXT NOT NULL DEFAULT '',
-            subject         TEXT NOT NULL DEFAULT '',
-            body            TEXT NOT NULL DEFAULT '',
-            body_html       TEXT NOT NULL DEFAULT '',
-            headers_json    TEXT NOT NULL DEFAULT '{}',
-            inbox_msg_id    INTEGER,
-            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (thread_id) REFERENCES threads(thread_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS state (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL DEFAULT ''
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_emails_thread ON emails(thread_id);
-        CREATE INDEX IF NOT EXISTS idx_emails_direction ON emails(direction);
-    """)
-
-    # Migrations for existing databases — each probe-and-alter is idempotent
-    for table, column, ddl in (
-        ("emails",  "body_html", "ALTER TABLE emails  ADD COLUMN body_html TEXT NOT NULL DEFAULT ''"),
-        ("emails",  "cc",        "ALTER TABLE emails  ADD COLUMN cc        TEXT NOT NULL DEFAULT ''"),
-        ("threads", "last_cc",   "ALTER TABLE threads ADD COLUMN last_cc   TEXT NOT NULL DEFAULT ''"),
-    ):
-        try:
-            db.execute(f"SELECT {column} FROM {table} LIMIT 0")
-        except sqlite3.OperationalError:
-            db.execute(ddl)
-
-    return db
+    ``db_dir`` defaults to the module-level ``EMAIL_DB_DIR`` constant; tests
+    redirect storage by monkeypatching that constant. The kwarg lets
+    callers be explicit when the module-level location isn't appropriate
+    (no ``globals()`` indirection — same shape as ``EmailConfig.load``'s
+    explicit paths).
+    """
+    if db_dir is None:
+        db_dir = EMAIL_DB_DIR
+    return EmailDb.open(config, db_dir=db_dir)
 
 
 # --- Thread helpers ---
@@ -297,15 +145,20 @@ def _clean_subject(subject):
     return cleaned
 
 
-def extract_thread_id(msg, db=None):
+def extract_thread_id(msg, db: "EmailDb | None" = None):
     """Extract thread identifier from email headers.
 
     Strategy (in order):
     1. Look up existing threads by referenced message IDs (References/In-Reply-To)
-    2. Subject-based fallback: match against recent threads (last 14 days) with the
-       same cleaned subject. This handles relay Message-ID rewriting (e.g. SES replaces
-       the original Message-ID, so the recipient's reply references an ID we never stored).
+    2. Subject-based fallback: match against recent threads (last 14 days) with
+       the same cleaned subject. Handles relay Message-ID rewriting (e.g. SES
+       replaces the original Message-ID, so the recipient's reply references
+       an ID we never stored).
     3. Derive from headers (original behavior) — creates a new thread.
+
+    The DB-touching strategies are delegated to :class:`EmailDb` so the
+    SQL stays in one place. When ``db`` is None the function still works
+    — it just skips the lookups and falls through to strategy 3.
     """
     references = msg.get("References", "").strip()
     in_reply_to = msg.get("In-Reply-To", "").strip()
@@ -318,35 +171,21 @@ def extract_thread_id(msg, db=None):
         ref_ids.append(in_reply_to)
 
     # Strategy 1: Look up existing threads by any referenced message ID
-    if db and ref_ids:
-        # Search for both raw (<...>) and stripped forms
-        search_ids = []
-        for r in ref_ids:
-            search_ids.append(r)
-            search_ids.append(r.strip("<>"))
-        placeholders = ",".join("?" * len(search_ids))
-        row = db.execute(
-            f"SELECT thread_id FROM emails WHERE message_id IN ({placeholders}) ORDER BY created_at ASC LIMIT 1",
-            search_ids,
-        ).fetchone()
-        if row:
-            return row[0]
+    if db is not None and ref_ids:
+        hit = db.find_thread_id_by_message_ids(ref_ids)
+        if hit:
+            return hit
 
-    # Strategy 2: Subject-based fallback for replies (handles SES Message-ID rewriting)
+    # Strategy 2: Subject-based fallback for replies (handles SES rewriting)
     subject = msg.get("Subject", "").strip()
     cleaned_subject = _clean_subject(subject)
     is_reply = subject.lower() != cleaned_subject.lower()  # Had a Re:/Fwd: prefix
-    if db and is_reply and cleaned_subject:
-        row = db.execute(
-            """SELECT thread_id FROM threads
-               WHERE subject = ? AND updated_at > datetime('now', '-14 days')
-               ORDER BY updated_at DESC LIMIT 1""",
-            (cleaned_subject,),
-        ).fetchone()
-        if row:
-            return row[0]
+    if db is not None and is_reply and cleaned_subject:
+        hit = db.find_thread_id_by_subject(cleaned_subject)
+        if hit:
+            return hit
 
-    # Strategy 3: Derive from headers (original behavior — creates new thread)
+    # Strategy 3: Derive from headers (creates a new thread)
     if ref_ids:
         return sanitize_thread_id(ref_ids[0])
 
@@ -384,8 +223,14 @@ def _parse_address_list(header_value):
     return [addr.strip() for _, addr in pairs if addr and addr.strip()]
 
 
-def update_thread(db, thread_id, msg):
-    """Update thread state in the email DB."""
+def update_thread(db: "EmailDb", thread_id: str, msg) -> dict:
+    """Update thread state in the email DB to reflect an incoming message.
+
+    Parses the email's headers (From, Cc, Subject, Message-ID, References)
+    and forwards already-cleaned values into
+    :meth:`EmailDb.upsert_incoming_thread`. Returns the small info dict
+    the poll path expects (legacy contract preserved).
+    """
     sender = msg.get("From", "")
     _, sender_addr = emaillib.utils.parseaddr(sender)
     cc_header = msg.get("Cc", "").strip()
@@ -395,49 +240,16 @@ def update_thread(db, thread_id, msg):
     message_id = msg.get("Message-ID", "").strip()
     references = build_references_chain(msg)
 
-    existing = db.execute("SELECT participants, message_count FROM threads WHERE thread_id = ?",
-                          (thread_id,)).fetchone()
-
-    if existing:
-        participants = set(json.loads(existing[0]))
-        count = existing[1] + 1
-    else:
-        participants = set()
-        count = 1
-
-    if sender_addr:
-        participants.add(sender_addr)
-    participants.update(cc_addrs)
-
-    db.execute("""
-        INSERT INTO threads (thread_id, subject, last_message_id, references_chain,
-                             last_sender, last_sender_full, last_cc, participants, message_count, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(thread_id) DO UPDATE SET
-            subject = excluded.subject,
-            last_message_id = excluded.last_message_id,
-            references_chain = excluded.references_chain,
-            last_sender = excluded.last_sender,
-            last_sender_full = excluded.last_sender_full,
-            last_cc = excluded.last_cc,
-            participants = excluded.participants,
-            message_count = excluded.message_count,
-            updated_at = excluded.updated_at
-    """, (
-        thread_id, subject_clean, message_id,
-        json.dumps(references), sender_addr, sender, cc_header,
-        json.dumps(sorted(participants)), count,
-        datetime.now().isoformat(),
-    ))
-
-    return {
-        "thread_id": thread_id,
-        "subject": subject_clean,
-        "last_message_id": message_id,
-        "references": references,
-        "last_sender": sender_addr,
-        "cc": cc_header,
-    }
+    return db.upsert_incoming_thread(
+        thread_id=thread_id,
+        subject_clean=subject_clean,
+        last_message_id=message_id,
+        references=references,
+        sender_addr=sender_addr,
+        sender_full=sender,
+        cc_raw=cc_header,
+        cc_addrs=cc_addrs,
+    )
 
 
 def _html_to_text(html):
@@ -628,50 +440,63 @@ def write_to_atlas_inbox(sender, content, thread_id):
 
 # --- Shared fetch logic ---
 
-def _fetch_new_emails(mail, db, config):
-    """Fetch and process new emails from an open IMAP connection.
+def _fetch_new_emails(imap, db, config):
+    """Fetch and process new emails through an :class:`ImapClient`.
 
-    Reusable by both cmd_poll (--once) and cmd_poll_idle (continuous IDLE).
-    Returns the number of new emails processed.
+    Reusable by both ``cmd_poll`` (one-shot) and ``cmd_poll_idle``
+    (continuous IDLE). Returns the number of new emails stored.
+
+    The client must already be connected; the caller manages its
+    lifecycle. We re-SELECT the configured folder via
+    :meth:`ImapClient.search_new` each call so it's safe even if a
+    sibling operation switched folders in between.
     """
-    # Re-read whitelist from runtime config so changes apply without restart
+    # ``config['whitelist']`` is read by the loop below. The IDLE poller
+    # (the only caller that lives long enough for the user to change the
+    # whitelist mid-flight) calls ``_refresh_whitelist(config)`` between
+    # IDLE ticks; the function itself stays pure — its behaviour is
+    # fully determined by its arguments.
+    whitelist = config.get("whitelist", [])
+
+    last_uid = db.get_last_uid()
+
+    folder = config.get("folder", "INBOX")
     try:
-        fresh_config = load_config()
-        config["whitelist"] = fresh_config.get("whitelist", [])
-    except Exception:
-        pass  # Keep existing whitelist on error
-
-    row = db.execute("SELECT value FROM state WHERE key='last_uid'").fetchone()
-    last_uid = int(row[0]) if row and row[0].isdigit() else 0
-
-    # Search for new emails
-    if last_uid > 0:
-        status, data = mail.uid("search", None, f"UID {last_uid + 1}:*")
-    else:
-        status, data = mail.uid("search", None, "UNSEEN")
-
-    if status != "OK" or not data[0]:
+        uids = imap.search_new(folder, last_uid)
+    except ImapError as e:
+        print(f"[{datetime.now()}] {e}")
         return 0
 
-    uids = data[0].split()
+    if not uids:
+        return 0
+
     print(f"[{datetime.now()}] Found {len(uids)} new email(s)")
 
     max_uid = last_uid
-    trigger_queue = []  # Collect triggers to fire after all emails are stored
+    trigger_queue = []      # Collect triggers to fire after all emails stored
+    mark_seen_uids = []     # Collect UIDs to mark \Seen in one batched call
     processed = 0
 
-    for uid_bytes in uids:
-        uid = uid_bytes.decode()
-        uid_int = int(uid)
+    # Single batched FETCH — chunked internally at UID_BATCH=100. This
+    # replaces what used to be N sequential round-trips with ⌈N/100⌉.
+    # PEEK preserves the server-side \Seen flag so ``mark_read: false``
+    # actually works; we explicitly STORE below when configured.
+    fresh_uids = [u for u in uids if u > last_uid]
+    try:
+        fetched = imap.fetch_peek_many(folder, fresh_uids)
+    except ImapError as e:
+        print(f"[{datetime.now()}] {e}")
+        return 0
 
-        if uid_int <= last_uid:
+    for uid_int in fresh_uids:
+        raw_and_seen = fetched.get(uid_int)
+        if raw_and_seen is None:
+            # UID was expunged between SEARCH and FETCH — rare but real.
+            continue
+        raw, server_is_read = raw_and_seen
+        if not raw:
             continue
 
-        status, msg_data = mail.uid("fetch", uid, "(RFC822)")
-        if status != "OK":
-            continue
-
-        raw = msg_data[0][1]
         msg = emaillib.message_from_bytes(raw)
 
         sender = msg.get("From", "unknown")
@@ -681,7 +506,7 @@ def _fetch_new_emails(mail, db, config):
         thread_id = extract_thread_id(msg, db)
         message_id_hdr = msg.get("Message-ID", "").strip()
 
-        if not is_whitelisted(sender, config["whitelist"]):
+        if not is_whitelisted(sender, whitelist):
             print(f"[{datetime.now()}] Blocked email from {sender}")
             max_uid = max(max_uid, uid_int)
             continue
@@ -692,13 +517,26 @@ def _fetch_new_emails(mail, db, config):
         # 1b. Extract attachments
         attachments = extract_attachments(msg, thread_id)
 
-        # 2. Store email in email DB
+        # 2. Store email in email DB. We snapshot the IMAP UID + folder so the
+        # mark-read/archive/spam/delete commands can later target this message
+        # via UID STORE / UID MOVE without re-fetching anything.
         _, sender_addr = emaillib.utils.parseaddr(sender)
-        db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, cc, subject, body, body_html)
-            VALUES (?, ?, 'in', ?, ?, ?, ?, ?)
-        """, (thread_id, message_id_hdr, sender_addr, cc_header,
-              subject, body[:8000], body_html[:50000]))
+        # Effective read state: respect what the server says now, but if
+        # mark_read=true we'll flip the server (and DB) to read after storage.
+        will_mark_read = bool(config.get("mark_read", True))
+        initial_is_read = 1 if (server_is_read or will_mark_read) else 0
+        db.insert_incoming_email(
+            thread_id=thread_id,
+            message_id=message_id_hdr,
+            sender_addr=sender_addr,
+            cc=cc_header,
+            subject=subject,
+            body=body,
+            body_html=body_html,
+            imap_uid=uid_int,
+            folder="INBOX",
+            is_read=initial_is_read,
+        )
 
         # 2b. Save as searchable file
         save_email_file(thread_id, sender, subject, msg.get("Date", ""), body, attachments)
@@ -713,9 +551,12 @@ def _fetch_new_emails(mail, db, config):
             inbox_content += f"\n\nAttachments:\n{att_summary}"
         inbox_msg_id = write_to_atlas_inbox(sender, inbox_content, thread_id)
 
-        # Update email record with inbox msg id
-        db.execute("UPDATE emails SET inbox_msg_id = ? WHERE thread_id = ? AND message_id = ?",
-                   (inbox_msg_id, thread_id, message_id_hdr))
+        # Link the freshly-inserted email row back to the inbox row
+        db.set_inbox_msg_id(
+            thread_id=thread_id,
+            message_id=message_id_hdr,
+            inbox_msg_id=inbox_msg_id,
+        )
 
         print(f"[{datetime.now()}] Email from {sender}: {subject[:60]} "
               f"(thread={thread_id}, inbox={inbox_msg_id})")
@@ -739,15 +580,25 @@ def _fetch_new_emails(mail, db, config):
         payload = json.dumps(payload_data)
         trigger_queue.append((payload, thread_id))
 
-        if config["mark_read"]:
-            mail.uid("store", uid, "+FLAGS", "\\Seen")
+        if will_mark_read:
+            mark_seen_uids.append(uid_int)
 
         max_uid = max(max_uid, uid_int)
         processed += 1
 
+    # One batched STORE for all newly-fetched messages instead of one per UID
+    # — the client chunks for us, so this is also safe for huge inboxes.
+    if mark_seen_uids:
+        try:
+            imap.set_seen(folder, mark_seen_uids, seen=True)
+        except ImapError as e:
+            # Non-fatal: messages are stored locally; the next poll's
+            # UID-watermark search keeps us from re-processing them.
+            print(f"[{datetime.now()}] {e}")
+
     # Persist UID state
     if max_uid > last_uid:
-        db.execute("INSERT OR REPLACE INTO state (key, value) VALUES ('last_uid', ?)", (str(max_uid),))
+        db.set_last_uid(max_uid)
 
     db.commit()
 
@@ -768,22 +619,40 @@ def _fetch_new_emails(mail, db, config):
 
 # --- POLL command (--once mode) ---
 
+def _refresh_whitelist(config):
+    """Re-read the whitelist from disk and return a fresh config snapshot.
+
+    The IDLE poller calls this between ticks so a user can edit
+    ``config.yml`` (or the runtime JSON) and have the new whitelist
+    apply on the next fetch — no restart needed.
+
+    Returns the *new* :class:`EmailConfig` (or the same object on error).
+    Centralising the reload here keeps ``_fetch_new_emails`` pure: its
+    behaviour is fully determined by its arguments.
+    """
+    try:
+        fresh = load_config()
+    except Exception:
+        return config  # any error → keep the previous snapshot
+
+    # Reuse the existing object if nothing actually changed. Comparing
+    # whitelists by value avoids spurious config-rotation noise.
+    if fresh.get("whitelist", []) == config.get("whitelist", []):
+        return config
+    return fresh
+
+
 def cmd_poll(config, once=False):
     """Fetch new emails from IMAP, store in DB, write to inbox, fire triggers."""
     if not config["imap_host"] or not config["username"] or not config["password"]:
         print(f"[{datetime.now()}] ERROR: Email not configured (IMAP). Set email section in config.yml")
         return
 
-    db = get_email_db(config)
+    db = open_email_db(config)
 
     try:
-        mail = _imap_connect(config)
-        mail.select(config["folder"])
-
-        _fetch_new_emails(mail, db, config)
-
-        mail.logout()
-
+        with _imap_client(config) as imap:
+            _fetch_new_emails(imap, db, config)
     except imaplib.IMAP4.error as e:
         print(f"[{datetime.now()}] IMAP error: {e}")
     except Exception as e:
@@ -793,71 +662,6 @@ def cmd_poll(config, once=False):
 
 
 # --- IMAP IDLE helpers ---
-
-def _read_until_tag(mail, tag, max_lines=50):
-    """Read lines from IMAP until we see the tagged response or hit a safety limit.
-
-    Prevents infinite spin when the connection is in a broken state where
-    readline() returns empty or unexpected data in a tight loop.
-    Raises ConnectionError if readline() returns empty bytes (connection lost)
-    or if max_lines is exceeded without finding the tag.
-    """
-    for _ in range(max_lines):
-        line = mail.readline()
-        if not line:
-            raise ConnectionError("IMAP connection lost (empty readline)")
-        if line.startswith(tag):
-            return line
-    raise ConnectionError(
-        f"IMAP protocol error: did not receive tagged response after {max_lines} lines"
-    )
-
-
-def _imap_idle(mail, timeout=1500):
-    """Enter IMAP IDLE mode (RFC 2177).
-
-    Sends the IDLE command and waits for server notifications using select().
-    Returns True if new mail was detected (EXISTS/RECENT), False on timeout.
-    Raises ConnectionError if the server closes the connection.
-    """
-    tag = mail._new_tag()
-    mail.send(tag + b' IDLE\r\n')
-    resp = mail.readline()
-    if not resp.startswith(b'+'):
-        # Server rejected IDLE — should not happen if capability was checked
-        return False
-
-    sock = mail.socket()
-    deadline = time.time() + timeout
-    while True:
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            break
-        ready = select.select([sock], [], [], min(remaining, 30))
-        if ready[0]:
-            data = sock.recv(4096)
-            if not data:
-                raise ConnectionError("IMAP connection closed during IDLE")
-            if b'EXISTS' in data or b'RECENT' in data:
-                # New mail — exit IDLE
-                mail.send(b'DONE\r\n')
-                _read_until_tag(mail, tag)
-                return True
-
-    # Timeout — exit IDLE gracefully
-    mail.send(b'DONE\r\n')
-    _read_until_tag(mail, tag)
-    return False
-
-
-def _server_supports_idle(mail):
-    """Check if the IMAP server advertises the IDLE capability."""
-    status, caps = mail.capability()
-    if status != "OK":
-        return False
-    cap_str = b" ".join(caps).upper()
-    return b"IDLE" in cap_str
-
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
@@ -872,6 +676,21 @@ def cmd_poll_idle(config):
     29-minute server limit. Auto-reconnects on connection drops.
 
     Falls back to traditional polling if the server does not support IDLE.
+
+    Single-folder invariant
+    -----------------------
+    IMAP IDLE is per-folder: you SELECT one folder and IDLE on it. We only
+    IDLE on ``config['folder']`` (defaults to INBOX) — by design, since the
+    inbox is the only folder we *poll from*. Archive / Junk / Trash are
+    write targets (via ``email archive`` etc.) but never poll sources, so
+    there's no need for cross-folder watching.
+
+    Cross-folder side effects from our own triage commands (e.g. an
+    ``email archive 5`` running on a separate connection issues UID MOVE
+    out of INBOX) reach this connection as ``EXPUNGE`` notifications. The
+    ``_imap_idle`` loop only wakes on ``EXISTS`` / ``RECENT``, so those
+    EXPUNGEs are silently absorbed without triggering false-positive
+    fetches.
     """
     global _shutdown_requested
     _shutdown_requested = False
@@ -892,30 +711,33 @@ def cmd_poll_idle(config):
           f"(host={config['imap_host']}, idle_timeout={idle_timeout}s)")
 
     while not _shutdown_requested:
-        mail = None
+        imap = None
         db = None
         try:
-            db = get_email_db(config)
+            db = open_email_db(config)
 
-            # Connect
+            # Connect via the ImapClient — same factory as triage commands
+            # so tests have one patch point.
             print(f"[{datetime.now()}] Connecting to {config['imap_host']}...")
-            mail = _imap_connect(config)
-            mail.select(config["folder"])
+            imap = _imap_client(config)
+            imap.connect()
+            imap.select(config["folder"])
 
             # Check IDLE support
-            if not _server_supports_idle(mail):
+            if not imap.supports_idle():
                 print(f"[{datetime.now()}] Server does not support IDLE. "
                       f"Falling back to polling (interval={poll_fallback_interval}s)")
-                mail.logout()
+                imap.logout()
                 db.close()
                 # Fall back to traditional polling loop
                 while not _shutdown_requested:
-                    db = get_email_db(config)
+                    db = open_email_db(config)
                     try:
-                        mail = _imap_connect(config)
-                        mail.select(config["folder"])
-                        _fetch_new_emails(mail, db, config)
-                        mail.logout()
+                        with _imap_client(config) as poll_imap:
+                            # Hot-reload whitelist between ticks — the long-
+                            # running poller is the only caller that needs it.
+                            config = _refresh_whitelist(config)
+                            _fetch_new_emails(poll_imap, db, config)
                     except Exception as e:
                         print(f"[{datetime.now()}] Poll error: {e}")
                     finally:
@@ -930,13 +752,13 @@ def cmd_poll_idle(config):
             print(f"[{datetime.now()}] IDLE mode supported — using persistent connection")
 
             # Initial fetch of any pending emails
-            _fetch_new_emails(mail, db, config)
+            _fetch_new_emails(imap, db, config)
 
             # IDLE loop
             while not _shutdown_requested:
                 print(f"[{datetime.now()}] Entering IDLE mode (timeout={idle_timeout}s)...")
                 try:
-                    new_mail = _imap_idle(mail, timeout=idle_timeout)
+                    new_mail = imap.idle(idle_timeout)
                 except ConnectionError as e:
                     print(f"[{datetime.now()}] Connection lost during IDLE: {e}")
                     break  # Will reconnect in outer loop
@@ -947,22 +769,22 @@ def cmd_poll_idle(config):
                 if new_mail:
                     print(f"[{datetime.now()}] New mail detected via IDLE")
                     # Re-select to refresh mailbox state after IDLE
-                    mail.select(config["folder"])
-                    _fetch_new_emails(mail, db, config)
+                    imap.select(config["folder"])
+                    # Hot-reload whitelist before the fetch so config changes
+                    # made while we were IDLE'ing take effect immediately.
+                    config = _refresh_whitelist(config)
+                    _fetch_new_emails(imap, db, config)
                 else:
                     # Timeout — send NOOP to keep connection alive, then re-enter IDLE
                     try:
-                        mail.noop()
+                        imap.noop()
                     except Exception:
                         print(f"[{datetime.now()}] NOOP failed, reconnecting...")
                         break  # Will reconnect in outer loop
 
             # Clean disconnect
-            if mail:
-                try:
-                    mail.logout()
-                except Exception:
-                    pass
+            if imap is not None:
+                imap.logout()
 
         except (imaplib.IMAP4.error, ConnectionError, OSError) as e:
             print(f"[{datetime.now()}] Connection error: {e}")
@@ -1012,7 +834,7 @@ def cmd_send(config, to, subject, body, attachments=None, cc=None, bcc=None):
         print("ERROR: SMTP not configured. Set email section in config.yml", file=sys.stderr)
         sys.exit(1)
 
-    db = get_email_db(config)
+    db = open_email_db(config)
 
     cc = cc or []
     bcc = bcc or []
@@ -1036,28 +858,27 @@ def cmd_send(config, to, subject, body, attachments=None, cc=None, bcc=None):
         with _smtp_connect(config) as server:
             server.send_message(msg)
 
-        # Create thread in DB. BCC is intentionally excluded from
-        # participants — it's a hidden delivery, not a thread member.
+        # Record the thread + outgoing row. BCC is intentionally excluded
+        # from participants — it's a hidden delivery, not a thread member.
         thread_id = sanitize_thread_id(msg["Message-ID"])
         participants = sorted(set([config["username"], to] + cc))
-        db.execute("""
-            INSERT OR IGNORE INTO threads
-            (thread_id, subject, last_message_id, references_chain,
-             last_sender, last_sender_full, last_cc, participants, message_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-        """, (
-            thread_id, subject, msg["Message-ID"],
-            json.dumps([msg["Message-ID"]]),
-            config["username"], config["username"], cc_str,
-            json.dumps(participants),
-        ))
-
-        # Store email record
-        db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
-            VALUES (?, ?, 'out', ?, ?, ?, ?, ?)
-        """, (thread_id, msg["Message-ID"], config["username"], to, cc_str, subject, body[:8000]))
-
+        db.insert_outgoing_thread(
+            thread_id=thread_id,
+            subject=subject,
+            last_message_id=msg["Message-ID"],
+            username=config["username"],
+            cc_raw=cc_str,
+            participants=participants,
+        )
+        db.insert_outgoing_email(
+            thread_id=thread_id,
+            message_id=msg["Message-ID"],
+            sender=config["username"],
+            recipient=to,
+            cc=cc_str,
+            subject=subject,
+            body=body,
+        )
         db.commit()
         print(f"Email sent to {to}")
         if cc:
@@ -1090,23 +911,19 @@ def cmd_reply(config, thread_id, body, attachments=None, cc=None, bcc=None, no_c
         print("ERROR: SMTP not configured. Set email section in config.yml", file=sys.stderr)
         sys.exit(1)
 
-    db = get_email_db(config)
+    db = open_email_db(config)
 
-    thread = db.execute("SELECT * FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
-    if not thread:
+    thread = db.get_thread(thread_id)
+    if thread is None:
         print(f"ERROR: Thread {thread_id} not found", file=sys.stderr)
         db.close()
         sys.exit(1)
 
-    # Unpack thread data
-    cols = [d[0] for d in db.execute("SELECT * FROM threads LIMIT 0").description]
-    thread_data = dict(zip(cols, thread))
-
-    recipient = thread_data["last_sender"]
-    subject = thread_data["subject"]
-    last_message_id = thread_data["last_message_id"]
-    references = json.loads(thread_data["references_chain"])
-    last_cc = thread_data.get("last_cc", "") or ""
+    recipient       = thread.last_sender
+    subject         = thread.subject
+    last_message_id = thread.last_message_id
+    references      = list(thread.references_chain)   # mutable copy — we append below
+    last_cc         = thread.last_cc or ""
 
     bcc = bcc or []
 
@@ -1147,31 +964,27 @@ def cmd_reply(config, thread_id, body, attachments=None, cc=None, bcc=None, no_c
         # Update thread state: append our Message-ID to references, and
         # refresh last_cc so the next reply defaults to the new list.
         references.append(msg["Message-ID"])
-        db.execute("""
-            UPDATE threads SET
-                last_message_id = ?,
-                references_chain = ?,
-                last_cc = ?,
-                message_count = message_count + 1,
-                updated_at = ?
-            WHERE thread_id = ?
-        """, (msg["Message-ID"], json.dumps(references), cc_str,
-              datetime.now().isoformat(), thread_id))
+        db.update_thread_after_reply(
+            thread_id=thread_id,
+            last_message_id=msg["Message-ID"],
+            references=references,
+            last_cc=cc_str,
+        )
 
-        # Also fold any new CC addresses into participants
+        # Fold any new CC addresses into the thread's participant set
         if cc_list:
-            existing_participants = set(json.loads(thread_data.get("participants") or "[]"))
-            existing_participants.update(cc_list)
-            db.execute("UPDATE threads SET participants = ? WHERE thread_id = ?",
-                       (json.dumps(sorted(existing_participants)), thread_id))
+            db.add_thread_participants(thread_id, cc_list)
 
-        # Store email record
-        db.execute("""
-            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
-            VALUES (?, ?, 'out', ?, ?, ?, ?, ?)
-        """, (thread_id, msg["Message-ID"], config["username"], recipient, cc_str,
-              f"Re: {subject}", body[:8000]))
-
+        # Store the outgoing reply (folder='Sent', is_read=1 — same logic as cmd_send)
+        db.insert_outgoing_email(
+            thread_id=thread_id,
+            message_id=msg["Message-ID"],
+            sender=config["username"],
+            recipient=recipient,
+            cc=cc_str,
+            subject=f"Re: {subject}",
+            body=body,
+        )
         db.commit()
         print(f"Reply sent to {recipient}")
         if cc_list:
@@ -1189,29 +1002,304 @@ def cmd_reply(config, thread_id, body, attachments=None, cc=None, bcc=None, no_c
         db.close()
 
 
+# --- Read state / Folder operations ---
+#
+# The agent's mental model for an IMAP mailbox is the same as any mail client:
+# messages live in folders (INBOX, Archive, Junk, Trash, …) and carry a read /
+# unread flag. We mirror both into the local DB so filters are cheap, and sync
+# every state change back to the IMAP server so the user's webmail agrees.
+
+def _split_in_out(rows):
+    """Partition resolved EmailTarget rows into (incoming, outgoing) lists."""
+    in_rows  = [r for r in rows if r.direction == "in"]
+    out_rows = [r for r in rows if r.direction == "out"]
+    return in_rows, out_rows
+
+
+def _skip_note(out_rows):
+    """Format the outgoing-skipped note (or empty string when none)."""
+    n = len(out_rows)
+    if n == 0:
+        return ""
+    return (f" Note: {n} outgoing message{'s' if n != 1 else ''} "
+            "skipped (no server UID).")
+
+
+def _group_by_folder(targets):
+    """Group EmailTarget rows with imap_uid by their current server folder.
+
+    Result shape: ``{"INBOX": [target, ...], "Archive": [target, ...]}``.
+    Used by the read-state / move action layer to feed one IMAP call per
+    source folder into :meth:`ImapClient.set_seen` / :meth:`ImapClient.move`.
+    """
+    out = {}
+    for t in targets:
+        if t.imap_uid is None:
+            continue
+        out.setdefault(t.folder or "INBOX", []).append(t)
+    return out
+
+
+def _require_imap(config):
+    if not config.get("imap_host") or not config.get("username") or not config.get("password"):
+        print("ERROR: IMAP not configured. Set email section in config.yml",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def _do_read_state(config, ident, mark_read):
+    """Shared implementation for mark-read / mark-unread.
+
+    DB updates are committed only after IMAP succeeds, so a 'NO' from the
+    server (folder gone, ACL denial, quota) never leaves the DB claiming
+    a state the server didn't actually accept.
+    """
+    _require_imap(config)
+    db = open_email_db(config)
+    try:
+        all_rows = db.resolve_targets(ident)
+        if not all_rows:
+            print(f"No emails found for '{ident}'.", file=sys.stderr)
+            sys.exit(1)
+
+        in_rows, out_rows = _split_in_out(all_rows)
+        if not in_rows:
+            # Single outgoing email_id, or an outgoing-only thread — no
+            # server-side action is possible and our DB already flags
+            # outgoing rows as read.
+            print(
+                f"'{ident}' resolves only to outgoing message(s); "
+                "no IMAP state to change.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        with_uid = [t for t in in_rows if t.imap_uid is not None]
+        if with_uid:
+            try:
+                with _imap_client(config) as imap:
+                    # One set_seen() per source folder. The client chunks
+                    # large UID sets internally and raises ImapError on
+                    # any non-OK reply so we never commit the DB mirror.
+                    for folder, group in _group_by_folder(with_uid).items():
+                        uids = [t.imap_uid for t in group]
+                        imap.set_seen(folder, uids, seen=mark_read)
+            except ImapError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        # Only reached on IMAP success (or when there were no UIDs to touch).
+        db.set_emails_is_read([t.id for t in in_rows], is_read=mark_read)
+        db.commit()
+
+        verb = "read" if mark_read else "unread"
+        n = len(in_rows)
+        print(
+            f"Marked {n} email{'s' if n != 1 else ''} {verb}."
+            f"{_skip_note(out_rows)}"
+        )
+    finally:
+        db.close()
+
+
+def cmd_mark_read(config, ident):
+    """Mark an email (by id) or all incoming emails in a thread as read."""
+    _do_read_state(config, ident, mark_read=True)
+
+
+def cmd_mark_unread(config, ident):
+    """Mark an email (by id) or all incoming emails in a thread as unread."""
+    _do_read_state(config, ident, mark_read=False)
+
+
+def _resolve_destination(folder_map, all_folders, requested):
+    """Pick the destination folder name.
+
+    Accepts a logical role (``inbox`` / ``archive`` / ``junk`` / ``trash`` /
+    ``sent`` / ``drafts``) and resolves it against the discovered folder map,
+    or a literal folder name that must exist on the server.
+    """
+    key = requested.lower() if isinstance(requested, str) else ""
+    if key in folder_map:
+        return folder_map[key]
+    # Literal folder name. If we have a server folder list, validate; if the
+    # list call failed, accept the name and let IMAP error out — we'd rather
+    # try than refuse on an empty list.
+    if all_folders and requested not in all_folders:
+        # Case-insensitive fallback — some servers return INBOX as "Inbox".
+        for f in all_folders:
+            if f.lower() == requested.lower():
+                return f
+        raise ValueError(
+            f"Folder '{requested}' not found on server. "
+            f"Available: {', '.join(sorted(all_folders))}"
+        )
+    return requested
+
+
+def _do_move(config, ident, role_or_folder):
+    """Move target message(s) (single id or whole thread) to a folder.
+
+    DB updates only commit after IMAP confirms — see _do_read_state for the
+    same pattern and rationale.
+    """
+    _require_imap(config)
+    db = open_email_db(config)
+    try:
+        all_rows = db.resolve_targets(ident)
+        if not all_rows:
+            print(f"No emails found for '{ident}'.", file=sys.stderr)
+            sys.exit(1)
+
+        in_rows, out_rows = _split_in_out(all_rows)
+        with_uid = [t for t in in_rows if t.imap_uid is not None]
+        if not with_uid:
+            print(
+                f"No movable IMAP messages for '{ident}' (no stored UIDs — "
+                "likely an outgoing-only thread).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        dest = None
+        try:
+            with _imap_client(config) as imap:
+                folder_map = imap.discover_folders()
+                all_folders = imap.list_folders()
+                try:
+                    dest = _resolve_destination(
+                        folder_map, all_folders, role_or_folder
+                    )
+                except ValueError as e:
+                    print(f"ERROR: {e}", file=sys.stderr)
+                    sys.exit(1)
+                # One move() per source folder. The client chunks large
+                # UID sets and uses UID MOVE → COPY+STORE+EXPUNGE fallback
+                # transparently.
+                for folder, group in _group_by_folder(with_uid).items():
+                    uids = [t.imap_uid for t in group]
+                    imap.move(folder, uids, dest)
+        except ImapError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Only reached on IMAP success.
+        db.set_emails_folder([t.id for t in with_uid], folder=dest)
+        db.commit()
+        n = len(with_uid)
+        print(
+            f"Moved {n} email{'s' if n != 1 else ''} to '{dest}'."
+            f"{_skip_note(out_rows)}"
+        )
+    finally:
+        db.close()
+
+
+def cmd_archive(config, ident):
+    """Move incoming message(s) to the Archive folder."""
+    _do_move(config, ident, "archive")
+
+
+def cmd_spam(config, ident):
+    """Move incoming message(s) to the Junk/Spam folder."""
+    _do_move(config, ident, "junk")
+
+
+def cmd_delete(config, ident):
+    """Move incoming message(s) to the Trash folder (soft delete)."""
+    _do_move(config, ident, "trash")
+
+
+def cmd_move(config, ident, folder):
+    """Move incoming message(s) to an arbitrary folder (role or literal name)."""
+    _do_move(config, ident, folder)
+
+
+def cmd_folders(config):
+    """List server folders and the resolved logical role mapping."""
+    _require_imap(config)
+    with _imap_client(config) as imap:
+        folder_map = imap.discover_folders()
+        all_folders = imap.list_folders()
+
+    # Roles first (the agent's vocabulary), then the full server listing.
+    print("Logical roles → server folders:")
+    for role in ("inbox", "archive", "sent", "drafts", "junk", "trash"):
+        name = folder_map.get(role, "(unresolved)")
+        print(f"  {role:<8} → {name}")
+
+    print("")
+    if all_folders:
+        print("All server folders:")
+        for f in sorted(all_folders):
+            print(f"  {f}")
+    else:
+        print("(could not list folders — server returned no LIST results)")
+
+
 # --- THREADS command ---
 
-def cmd_threads(config, limit=20):
-    """List tracked email threads."""
-    db = get_email_db(config)
-    rows = db.execute("""
-        SELECT thread_id, subject, last_sender, message_count, updated_at
-        FROM threads ORDER BY updated_at DESC LIMIT ?
-    """, (limit,)).fetchall()
+def cmd_threads(config, limit=20, folder=None, unread=None):
+    """List tracked email threads, with optional folder / read-state filters.
 
-    if not rows:
-        print("No email threads found.")
+    Args:
+      folder: if given, only show threads with at least one incoming message
+              currently in that folder (case-sensitive match against
+              ``emails.folder``).
+      unread: ``True`` → threads with at least one unread incoming message;
+              ``False`` → threads where every incoming message is read;
+              ``None`` → no read-state filter.
+    """
+    db = open_email_db(config)
+    try:
+        threads, truncated = db.list_threads(folder=folder, unread=unread, limit=limit)
+    finally:
+        # Close after the read so the truncation flag isn't lost; the
+        # rendering below uses only the already-fetched dataclasses.
         db.close()
+
+    # Build a small filter caption so the agent knows what's filtered out.
+    caption_bits = []
+    if folder is not None:
+        caption_bits.append(f"folder={folder}")
+    if unread is True:
+        caption_bits.append("unread only")
+    elif unread is False:
+        caption_bits.append("read only")
+    caption = f" ({', '.join(caption_bits)})" if caption_bits else ""
+
+    if not threads:
+        print(f"No email threads found{caption}.")
         return
 
-    for row in rows:
-        tid, subj, sender, count, updated = row
-        print(f"{tid}  \"{subj}\"  from {sender}  {count} msg{'s' if count != 1 else ''}  {updated[:10]}")
+    n = len(threads)
+    suffix = "+" if truncated else ""
+    if caption or truncated:
+        # Always show the count when filtered or truncated so the agent can
+        # distinguish "all N results" from "first N of more".
+        header = f"{n}{suffix} thread{'s' if n != 1 else ''}{caption}:"
+        print(header)
+    for t in threads:
+        plural = "s" if t.message_count != 1 else ""
+        print(
+            f"{t.thread_id}  \"{t.subject}\"  from {t.last_sender}  "
+            f"{t.message_count} msg{plural}  {t.updated_at[:10]}"
+        )
 
+    if truncated:
+        print("")
+        print(f"(more results exist — pass --limit {limit * 2} to see more)")
     print("")
     print('email thread "<thread_id>" | email reply "<thread_id>" "<body>"')
 
-    db.close()
+
+def cmd_inbox(config, limit=20):
+    """Show the agent's to-do list: threads with unread messages in INBOX.
+
+    This is the focused view — anything archived, trashed, or already read
+    is filtered out. Use ``email threads`` with no filters to see everything.
+    """
+    cmd_threads(config, limit=limit, folder="INBOX", unread=True)
 
 
 # --- Format a single email as Markdown ---
@@ -1240,93 +1328,79 @@ def _format_email_md(direction, sender, recipient, cc, subject, date, body, emai
 
 def cmd_thread_detail(config, thread_id, raw=False):
     """Show all emails in a thread as Markdown (or raw HTML with --raw)."""
-    db = get_email_db(config)
-
-    thread = db.execute("SELECT * FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
-    if not thread:
-        print(f"Thread {thread_id} not found.", file=sys.stderr)
+    db = open_email_db(config)
+    try:
+        thread = db.get_thread(thread_id)
+        if thread is None:
+            print(f"Thread {thread_id} not found.", file=sys.stderr)
+            sys.exit(1)
+        emails = db.list_thread_emails(thread_id)
+    finally:
         db.close()
-        sys.exit(1)
-
-    cols = [d[0] for d in db.execute("SELECT * FROM threads LIMIT 0").description]
-    tdata = dict(zip(cols, thread))
-
-    emails = db.execute("""
-        SELECT id, direction, sender, recipient, cc, subject, created_at, body, body_html
-        FROM emails WHERE thread_id = ? ORDER BY created_at
-    """, (thread_id,)).fetchall()
 
     # Thread header
-    participants = json.loads(tdata["participants"])
-    print(f"# {tdata['subject']}")
+    print(f"# {thread.subject}")
     print(f"")
     print(f"**Thread:** {thread_id}  ")
-    print(f"**Messages:** {tdata['message_count']}  ")
-    print(f"**Participants:** {', '.join(participants)}  ")
-    print(f"**Last updated:** {tdata['updated_at']}")
+    print(f"**Messages:** {thread.message_count}  ")
+    print(f"**Participants:** {', '.join(thread.participants)}  ")
+    print(f"**Last updated:** {thread.updated_at}")
     print("")
 
     if not emails:
         print("*(no messages)*")
-        db.close()
         return
 
-    # Print each email
     for e in emails:
-        eid, direction, sender, recipient, cc, subject, date, body, body_html = e
-        if raw and body_html:
-            print(f"<!-- Email #{eid} from {sender} ({date}) -->")
-            print(body_html)
+        if raw and e.body_html:
+            print(f"<!-- Email #{e.id} from {e.sender} ({e.created_at}) -->")
+            print(e.body_html)
             print("")
         else:
-            print(_format_email_md(direction, sender, recipient, cc, subject, date, body, email_id=eid))
+            print(_format_email_md(
+                e.direction, e.sender, e.recipient, e.cc, e.subject,
+                e.created_at, e.body, email_id=e.id,
+            ))
         print("---")
         print("")
 
     print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
-
-    db.close()
 
 
 # --- READ single email command ---
 
 def cmd_read_email(config, email_id, raw=False):
     """Read a single email by its ID."""
-    db = get_email_db(config)
-
-    email = db.execute("""
-        SELECT id, thread_id, direction, sender, recipient, cc, subject, created_at, body, body_html
-        FROM emails WHERE id = ?
-    """, (email_id,)).fetchone()
-
-    if not email:
-        print(f"Email #{email_id} not found.", file=sys.stderr)
+    db = open_email_db(config)
+    try:
+        email = db.get_email(email_id)
+    finally:
         db.close()
+
+    if email is None:
+        print(f"Email #{email_id} not found.", file=sys.stderr)
         sys.exit(1)
 
-    eid, thread_id, direction, sender, recipient, cc, subject, date, body, body_html = email
+    if raw and email.body_html:
+        print(email.body_html)
+        return
 
-    if raw and body_html:
-        print(body_html)
+    print(f"# {email.subject}")
+    print("")
+    arrow = "→ Sent" if email.direction == "out" else "← Received"
+    print(f"**{arrow}**  ")
+    if email.direction == "out":
+        print(f"**To:** {email.recipient}  ")
     else:
-        print(f"# {subject}")
-        print("")
-        arrow = "→ Sent" if direction == "out" else "← Received"
-        print(f"**{arrow}**  ")
-        if direction == "out":
-            print(f"**To:** {recipient}  ")
-        else:
-            print(f"**From:** {sender}  ")
-        if cc:
-            print(f"**Cc:** {cc}  ")
-        print(f"**Date:** {date}  ")
-        print(f"**Thread:** {thread_id}  ")
-        print("")
-        print(body or "*(empty)*")
-        print("")
-        print(f"Reply to this thread with: email reply \"{thread_id}\" \"<body>\"")
-
-    db.close()
+        print(f"**From:** {email.sender}  ")
+    if email.cc:
+        print(f"**Cc:** {email.cc}  ")
+    print(f"**Date:** {email.created_at}  ")
+    print(f"**Thread:** {email.thread_id}  ")
+    print("")
+    print(email.body or "*(empty)*")
+    print("")
+    print(f"Reply to this thread with: email reply \"{email.thread_id}\" \"<body>\"")
 
 
 # --- Main CLI ---
@@ -1337,18 +1411,25 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  email-addon.py poll --once          # Check IMAP once
-  email-addon.py poll                 # Continuous via IMAP IDLE
-  email-addon.py send alice@x.com "Subject" "Body text"
+  email-addon.py poll --once                 # Check IMAP once
+  email-addon.py poll                        # Continuous via IMAP IDLE
+  email-addon.py send alice@x.com "Subject" "Body"
   email-addon.py send alice@x.com "Subject" "Body" --cc bob@x.com --bcc carol@x.com
-  email-addon.py reply <thread_id> "Reply body"             # Reply-all (auto CCs the thread's CC list)
+  email-addon.py reply <thread_id> "Reply body"             # Reply-all (auto CCs)
   email-addon.py reply <thread_id> "Reply body" --no-cc     # Reply only to sender
-  email-addon.py reply <thread_id> "Reply body" --cc new@x.com  # Custom CC list
-  email-addon.py threads              # List all threads
-  email-addon.py thread <thread_id>   # Thread detail (Markdown)
-  email-addon.py thread <id> --raw    # Thread detail (raw HTML)
-  email-addon.py read <email_id>      # Read single email (Markdown)
-  email-addon.py read <id> --raw      # Read single email (raw HTML)
+  email-addon.py inbox                       # Unread threads in INBOX (to-do list)
+  email-addon.py threads                     # All threads (any folder, any state)
+  email-addon.py threads --folder Archive    # Threads currently in Archive
+  email-addon.py threads --unread            # Threads with at least one unread msg
+  email-addon.py thread <thread_id>          # Thread detail (Markdown)
+  email-addon.py read <email_id>             # Read single email
+  email-addon.py mark-read <id|thread_id>    # Mark read (syncs to IMAP \\Seen)
+  email-addon.py mark-unread <id|thread_id>  # Mark unread
+  email-addon.py archive <id|thread_id>      # Move to Archive folder
+  email-addon.py spam <id|thread_id>         # Move to Junk/Spam
+  email-addon.py delete <id|thread_id>       # Move to Trash
+  email-addon.py move <id|thread_id> <folder>  # Move to a specific folder
+  email-addon.py folders                     # List server folders + role mapping
         """,
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1382,10 +1463,25 @@ Examples:
     p_reply.add_argument("--no-cc", dest="no_cc", action="store_true",
                         help="Don't CC anyone — reply only to the sender")
 
-    # threads / inbox (alias)
-    for _cmd in ("threads", "inbox"):
-        _p = sub.add_parser(_cmd, help="List email threads" + (" (alias for 'threads')" if _cmd == "inbox" else ""))
-        _p.add_argument("--limit", type=int, default=20, help="Max threads to show")
+    # threads — generic listing with folder + read-state filters
+    p_threads = sub.add_parser("threads", help="List email threads (filterable)")
+    p_threads.add_argument("--limit", type=int, default=20, help="Max threads to show")
+    p_threads.add_argument("--folder", metavar="NAME",
+                           help="Filter to threads with msgs in this folder "
+                                "(INBOX, Archive, Junk, Trash, ...)")
+    state = p_threads.add_mutually_exclusive_group()
+    state.add_argument("--unread", action="store_true",
+                       help="Only show threads with at least one unread message")
+    state.add_argument("--read", action="store_true",
+                       help="Only show threads where every incoming message is read")
+
+    # inbox — focused shortcut: unread threads in INBOX (the agent's to-do list)
+    p_inbox = sub.add_parser(
+        "inbox",
+        help="Unread threads in INBOX (focused to-do view; shortcut for "
+             "`threads --folder INBOX --unread`)",
+    )
+    p_inbox.add_argument("--limit", type=int, default=20, help="Max threads to show")
 
     # thread detail
     p_thread = sub.add_parser("thread", help="Show full thread (Markdown or --raw HTML)")
@@ -1396,6 +1492,28 @@ Examples:
     p_read = sub.add_parser("read", help="Read a single email by ID (Markdown or --raw HTML)")
     p_read.add_argument("email_id", type=int, help="Email ID (shown as #N in thread view)")
     p_read.add_argument("--raw", action="store_true", help="Output raw HTML instead of Markdown")
+
+    # mark-read / mark-unread / archive / spam / delete share the same arg shape
+    for verb, _help in (
+        ("mark-read",   "Mark email(s) read (syncs IMAP \\Seen)"),
+        ("mark-unread", "Mark email(s) unread (clears IMAP \\Seen)"),
+        ("archive",     "Move email(s) to the Archive folder"),
+        ("spam",        "Move email(s) to the Junk/Spam folder"),
+        ("delete",      "Move email(s) to the Trash folder (soft delete)"),
+    ):
+        _p = sub.add_parser(verb, help=_help)
+        _p.add_argument("ident", metavar="ID_OR_THREAD",
+                        help="Numeric email id, or thread_id (applies to all "
+                             "incoming messages in the thread)")
+
+    # generic move
+    p_move = sub.add_parser("move", help="Move email(s) to a specific folder")
+    p_move.add_argument("ident", metavar="ID_OR_THREAD",
+                        help="Numeric email id or thread_id")
+    p_move.add_argument("folder", help="Destination folder (role name or literal)")
+
+    # folders listing
+    sub.add_parser("folders", help="List server folders and role mapping")
 
     args = parser.parse_args()
     config = load_config()
@@ -1417,11 +1535,36 @@ Examples:
                   cc=args.cc or None, bcc=args.bcc or None,
                   no_cc=args.no_cc)
 
-    elif args.command in ("threads", "inbox"):
-        cmd_threads(config, limit=args.limit)
+    elif args.command == "threads":
+        unread = True if args.unread else (False if args.read else None)
+        cmd_threads(config, limit=args.limit, folder=args.folder, unread=unread)
+
+    elif args.command == "inbox":
+        cmd_inbox(config, limit=args.limit)
 
     elif args.command == "thread":
         cmd_thread_detail(config, args.thread_id, raw=args.raw)
+
+    elif args.command == "mark-read":
+        cmd_mark_read(config, args.ident)
+
+    elif args.command == "mark-unread":
+        cmd_mark_unread(config, args.ident)
+
+    elif args.command == "archive":
+        cmd_archive(config, args.ident)
+
+    elif args.command == "spam":
+        cmd_spam(config, args.ident)
+
+    elif args.command == "delete":
+        cmd_delete(config, args.ident)
+
+    elif args.command == "move":
+        cmd_move(config, args.ident, args.folder)
+
+    elif args.command == "folders":
+        cmd_folders(config)
 
     elif args.command == "read":
         cmd_read_email(config, args.email_id, raw=args.raw)
