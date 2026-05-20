@@ -113,9 +113,19 @@ size: {
 // Content width = 15840 - left margin - right margin (uses the long edge)
 ```
 
+### Non-ASCII / Internationalization
+
+DOCX is UTF-8 internally and `docx-js` handles Unicode (Umlauts ÄÖÜß, accents, CJK) without extra configuration — pass strings as-is in `new TextRun("Universität München")`. The risks are at conversion boundaries, not inside docx-js itself:
+
+- **Pandoc**: pass `--from=markdown+smart` and ensure source files are UTF-8. If you see mojibake (`Ã¤` for `ä`), the source was read as Latin-1 — re-read with explicit encoding.
+- **LibreOffice (soffice)**: `--convert-to docx:"MS Word 2007 XML"` preserves UTF-8; the legacy `MS Word 97` filter does not. Always target the `.docx` filter for round-trips.
+- **Reading source text in Python**: always `open(path, encoding="utf-8")`. Default encoding on Linux containers is UTF-8 but Windows hosts default to cp1252.
+- **XML emergency entities** (for unpacked editing when a character won't round-trip): `&#196;` Ä · `&#214;` Ö · `&#220;` Ü · `&#228;` ä · `&#246;` ö · `&#252;` ü · `&#223;` ß
+- **Arial covers** Latin-1, Latin-Extended-A, and common diacritics. For CJK, Cyrillic, or Greek output, switch to a font with the required coverage (e.g. "Noto Sans", "DejaVu Sans") rather than relying on Arial.
+
 ### Styles (Override Built-in Headings)
 
-Use Arial as the default font (universally supported). Keep titles black for readability.
+Use Arial as the default font (universally supported for Latin scripts including Umlauts and common European diacritics). Keep titles black for readability.
 
 ```javascript
 const doc = new Document({
