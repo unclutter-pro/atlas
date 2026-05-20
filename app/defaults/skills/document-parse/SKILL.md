@@ -113,6 +113,24 @@ lit parse document.pdf --config liteparse.config.json
 
 ---
 
+## Non-ASCII / Internationalization
+
+OCR is the main source of Umlaut/diacritic corruption — Tesseract defaults to English and will misread `ä` as `a` or `ö` as `6`. Always set the language explicitly for non-English documents:
+
+```bash
+# Single language
+lit parse vertrag.pdf --ocr-language deu
+
+# Multiple languages (e.g. German + English in one document)
+lit parse mixed.pdf --ocr-language "deu+eng"
+```
+
+Common ISO codes: `deu` (German), `fra` (French), `spa` (Spanish), `ita` (Italian), `por` (Portuguese), `nld` (Dutch), `pol` (Polish), `rus` (Russian), `jpn` (Japanese), `chi_sim`/`chi_tra` (Chinese). For higher accuracy on Umlaut-heavy material, route to a stronger backend via `--ocr-server-url` (PaddleOCR, EasyOCR).
+
+**Reading the output**: `lit` writes UTF-8. When loading the result in Python use `open(path, encoding="utf-8")` — never rely on the platform default. If you see `Ã¤` / `Ã¶` / `Ã¼` in output, the file was decoded as Latin-1; re-read with explicit UTF-8.
+
+**Embedded text PDFs**: `--no-ocr` skips OCR entirely and pulls the embedded text layer, which is already correctly encoded — preferred when the PDF is digital-native.
+
 ## Supported Input Formats
 
 | Category | Formats |

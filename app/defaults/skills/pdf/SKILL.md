@@ -186,6 +186,32 @@ squared = Paragraph("x<super>2</super> + y<super>2</super>", styles['Normal'])
 
 For canvas-drawn text (not Paragraph objects), manually adjust font the size and position rather than using Unicode subscripts/superscripts.
 
+#### Non-ASCII Characters (Umlauts, Accents, Cyrillic, CJK)
+
+**IMPORTANT**: ReportLab's built-in fonts (`Helvetica`, `Times-Roman`, `Courier`) only encode WinAnsi (≈Latin-1). Characters outside that range — including some compositions and most non-Latin scripts — fail silently or render as black boxes. German Umlauts (ÄÖÜäöüß) are inside Latin-1 so usually render, but anything broader requires a Unicode TTF.
+
+**Register a Unicode TTF for safety**:
+```python
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+# DejaVuSans ships with most Linux distros at /usr/share/fonts/truetype/dejavu/
+pdfmetrics.registerFont(TTFont("DejaVuSans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
+pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+
+# Canvas
+c.setFont("DejaVuSans", 12)
+c.drawString(100, 700, "Universität München — Größenänderung — Ωmega — 北京")
+
+# Paragraph stylesheets
+from reportlab.lib.styles import ParagraphStyle
+style = ParagraphStyle("body", fontName="DejaVuSans", fontSize=11, leading=14)
+```
+
+**Reading source text**: always `open(path, encoding="utf-8")` — implicit decoding can mangle Umlauts on non-UTF-8 hosts.
+
+**XML emergency entities** for inline Paragraph markup when a literal character won't paste cleanly: `&#196;` Ä · `&#214;` Ö · `&#220;` Ü · `&#228;` ä · `&#246;` ö · `&#252;` ü · `&#223;` ß
+
 ## Command-Line Tools
 
 ### pdftotext (poppler-utils)

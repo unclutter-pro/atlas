@@ -10,6 +10,17 @@ license: Proprietary. LICENSE.txt has complete terms
 
 ### Professional Font
 - Use a consistent, professional font (e.g., Arial, Times New Roman) for all deliverables unless otherwise instructed by the user
+- Arial and Times New Roman both cover Latin-1 including German Umlauts (ÄÖÜäöüß) and common European diacritics. For CJK/Cyrillic/Greek deliverables switch to a font with the required script coverage.
+
+### Non-ASCII / Internationalization
+- `.xlsx` is UTF-8 internally — openpyxl writes Umlauts, accents, and CJK without extra setup. Pass strings as-is.
+- **Reading source text**: `open(path, encoding="utf-8")`. Default differs by platform; never rely on the implicit default.
+- **CSV / TSV export**: always set `encoding="utf-8-sig"`. The BOM keeps Excel-on-Windows from misinterpreting UTF-8 as cp1252 (the classic `Ã¤` for `ä` bug).
+  ```python
+  df.to_csv("out.csv", index=False, encoding="utf-8-sig")
+  # openpyxl-native write needs no encoding kwarg; the BOM trick is CSV-only.
+  ```
+- **Reading CSV** produced by Excel: try `encoding="utf-8-sig"` first to strip the BOM, then fall back to `cp1252` for legacy German exports.
 
 ### Zero Formula Errors
 - Every Excel model MUST be delivered with ZERO formula errors (#REF!, #DIV/0!, #VALUE!, #N/A, #NAME?)
