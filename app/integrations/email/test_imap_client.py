@@ -17,6 +17,8 @@ from imap_client import (
     UID_BATCH,
     ImapClient,
     ImapError,
+    _expand_uid_set,
+    _parse_copyuid,
     parse_list_response,
 )
 
@@ -509,6 +511,149 @@ class TestMove:
         mail.uid.return_value = ("NO", [b"folder gone"])
         with pytest.raises(ImapError):
             _client(mail).move("INBOX", [42], "Archive")
+
+    def test_returns_copyuid_mapping_on_move(self):
+        """RFC 6851: ``UID MOVE`` populates COPYUID with the dest UIDs.
+        ``move()`` exposes that mapping so callers can rebind their stored
+        imap_uid to the new value. Without this, the next triage targets
+        a stale UID that no longer exists in the new folder.
+        """
+        mail = _make_mail(capabilities=b"IMAP4rev1 MOVE IDLE")
+        mail.response.return_value = ("COPYUID", [b"1777024610 42 7"])
+        result = _client(mail).move("INBOX", [42], "Archive")
+        assert result == {42: 7}
+
+    def test_returns_copyuid_mapping_on_copy_fallback(self):
+        """Same contract on the fallback path: COPY also emits COPYUID."""
+        mail = _make_mail(capabilities=b"IMAP4rev1 IDLE")  # no MOVE
+        mail.response.return_value = ("COPYUID", [b"1777024610 42 7"])
+        result = _client(mail).move("INBOX", [42], "Archive")
+        assert result == {42: 7}
+
+    def test_returns_empty_dict_when_uidplus_absent(self):
+        """Servers without UIDPLUS return no COPYUID — surface an empty
+        dict so the caller can clear the stale UID rather than guess."""
+        mail = _make_mail(capabilities=b"IMAP4rev1 MOVE IDLE")
+        mail.response.return_value = ("COPYUID", [])
+        result = _client(mail).move("INBOX", [42], "Archive")
+        assert result == {}
+
+    def test_fallback_rolls_back_deleted_flag_on_expunge_failure(self):
+        """COPY+STORE+EXPUNGE is not atomic. If EXPUNGE fails after a
+        successful COPY+STORE, the source is left in an ambiguous state
+        (\\Deleted but not yet expunged). We attempt a best-effort
+        ``STORE -FLAGS \\Deleted`` to undo the half-move so a retry
+        doesn't create a third copy in the destination.
+        """
+        mail = _make_mail(capabilities=b"IMAP4rev1 IDLE")  # COPY fallback
+        mail.expunge.return_value = ("NO", [b"quota exceeded"])
+        with pytest.raises(ImapError):
+            _client(mail).move("INBOX", [42], "Archive")
+        # Look for the rollback STORE — the +FLAGS one always runs first,
+        # the -FLAGS one runs only on the rollback path.
+        flag_ops = [
+            c for c in mail.uid.call_args_list
+            if c.args[0] == "STORE" and "-FLAGS" in c.args
+        ]
+        assert flag_ops, (
+            "rollback STORE -FLAGS \\Deleted must run when EXPUNGE fails — "
+            "otherwise the source remains tombstoned and the retry creates "
+            "a third copy in the destination"
+        )
+
+    def test_fallback_rollback_swallows_its_own_errors(self):
+        """The rollback is best-effort: if even the un-flag STORE fails,
+        we still surface the *original* EXPUNGE failure, not the cleanup
+        failure — the user needs to know about the half-move first.
+        """
+        mail = _make_mail(capabilities=b"IMAP4rev1 IDLE")
+        # COPY ok, +FLAGS ok, EXPUNGE fails, -FLAGS also fails
+        mail.expunge.return_value = ("NO", [b"quota exceeded"])
+        calls = []
+
+        def uid_side_effect(verb, *args):
+            calls.append(verb)
+            if verb == "STORE" and "-FLAGS" in args:
+                raise OSError("connection reset")
+            return ("OK", [b""])
+
+        mail.uid.side_effect = uid_side_effect
+        with pytest.raises(ImapError) as exc_info:
+            _client(mail).move("INBOX", [42], "Archive")
+        # The surfaced error is the EXPUNGE one, not the rollback error
+        assert "EXPUNGE" in str(exc_info.value) or "quota" in str(exc_info.value)
+
+
+class TestCopyUidParser:
+    """``_parse_copyuid`` decodes IMAP COPYUID into ``{src: dst}`` pairs.
+
+    Robust against malformed inputs, range expansion, and the bracketed
+    form some servers embed in the OK response line.
+    """
+
+    def test_single_pair(self):
+        assert _parse_copyuid(("COPYUID", [b"1777024610 42 7"])) == {42: 7}
+
+    def test_positional_list(self):
+        assert _parse_copyuid(("COPYUID", [b"1777024610 42,43,44 7,8,9"])) == {
+            42: 7, 43: 8, 44: 9,
+        }
+
+    def test_range_expansion(self):
+        assert _parse_copyuid(("COPYUID", [b"1 10:12 100:102"])) == {
+            10: 100, 11: 101, 12: 102,
+        }
+
+    def test_mixed_singletons_and_ranges(self):
+        assert _parse_copyuid(("COPYUID", [b"1 5,10:11 100,200:201"])) == {
+            5: 100, 10: 200, 11: 201,
+        }
+
+    def test_bracketed_form(self):
+        """Some servers return ``[COPYUID …]`` inside the OK line."""
+        assert _parse_copyuid(b"[COPYUID 1 5 100]") == {5: 100}
+
+    def test_string_payload(self):
+        assert _parse_copyuid("COPYUID 1 5 100") == {5: 100}
+
+    def test_empty_response(self):
+        assert _parse_copyuid(("COPYUID", [])) == {}
+
+    def test_mismatched_lengths_returns_empty(self):
+        """If src and dst counts differ, refuse to guess — clearing imap_uid
+        is safer than pairing the wrong UIDs.
+        """
+        assert _parse_copyuid(("COPYUID", [b"1 5,6,7 100"])) == {}
+
+    def test_garbage_returns_empty(self):
+        assert _parse_copyuid(("COPYUID", [b"not enough"])) == {}
+
+    def test_none_returns_empty(self):
+        assert _parse_copyuid(None) == {}
+
+
+class TestExpandUidSet:
+    def test_single(self):
+        assert _expand_uid_set("5") == [5]
+
+    def test_list(self):
+        assert _expand_uid_set("1,3,5") == [1, 3, 5]
+
+    def test_range(self):
+        assert _expand_uid_set("10:13") == [10, 11, 12, 13]
+
+    def test_mixed(self):
+        assert _expand_uid_set("1,10:12,20") == [1, 10, 11, 12, 20]
+
+    def test_reversed_range(self):
+        """Servers should never emit reversed ranges, but tolerate them."""
+        assert _expand_uid_set("13:10") == [10, 11, 12, 13]
+
+    def test_empty(self):
+        assert _expand_uid_set("") == []
+
+    def test_skips_garbage(self):
+        assert _expand_uid_set("1,foo,3") == [1, 3]
 
 
 # ── Context manager ─────────────────────────────────────────────────────────

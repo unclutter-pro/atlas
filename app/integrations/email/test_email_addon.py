@@ -110,6 +110,11 @@ def imap(monkeypatch):
     # Tests override these per-case.
     client.search_new.return_value = []
     client.fetch_peek_many.return_value = {}
+    # ``move()`` now returns a {src_uid: dst_uid} mapping (COPYUID — RFC
+    # 4315 / 6851). Default to an empty mapping so triage tests that don't
+    # care about the new UID still pass; tests that assert the rebind
+    # override this per-case.
+    client.move.return_value = {}
     # Context-manager support: ``with _imap_client(cfg) as imap:``
     client.__enter__ = MagicMock(return_value=client)
     client.__exit__ = MagicMock(return_value=False)
@@ -168,6 +173,18 @@ class TestCleanSubject:
 
     def test_case_insensitive(self):
         assert email_addon._clean_subject("re: Hello") == "Hello"
+
+    def test_pathological_prefix_chain_does_not_recurse(self):
+        """A subject with 200 ``Re:`` prefixes used to crash the entire
+        poll mid-ingestion (Python recursion limit ~1000, plus stack
+        frames from the recursive call). Iterative replacement must
+        handle this without RecursionError.
+        """
+        pathological = ("Re: " * 200) + "Hello"
+        assert email_addon._clean_subject(pathological) == "Hello"
+
+    def test_mixed_prefix_chain(self):
+        assert email_addon._clean_subject("Re: Fwd: AW: WG: Subject") == "Subject"
 
 
 class TestParseAddressList:
@@ -1010,6 +1027,42 @@ class TestCmdArchive:
         email_addon.cmd_delete(CONFIG, "1")
         assert imap.move.call_args.args[2] == "Trash"
 
+    def test_rebinds_imap_uid_from_copyuid_response(self, db_dir, imap):
+        """After MOVE, the row's imap_uid must point at the destination UID
+        (parsed from COPYUID — RFC 4315 / 6851). Without this, chained
+        triage (archive → un-archive) targets the stale source UID and
+        silently no-ops while the DB claims success.
+        """
+        _seed_one_incoming(uid=42)
+        # Server reports the source UID 42 landed as UID 7 in Archive
+        imap.move.return_value = {42: 7}
+        email_addon.cmd_archive(CONFIG, "1")
+        conn = _open_db(db_dir)
+        row = conn.execute(
+            "SELECT folder, imap_uid FROM emails WHERE id=1"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "Archive"
+        assert row[1] == 7, "imap_uid must be rebound to the COPYUID-reported new UID"
+
+    def test_clears_imap_uid_when_uidplus_missing(self, db_dir, imap):
+        """Servers without UIDPLUS return no COPYUID; the stale source UID
+        is meaningless in the destination folder, so we clear imap_uid.
+        Future triage then fails loudly ("no stored UID") instead of
+        silently no-op'ing against a UID that doesn't exist in the new
+        folder.
+        """
+        _seed_one_incoming(uid=42)
+        imap.move.return_value = {}  # No COPYUID — UIDPLUS-less server
+        email_addon.cmd_archive(CONFIG, "1")
+        conn = _open_db(db_dir)
+        row = conn.execute(
+            "SELECT folder, imap_uid FROM emails WHERE id=1"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "Archive"
+        assert row[1] is None, "imap_uid must be cleared when UIDPLUS is unavailable"
+
 
 class TestCmdMove:
     def test_move_to_logical_role_resolves_via_discovery(self, db_dir, imap):
@@ -1135,7 +1188,23 @@ class TestSurfaceOutgoingSkip:
         out = capsys.readouterr().out
         assert "Marked 2" in out
         assert "2 outgoing" in out
-        assert "skipped" in out
+
+    def test_mark_read_thread_with_pre_migration_rows_notes_db_only(
+        self, db_dir, imap, capsys
+    ):
+        """Pre-migration incoming rows have imap_uid=NULL — mark-read can't
+        flip the server flag for those. We still mirror them in the DB so
+        the agent's view stays consistent, but the user needs to know the
+        server's \\Seen state is unchanged for that subset (otherwise the
+        webmail-vs-agent discrepancy is invisible).
+        """
+        # 1 incoming with UID + 1 incoming pre-migration (no UID)
+        _seed_mixed_thread([("in", 10), ("in", None)])
+        email_addon.cmd_mark_read(CONFIG, "mixed")
+        out = capsys.readouterr().out
+        assert "Marked 2" in out
+        assert "1 of those had no stored UID" in out
+        assert "server state unchanged" in out
 
     def test_archive_thread_with_outgoing_notes_skip(self, db_dir, imap, capsys):
         _seed_mixed_thread([("in", 10), ("out", None)])
@@ -1323,6 +1392,19 @@ class TestCmdThreadsFilters:
         assert "inbox-unread" in out
         assert "inbox-read" not in out
         assert "archived" not in out
+
+    def test_folder_sent_explains_outgoing_only_gotcha(self, db_dir, capsys):
+        """``--folder Sent`` always returns empty because the filter only
+        matches *incoming* messages — outgoing (``direction='out'``) rows
+        aren't surfaced here. Without an explicit hint, the user just sees
+        an empty list and has no idea why their sent mail is missing.
+        """
+        self._seed_filterable(db_dir)
+        email_addon.cmd_threads(CONFIG, folder="Sent")
+        out = capsys.readouterr().out
+        assert "No email threads found" in out
+        assert "incoming" in out.lower()
+        assert "outgoing" in out.lower()
 
     def test_filter_caption_in_header(self, db_dir, capsys):
         self._seed_filterable(db_dir)
@@ -1533,6 +1615,85 @@ class TestPollerStoresImapState:
         row = conn.execute("SELECT is_read FROM emails WHERE direction='in'").fetchone()
         conn.close()
         assert row[0] == 1  # server said seen → DB agrees
+
+    def test_set_seen_failure_leaves_db_unread_to_match_server(self, db_dir, monkeypatch):
+        """IMAP-first contract: if the post-fetch ``set_seen`` STORE fails,
+        the DB rows must stay ``is_read=0`` to match the server's reality.
+        The previous behaviour committed ``is_read=1`` before the STORE was
+        attempted, so a failure left the DB permanently claiming "read"
+        while the server still showed unread — and the UID watermark
+        prevented any reconciliation.
+        """
+        self._patch_side_effects(monkeypatch)
+        client = MagicMock()
+        client.search_new.return_value = [10, 11]
+        client.fetch_peek_many.return_value = {
+            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x"), False)
+            for uid in (10, 11)
+        }
+        client.set_seen.side_effect = email_addon.ImapError(
+            "IMAP UID STORE +FLAGS \\Seen on 2 UIDs in INBOX failed: NO quota"
+        )
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            email_addon._fetch_new_emails(client, db, dict(CONFIG))
+        finally:
+            db.close()
+        conn = _open_db(db_dir)
+        rows = conn.execute(
+            "SELECT is_read FROM emails WHERE direction='in' ORDER BY id"
+        ).fetchall()
+        conn.close()
+        assert [r[0] for r in rows] == [0, 0], (
+            "DB must mirror server reality when set_seen fails — "
+            "permanent divergence behind the UID watermark is the bug"
+        )
+
+    def test_set_seen_success_flips_db_to_read(self, db_dir, monkeypatch):
+        """Happy path: when set_seen succeeds, the DB rows flip to is_read=1
+        after the IMAP STORE confirms.
+        """
+        self._patch_side_effects(monkeypatch)
+        client = MagicMock()
+        client.search_new.return_value = [10, 11]
+        client.fetch_peek_many.return_value = {
+            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x"), False)
+            for uid in (10, 11)
+        }
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            email_addon._fetch_new_emails(client, db, dict(CONFIG))
+        finally:
+            db.close()
+        conn = _open_db(db_dir)
+        rows = conn.execute(
+            "SELECT is_read FROM emails WHERE direction='in' ORDER BY id"
+        ).fetchall()
+        conn.close()
+        assert [r[0] for r in rows] == [1, 1]
+
+    def test_polled_email_records_configured_folder_not_inbox_literal(
+        self, db_dir, monkeypatch
+    ):
+        """``folder`` column must reflect the actual polled folder, not the
+        previously-hardcoded ``"INBOX"`` literal. Anyone polling a non-INBOX
+        folder would otherwise have all triage commands fail because
+        ``UID MOVE`` would target the wrong source folder.
+        """
+        self._patch_side_effects(monkeypatch)
+        client = self._client(self._build_raw())
+        cfg = dict(CONFIG, folder="Work")
+        db = email_addon.open_email_db(cfg)
+        try:
+            email_addon._fetch_new_emails(client, db, cfg)
+        finally:
+            db.close()
+        conn = _open_db(db_dir)
+        row = conn.execute(
+            "SELECT folder FROM emails WHERE direction='in'"
+        ).fetchone()
+        conn.close()
+        assert row[0] == "Work"
 
     def test_expunged_uid_silently_skipped(self, db_dir, monkeypatch):
         """If a UID was expunged between SEARCH and FETCH the batched fetch

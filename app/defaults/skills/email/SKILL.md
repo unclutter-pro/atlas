@@ -89,16 +89,16 @@ Email is configured in `~/config.yml` under the `email:` section:
 
 ```yaml
 email:
-  imap_host: "mailcow.mail.svc.cluster.local"  # IMAP server
-  imap_port: 143                                 # 993 for TLS, 143 for STARTTLS
-  imap_starttls: true                            # Use STARTTLS on port 143
-  smtp_host: "mailcow.mail.svc.cluster.local"   # SMTP server
-  smtp_port: 587                                  # SMTP submission port
-  username: "agent@ai.unclutter.pro"             # Email address
+  imap_host: "imap.example.com"     # IMAP server (e.g. imap.gmail.com)
+  imap_port: 993                     # 993 for TLS, 143 for STARTTLS
+  imap_starttls: false               # true when using port 143
+  smtp_host: "smtp.example.com"     # SMTP server (e.g. smtp.gmail.com)
+  smtp_port: 587                     # SMTP submission port
+  username: "atlas@example.com"     # Email address
   password_file: "/home/agent/secrets/email-password"
-  ssl_verify: false                               # false for self-signed certs
+  ssl_verify: true                   # set false only for self-signed certs
   folder: "INBOX"
-  whitelist: []                                   # Empty = accept all
+  whitelist: []                      # Empty = accept all
   mark_read: true
 
   # Optional: pin server folder names for the role lookup. Most servers

@@ -136,13 +136,22 @@ def open_email_db(config, *, db_dir: str | None = None) -> "EmailDb":
 
 # --- Thread helpers ---
 
+_PREFIX_RE = re.compile(r"^(?:Re|Fwd|Fw|AW|WG)\s*:\s*", re.IGNORECASE)
+
+
 def _clean_subject(subject):
-    """Strip Re:/Fwd:/AW:/WG: prefixes and whitespace for comparison."""
-    cleaned = re.sub(r"^(?:Re|Fwd|Fw|AW|WG)\s*:\s*", "", subject.strip(), flags=re.IGNORECASE)
-    # Recurse in case of multiple prefixes like "Re: Fwd: ..."
-    if cleaned != subject.strip():
-        return _clean_subject(cleaned)
-    return cleaned
+    """Strip Re:/Fwd:/AW:/WG: prefixes and whitespace for comparison.
+
+    Iterative — a recursive version would hit Python's default recursion
+    limit (~1000) on pathological subjects like ``"Re: Re: Re: …"`` and
+    crash the entire poll mid-message-ingestion.
+    """
+    current = subject.strip()
+    while True:
+        stripped = _PREFIX_RE.sub("", current)
+        if stripped == current:
+            return current
+        current = stripped
 
 
 def extract_thread_id(msg, db: "EmailDb | None" = None):
@@ -273,6 +282,8 @@ def get_body(msg):
     plain_body = None
     html_body = None
 
+    msg_id_hint = msg.get("Message-ID", "<no-id>").strip()
+
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
@@ -287,7 +298,16 @@ def get_body(msg):
                 if not payload:
                     continue
                 decoded = payload.decode(charset, errors="replace")
-            except Exception:
+            except Exception as e:
+                # One bad part shouldn't lose the whole message — but a
+                # silent skip used to lose the *only* readable part for
+                # malformed senders. Log per part so the agent can
+                # investigate empty-body deliveries.
+                print(
+                    f"[get_body] WARN: skipping {ct} part of {msg_id_hint} — "
+                    f"{type(e).__name__}: {e}",
+                    flush=True,
+                )
                 continue
             if ct == "text/plain" and plain_body is None:
                 plain_body = decoded
@@ -302,8 +322,15 @@ def get_body(msg):
                 if msg.get_content_type() == "text/html":
                     return _html_to_text(decoded), decoded
                 return decoded, ""
-        except Exception:
-            pass
+        except Exception as e:
+            # Single-part decode failure used to return ("","") with no
+            # trace — the agent would see an empty-body trigger and have
+            # no way to know the content was lost. Log loudly.
+            print(
+                f"[get_body] WARN: failed to decode {msg.get_content_type()} "
+                f"body for {msg_id_hint} ({type(e).__name__}: {e})",
+                flush=True,
+            )
         return "", ""
 
     # If we have both, use plain unless it looks truncated
@@ -475,6 +502,7 @@ def _fetch_new_emails(imap, db, config):
     max_uid = last_uid
     trigger_queue = []      # Collect triggers to fire after all emails stored
     mark_seen_uids = []     # Collect UIDs to mark \Seen in one batched call
+    mark_seen_row_ids = []  # Parallel list of DB row ids — flipped is_read=1 only after set_seen confirms
     processed = 0
 
     # Single batched FETCH — chunked internally at UID_BATCH=100. This
@@ -521,11 +549,13 @@ def _fetch_new_emails(imap, db, config):
         # mark-read/archive/spam/delete commands can later target this message
         # via UID STORE / UID MOVE without re-fetching anything.
         _, sender_addr = emaillib.utils.parseaddr(sender)
-        # Effective read state: respect what the server says now, but if
-        # mark_read=true we'll flip the server (and DB) to read after storage.
+        # Mirror the server's current read state at insert time. If mark_read=true
+        # we'll flip both server (UID STORE \Seen) and the DB rows to read after
+        # this loop — but only after IMAP confirms, so a STORE failure can never
+        # leave the DB lying about state the server didn't accept.
         will_mark_read = bool(config.get("mark_read", True))
-        initial_is_read = 1 if (server_is_read or will_mark_read) else 0
-        db.insert_incoming_email(
+        initial_is_read = 1 if server_is_read else 0
+        row_id = db.insert_incoming_email(
             thread_id=thread_id,
             message_id=message_id_hdr,
             sender_addr=sender_addr,
@@ -534,7 +564,7 @@ def _fetch_new_emails(imap, db, config):
             body=body,
             body_html=body_html,
             imap_uid=uid_int,
-            folder="INBOX",
+            folder=folder,
             is_read=initial_is_read,
         )
 
@@ -580,20 +610,32 @@ def _fetch_new_emails(imap, db, config):
         payload = json.dumps(payload_data)
         trigger_queue.append((payload, thread_id))
 
-        if will_mark_read:
+        # Only flag for STORE \Seen if the server doesn't already say so; this
+        # avoids no-op STOREs but, more importantly, lets the on-failure DB
+        # state match server truth for any UID we ever touched.
+        if will_mark_read and not server_is_read:
             mark_seen_uids.append(uid_int)
+            mark_seen_row_ids.append(row_id)
 
         max_uid = max(max_uid, uid_int)
         processed += 1
 
     # One batched STORE for all newly-fetched messages instead of one per UID
     # — the client chunks for us, so this is also safe for huge inboxes.
+    # IMAP-first contract: the DB rows are written as is_read=0 above (server
+    # truth at fetch time). We only flip them to is_read=1 *after* set_seen
+    # confirms — a NO/timeout here leaves the DB matching the server, so the
+    # user's webmail and the agent's view stay consistent (no permanent
+    # divergence behind the UID watermark).
     if mark_seen_uids:
         try:
             imap.set_seen(folder, mark_seen_uids, seen=True)
+            db.set_emails_is_read(mark_seen_row_ids, is_read=True)
         except ImapError as e:
-            # Non-fatal: messages are stored locally; the next poll's
-            # UID-watermark search keeps us from re-processing them.
+            # Non-fatal: messages are stored locally as unread (matching the
+            # server). The next poll's UID-watermark search keeps us from
+            # re-processing them; the user can still see them in `email inbox`
+            # since they remain in the unread filter.
             print(f"[{datetime.now()}] {e}")
 
     # Persist UID state
@@ -778,8 +820,15 @@ def cmd_poll_idle(config):
                     # Timeout — send NOOP to keep connection alive, then re-enter IDLE
                     try:
                         imap.noop()
-                    except Exception:
-                        print(f"[{datetime.now()}] NOOP failed, reconnecting...")
+                    except Exception as e:
+                        # Surface the actual cause: an AUTHENTICATIONFAILED
+                        # after token expiry looks identical to a TLS teardown
+                        # in the old "NOOP failed, reconnecting..." log, and
+                        # we'd happily loop reconnecting with expired creds.
+                        print(
+                            f"[{datetime.now()}] NOOP failed "
+                            f"({type(e).__name__}: {e}), reconnecting..."
+                        )
                         break  # Will reconnect in outer loop
 
             # Clean disconnect
@@ -1074,7 +1123,8 @@ def _do_read_state(config, ident, mark_read):
             )
             sys.exit(1)
 
-        with_uid = [t for t in in_rows if t.imap_uid is not None]
+        with_uid    = [t for t in in_rows if t.imap_uid is not None]
+        without_uid = [t for t in in_rows if t.imap_uid is None]
         if with_uid:
             try:
                 with _imap_client(config) as imap:
@@ -1094,9 +1144,22 @@ def _do_read_state(config, ident, mark_read):
 
         verb = "read" if mark_read else "unread"
         n = len(in_rows)
+        # Be explicit about which rows were server-side vs DB-only.
+        # Pre-migration rows (no stored imap_uid) can't be IMAP-flipped
+        # — we still mirror them in the DB so the agent's view stays
+        # consistent, but the user needs to know the server's \Seen
+        # state for those rows hasn't changed. This matches the
+        # ``archive``/``move`` flow where UID-less rows are explicitly
+        # called out instead of being silently bypassed.
+        db_only_note = ""
+        if without_uid:
+            db_only_note = (
+                f" {len(without_uid)} of those had no stored UID "
+                "(pre-migration) — DB updated, server state unchanged."
+            )
         print(
             f"Marked {n} email{'s' if n != 1 else ''} {verb}."
-            f"{_skip_note(out_rows)}"
+            f"{db_only_note}{_skip_note(out_rows)}"
         )
     finally:
         db.close()
@@ -1162,6 +1225,11 @@ def _do_move(config, ident, role_or_folder):
             sys.exit(1)
 
         dest = None
+        # Per-source-folder {src_uid: dst_uid} mappings from COPYUID. We
+        # scope by source folder because UIDs are folder-local — the same
+        # numeric UID can exist independently in INBOX and Archive, so a
+        # flat dict would alias them.
+        per_folder_uid_map: dict = {}
         try:
             with _imap_client(config) as imap:
                 folder_map = imap.discover_folders()
@@ -1175,16 +1243,28 @@ def _do_move(config, ident, role_or_folder):
                     sys.exit(1)
                 # One move() per source folder. The client chunks large
                 # UID sets and uses UID MOVE → COPY+STORE+EXPUNGE fallback
-                # transparently.
-                for folder, group in _group_by_folder(with_uid).items():
+                # transparently. move() returns the COPYUID-derived
+                # {src_uid: dst_uid} map so we can rebind each row's
+                # imap_uid below — chained triage (archive → un-archive)
+                # would otherwise target the stale source UID.
+                for src_folder, group in _group_by_folder(with_uid).items():
                     uids = [t.imap_uid for t in group]
-                    imap.move(folder, uids, dest)
+                    per_folder_uid_map[src_folder] = imap.move(
+                        src_folder, uids, dest
+                    )
         except ImapError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # Only reached on IMAP success.
-        db.set_emails_folder([t.id for t in with_uid], folder=dest)
+        # Only reached on IMAP success. Rebind folder + imap_uid per row,
+        # scoped to the row's original source folder. When the server
+        # doesn't advertise UIDPLUS the per-folder map is empty — we then
+        # clear imap_uid so a follow-up triage fails loudly ("no stored
+        # UID") instead of silently no-op'ing against a UID that no
+        # longer exists in the new folder.
+        for t in with_uid:
+            new_uid = per_folder_uid_map.get(t.folder, {}).get(t.imap_uid)
+            db.set_email_folder_and_uid(t.id, folder=dest, imap_uid=new_uid)
         db.commit()
         n = len(with_uid)
         print(
@@ -1270,6 +1350,16 @@ def cmd_threads(config, limit=20, folder=None, unread=None):
 
     if not threads:
         print(f"No email threads found{caption}.")
+        # Filter semantics gotcha: the folder filter only matches *incoming*
+        # messages, so ``--folder Sent`` always returns empty — the user's
+        # own sent mail sits in outgoing rows that this view doesn't surface.
+        # Tell them explicitly instead of letting them stare at an empty list.
+        if folder and folder.lower() in ("sent", "drafts"):
+            print(
+                f"  (note: --folder filters by *incoming* messages only — "
+                f"your outgoing mail lives in direction='out' rows and "
+                f"isn't reachable through this view.)"
+            )
         return
 
     n = len(threads)

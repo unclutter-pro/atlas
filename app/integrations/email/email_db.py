@@ -291,11 +291,20 @@ class EmailDb:
         # unindexed compound-filter UPDATE and grab a write lock for
         # nothing.
         if self._get_state("backfill_outgoing_folder_v1") != "done":
+            # Run the UPDATE *and* the gate write in a single explicit
+            # transaction, then commit before the gate is set persistent.
+            # The old order (UPDATE + _set_state("done") + … + commit)
+            # could persist the gate via an implicit auto-commit from a
+            # subsequent CREATE INDEX while the UPDATE was still pending
+            # — a crash in that narrow window would leave the gate at
+            # "done" with no actual backfill applied.
             self._conn.execute(
                 "UPDATE emails SET folder = 'Sent' "
                 "WHERE direction = 'out' AND folder = 'INBOX' AND imap_uid IS NULL"
             )
+            self._conn.commit()
             self._set_state("backfill_outgoing_folder_v1", "done")
+            self._conn.commit()
 
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_emails_folder     ON emails(folder)"
@@ -709,6 +718,23 @@ class EmailDb:
         self._conn.execute(
             f"UPDATE emails SET folder = ? WHERE id IN ({placeholders})",
             [folder] + ids,
+        )
+
+    def set_email_folder_and_uid(
+        self, row_id: int, folder: str, imap_uid: Optional[int]
+    ) -> None:
+        """Atomic folder + UID rebind for one row after an IMAP MOVE.
+
+        Captures the new UID the server assigned in the destination folder
+        (parsed from COPYUID — RFC 4315 / 6851). When the server doesn't
+        advertise UIDPLUS and no mapping was returned, the caller passes
+        ``imap_uid=None`` to clear the now-stale UID — subsequent triage
+        commands then fail loudly (``no stored UID``) rather than silently
+        no-op'ing against a UID that no longer exists in the new folder.
+        """
+        self._conn.execute(
+            "UPDATE emails SET folder = ?, imap_uid = ? WHERE id = ?",
+            (folder, imap_uid, row_id),
         )
 
     # --- State ------------------------------------------------------------

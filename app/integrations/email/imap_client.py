@@ -178,6 +178,74 @@ def _ok(status_data, op_desc):
     return data
 
 
+def _expand_uid_set(uid_set: str) -> List[int]:
+    """Expand an IMAP UID set (``"5,10:12"``) into a flat ``[5, 10, 11, 12]``.
+
+    Handles single ids, comma lists, and inclusive ranges. The IMAP wildcard
+    ``*`` is left unresolved (it must be substituted by the server in
+    COPYUID/MOVEUID responses, so we never see it here in practice).
+    """
+    out: List[int] = []
+    for part in uid_set.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            lo_s, hi_s = part.split(":", 1)
+            try:
+                lo, hi = int(lo_s), int(hi_s)
+            except ValueError:
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            out.extend(range(lo, hi + 1))
+        else:
+            try:
+                out.append(int(part))
+            except ValueError:
+                continue
+    return out
+
+
+def _parse_copyuid(raw) -> dict:
+    """Parse a ``COPYUID`` response into ``{src_uid: dst_uid}``.
+
+    RFC 4315 / 6851 format::
+
+        COPYUID <uidvalidity> <src-uid-set> <dst-uid-set>
+
+    Both sets are positional, so we zip them after range-expansion. Returns
+    an empty dict if the response is missing or malformed — the caller's
+    fallback path (Message-ID reconciliation or imap_uid=NULL) takes over.
+
+    ``raw`` accepts either the tuple ``(code, [bytes])`` returned by
+    ``imaplib.IMAP4.response()`` or a single bytes/str payload.
+    """
+    payload = None
+    if isinstance(raw, tuple) and len(raw) == 2 and raw[1]:
+        first = raw[1][0]
+        if isinstance(first, (bytes, bytearray)):
+            payload = first.decode("utf-8", errors="replace")
+    elif isinstance(raw, (bytes, bytearray)):
+        payload = raw.decode("utf-8", errors="replace")
+    elif isinstance(raw, str):
+        payload = raw
+    if not payload:
+        return {}
+    # Tolerate the bracketed form some servers return inside the OK line.
+    payload = payload.strip().strip("[]")
+    if payload.upper().startswith("COPYUID "):
+        payload = payload[len("COPYUID "):]
+    parts = payload.split()
+    if len(parts) < 3:
+        return {}
+    src_uids = _expand_uid_set(parts[1])
+    dst_uids = _expand_uid_set(parts[2])
+    if len(src_uids) != len(dst_uids):
+        return {}
+    return dict(zip(src_uids, dst_uids))
+
+
 # ── IDLE protocol helpers (RFC 2177) ────────────────────────────────────────
 
 def _read_until_tag(mail, tag, max_lines=50):
@@ -390,7 +458,16 @@ class ImapClient:
         all_names: List[str] = []
         try:
             status, lines = self._mail.list()
-        except Exception:
+        except Exception as e:
+            # LIST is best-effort: we'll fall back to Dovecot defaults below.
+            # Log the failure though — otherwise a wrong-folder MOVE later
+            # ("Junk doesn't exist; the server calls it SPAM") looks like a
+            # destination error with no trace of LIST having quietly failed.
+            print(
+                f"[imap_client] WARN: LIST failed ({type(e).__name__}: {e}) — "
+                "falling back to default folder names",
+                flush=True,
+            )
             status, lines = ("NO", [])
         if status == "OK" and lines:
             for line in lines:
@@ -505,37 +582,70 @@ class ImapClient:
                 f"UID STORE {flag_op} \\Seen on {len(batch)} UIDs in {folder}",
             )
 
-    def move(self, src_folder: str, uids: List[int], dest_folder: str) -> None:
+    def move(self, src_folder: str, uids: List[int], dest_folder: str) -> dict:
         """Move ``uids`` from ``src_folder`` to ``dest_folder`` server-side.
+
+        Returns ``{src_uid: dst_uid}`` for every UID the server reported a
+        new identity for (via COPYUID — RFC 4315 / 6851). Servers without
+        UIDPLUS return an empty mapping; the caller should then clear
+        ``imap_uid`` on those rows so subsequent triage commands fail loudly
+        rather than silently no-op'ing against a stale source UID.
 
         Prefers ``UID MOVE`` (RFC 6851); transparently falls back to
         ``UID COPY`` + ``UID STORE +FLAGS \\Deleted`` + ``EXPUNGE`` for
         servers that don't advertise MOVE. Both paths chunk large UID
         sets to stay under server command-line limits.
 
+        Atomicity: on the COPY+STORE+EXPUNGE fallback, a failure after the
+        successful COPY attempts a best-effort ``STORE -FLAGS \\Deleted``
+        on the source UIDs to undo the half-move. The COPY in the
+        destination remains (we can't un-COPY) — but at least the source
+        copy isn't tombstoned. Without this, a partial failure leaves the
+        message in *both* folders and a subsequent retry creates a third
+        copy. The original ``ImapError`` is always re-raised.
+
         Idempotent when ``src_folder == dest_folder`` (no-op).
         """
         if not uids or src_folder == dest_folder:
-            return
+            return {}
         self.select(src_folder)
         use_move = self.supports_move()
+        result: dict = {}
         for batch in _chunked(uids, UID_BATCH):
             uid_set = ",".join(str(u) for u in batch)
+            # Clear any stale COPYUID from a prior command so the next
+            # response() call returns only this batch's mapping.
+            self._mail.response("COPYUID")
             if use_move:
                 _ok(
                     self._mail.uid("MOVE", uid_set, dest_folder),
                     f"UID MOVE {len(batch)} → {dest_folder}",
                 )
+                result.update(_parse_copyuid(self._mail.response("COPYUID")))
             else:
                 _ok(
                     self._mail.uid("COPY", uid_set, dest_folder),
                     f"UID COPY {len(batch)} → {dest_folder}",
                 )
-                _ok(
-                    self._mail.uid("STORE", uid_set, "+FLAGS", "\\Deleted"),
-                    f"UID STORE \\Deleted on {len(batch)}",
-                )
-                _ok(self._mail.expunge(), "EXPUNGE")
+                result.update(_parse_copyuid(self._mail.response("COPYUID")))
+                try:
+                    _ok(
+                        self._mail.uid("STORE", uid_set, "+FLAGS", "\\Deleted"),
+                        f"UID STORE \\Deleted on {len(batch)}",
+                    )
+                    _ok(self._mail.expunge(), "EXPUNGE")
+                except ImapError:
+                    # Half-move: COPY landed in dest but the source is in an
+                    # ambiguous state (possibly \Deleted, definitely not
+                    # expunged). Attempt to unflag so the source row survives.
+                    # Swallow rollback errors — we'll surface the original
+                    # failure either way.
+                    try:
+                        self._mail.uid("STORE", uid_set, "-FLAGS", "\\Deleted")
+                    except Exception:
+                        pass
+                    raise
+        return result
 
     # --- IDLE (RFC 2177) --------------------------------------------------
 
