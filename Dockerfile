@@ -91,7 +91,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && claude --version \
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse \
-  # --- Beads (bd) — AI-native task management ---
+  # --- Beads (bd) — kept available so existing sessions can migrate themselves.
+  #     Hooks no longer invoke it; the `task` CLI is the system path.
   && npm i -g @beads/bd@0.63.3 \
   # --- RTK (Rust Token Killer) — CLI proxy for 60-90% token savings ---
   && RTK_VERSION="0.38.0" \

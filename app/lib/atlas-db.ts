@@ -178,6 +178,64 @@ function createTables(database: Database): void {
   // Migration: drop pending_trigger_messages if it exists (replaced by socket-based injection)
   database.exec(`DROP TABLE IF EXISTS pending_trigger_messages`);
   database.exec(`DROP INDEX IF EXISTS idx_pending_trigger_messages`);
+
+  // Task management: goals, tasks, dependency graph, and validation audit log
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      done_condition TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'done', 'abandoned', 'validation_exhausted')),
+      validation_count INTEGER NOT NULL DEFAULT 0,
+      trigger_name TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      closed_at TEXT,
+      close_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_goals_session_status
+      ON goals(trigger_name, session_key, status);
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'open'
+        CHECK(status IN ('open', 'in_progress', 'done', 'cancelled')),
+      priority INTEGER NOT NULL DEFAULT 2 CHECK(priority BETWEEN 0 AND 4),
+      goal_id INTEGER REFERENCES goals(id) ON DELETE CASCADE,
+      trigger_name TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      claimed_by TEXT,
+      claimed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      closed_at TEXT,
+      close_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_session_status
+      ON tasks(trigger_name, session_key, status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_goal ON tasks(goal_id);
+
+    CREATE TABLE IF NOT EXISTS task_deps (
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      depends_on INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      PRIMARY KEY (task_id, depends_on),
+      CHECK (task_id != depends_on)
+    );
+
+    CREATE TABLE IF NOT EXISTS goal_validations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+      attempt INTEGER NOT NULL,
+      verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'exhausted')),
+      feedback TEXT,
+      duration_ms INTEGER,
+      started_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
 }
 
 function migrateSchema(database: Database): void {
@@ -372,12 +430,21 @@ function migrateSchema(database: Database): void {
   }
 
   // --- v3 migration: Drop tasks table (no longer used — triggers orchestrate via Agent tool) ---
-  const tasksTableExists = database.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'"
-  ).get();
-  if (tasksTableExists) {
+  // Note: v4 (task-management) re-creates a tasks table with a richer schema — the old
+  // ephemeral tasks table had no goal_id, no deps, and no priority column. If a DB was
+  // created after v3 and already has the new tasks table, we leave it alone; the
+  // CREATE TABLE IF NOT EXISTS in createTables() is the guard for new DBs.
+  const tasksV3Exists = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+  ).get() as { sql: string } | undefined;
+  if (tasksV3Exists && !tasksV3Exists.sql.includes("goal_id")) {
+    // Old ephemeral tasks table without goal_id — drop so the new schema can be created
     database.exec("DROP TABLE tasks");
   }
+
+  // --- v4 migration: ensure task-management tables exist ---
+  // Goals, tasks, task_deps, goal_validations are created by createTables() via
+  // CREATE TABLE IF NOT EXISTS. No destructive migration needed on new columns.
 
   // --- v5 migration: drop subagent rows and clean up subagent-specific schema ---
   // Subagent cost is now aggregated into the parent trigger row via JSONL scanning.

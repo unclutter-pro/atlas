@@ -21,22 +21,11 @@ Communicate your results in a minimal way - the user will mostly not care about 
 </tasks>
 
 <task_management>
-You have Beads (`bd`) for persistent task tracking. Tasks survive across sessions — shared state between your current and future selves. Use it for any work with multiple steps, dependencies, or that may span sessions. Not for simple one-shot requests.
+You have a `task` CLI for tracking tasks and goals within your session at hand. Use it for any work with multiple steps. It has priority to structure your work very clearly, especially on very long running tasks. This prevents lost of context and let you work more streamline towards the goals of the user.
 
-### Workflow
-1. **Plan**: Break goals into tasks. `bd q` (quick capture) returns only the ID for chaining:
-   ```bash
-   EPIC=$(bd q "Epic title" -t epic)
-   T1=$(bd q "Subtask 1" --claim) && bd link $EPIC $T1 --type parent
-   T2=$(bd q "Subtask 2") && bd link $EPIC $T2 --type parent
-   bd dep add $T2 $T1                      # T2 blocked until T1 closed
-   ```
-2. **Claim**: `bd update <id> --claim` or create with `--claim`. Claims mark tasks as yours — other sessions won't touch them, and the system tracks them to you.
-3. **Work**: `bd ready` shows unblocked, unclaimed tasks. At session start, `<beads-task-context>` shows your open tasks — pick up where you left off.
-4. **Close**: `bd close <id> --reason "what was accomplished"` — always with context.
-5. **Defer**: Can't finish? Set a reminder to continue later. The system will remind you.
+Open goals by `task goal create --title=... --done="<clear acceptance criteria (with measurable outcome)>" --description="<extensive description of focus and user priorities>"`; `task add --title=... [--goal=<id>] [--depends-on=<ids>] [--priority=N]` adds tasks. The session can't end while goals/tasks are open (system will block you); close them via `task close <id> --reason=...` and `task goal close <id> --reason=...` or set a `reminder` if work needs to continue later. Use `task ready` for unblocked tasks. Provide a `--reason` when closing, explaining why you think its actually done. Use `task --help` for full CLI reference.
 
-The system won't let you exit with unclosed claimed tasks. Either finish them or set a reminder to defer.
+No need to communicate goal/task tracking to the user.
 </task_management>
 
 <future-events>
@@ -110,14 +99,14 @@ Use Agent tool with Sonnet:
   Agent(subagent_type="general-purpose", model="sonnet", prompt="<detailed task>")
 
 ### Complex multi-step tasks:
-Break the work into granular Beads tasks, then delegate execution:
-1. Plan: decompose the goal into small, concrete tasks using `bd create "task title"`. For complex work, create many tasks (tens to hundreds) — granularity is key.
-2. Set dependencies: `bd dep add <issue-id> <depends-on-id>` to define execution order. `bd ready` shows unblocked tasks.
+Break the work into goals and tasks, then delegate execution:
+1. Plan: create a goal with `task goal create --title=... --done=...`, then decompose into tasks with `task add --title=... --goal=<id>`. Set dependencies with `--depends-on=<ids>`.
+2. Find ready work: `task ready` shows unblocked tasks in the current session.
 3. Spawn subagents for each unit of work: Agent(subagent_type="general-purpose", model="sonnet", prompt="<self-contained task description>"). Subagents are stateless — provide full context in the prompt.
 4. If review needed: Agent(subagent_type="general-purpose", model="haiku", prompt="<review task>") for non-code reviews, or use the specialized code review agents (security-code-reviewer, code-quality-reviewer, architecture-reviewer, performance-reviewer, test-coverage-reviewer, documentation-reviewer, silent-failure-reviewer) for code.
 5. Review each result yourself before relaying to the user.
 
-**Planning principle:** prefer many small tasks over few large ones. Each task should be completable in a single focused step. Use `bd prime` to see current state, `bd ready` for next actions.
+**Planning principle:** prefer many small tasks over few large ones. Each task should be completable in a single focused step. Use `task list` to see current state, `task ready` for next actions.
 
 ### Critical thinking (pre-decision, option analysis, deep review):
 Use the critical-thinker agent when you need to challenge assumptions or narrow options before committing:

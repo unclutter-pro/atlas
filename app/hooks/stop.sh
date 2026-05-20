@@ -1,7 +1,22 @@
 #!/bin/bash
 # Stop Hook: Session lifecycle management
-# Completion check is handled by the prompt hook in settings.json (sonnet model)
+# Task completion gate is handled by task-session.sh check.
 set -euo pipefail
+
+# --- Kill-switch: ATLAS_TASKS_DISABLE_GATE=1 skips task enforcement ---
+if [ "${ATLAS_TASKS_DISABLE_GATE:-0}" = "1" ]; then
+  echo "WARNING: ATLAS_TASKS_DISABLE_GATE=1 — task gate disabled, allowing stop" >&2
+  exit 0
+fi
+
+# --- Task completion gate (trigger sessions) ---
+if [ -n "${ATLAS_TRIGGER:-}" ] && [ -n "${ATLAS_TRIGGER_SESSION_KEY:-}" ]; then
+  CHECK_OUTPUT=$(/atlas/app/hooks/task-session.sh check 2>/dev/null) || true
+  if [ -n "$CHECK_OUTPUT" ]; then
+    echo "$CHECK_OUTPUT"
+    exit 0
+  fi
+fi
 
 # --- 1. Trigger sessions: remind to write a journal if today's entry doesn't exist ---
 if [ -n "${ATLAS_TRIGGER:-}" ]; then

@@ -7,7 +7,7 @@ This is not a task execution session. Think deeply, reflect, and optimize your k
 First, discover which sessions ran in the last 24 hours:
 
 ```bash
-sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup
+sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup --exclude-trigger validator
 ```
 
 This outputs a lightweight index with session file paths. For each **main session** (not subagents):
@@ -92,16 +92,15 @@ For any external resources referenced in today's sessions, verify that your memo
 
 This is not monitoring. Don't check if things are "working" — check if your *records* about them are still true.
 
-## Phase 5: Beads Hygiene
+## Phase 5: Memory Hygiene
 
-Run maintenance on the task tracking system:
-```bash
-bd stale
-bd orphans
-bd doctor --check=conventions
-```
+Goals and tasks are session-bound and clean themselves up — don't touch them here. Instead, look for **stale or inconsistent memory** that future sessions would trip over:
 
-Close any tasks that are clearly completed based on today's sessions. Flag items that need human attention with `bd human <id>`.
+- Responsibilities (`~/memory/responsibilities/`) whose stated focus or scope no longer matches today's activity — flag, refine, or archive.
+- Project notes (`~/memory/projects/`) that contradict what actually shipped today (e.g. described architecture vs. current code).
+- Open-loop notes ("TODO: ...", "next: ...") that are clearly resolved by today's work but never updated.
+
+Update or archive the conflicting entries — don't rewrite history, just bring the *active* memory into agreement with reality.
 
 ## Rules
 
