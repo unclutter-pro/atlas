@@ -292,27 +292,20 @@ fi
 # ── Phase 6: Initialize SQLite DB ──
 echo "[$(date)] Phase 6: Database init"
 DB="$WORKSPACE/.index/atlas.db"
-FIRST_DB=false
-if [ ! -f "$DB" ]; then
-  FIRST_DB=true
-fi
 
 # Always run canonical schema init + migrations (idempotent)
 bun -e "import { initDb } from '/atlas/app/lib/atlas-db'; initDb();" || {
   echo "  ⚠ Database init via bun failed (non-fatal)"
 }
 
-# Seed default trigger on first run
-if [ "$FIRST_DB" = true ] && [ -f "$DB" ]; then
-  sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt) VALUES (
-    'daily-cleanup', 'cron', 'Daily memory flush and session cleanup', 'internal', '0 6 * * *', '');"
-  echo "  Database initialized with default trigger"
-else
-  echo "  Database ready (schema + migrations applied)"
-fi
+echo "  Database ready (schema + migrations applied)"
 
-# Migration: remove legacy memory-cleanup trigger (replaced by dreaming)
-sqlite3 "$DB" "DELETE FROM triggers WHERE name = 'memory-cleanup';" 2>/dev/null || true
+# Migration: remove legacy triggers replaced by static crontab scripts / dreaming.
+# - daily-cleanup: ran an empty-prompt Claude session twice daily; the actual
+#   DB/JSONL pruning is done by app/triggers/cron/daily-cleanup.sh from the
+#   static crontab, not via a trigger session.
+# - memory-cleanup: replaced by the dreaming trigger.
+sqlite3 "$DB" "DELETE FROM triggers WHERE name IN ('daily-cleanup', 'memory-cleanup');" 2>/dev/null || true
 
 # Ensure dreaming trigger exists (nightly memory consolidation — replaces legacy memory-cleanup)
 sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, schedule, prompt, session_mode) VALUES (

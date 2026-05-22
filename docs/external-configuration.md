@@ -200,10 +200,10 @@ curl -s http://localhost:8080/api/v1/sessions?limit=20
 curl -s http://localhost:8080/api/v1/triggers
 
 # Toggle a trigger on/off
-curl -s -X POST http://localhost:8080/api/v1/triggers/daily-cleanup/toggle
+curl -s -X POST http://localhost:8080/api/v1/triggers/dreaming/toggle
 
 # Fire a trigger manually
-curl -s -X POST http://localhost:8080/api/v1/triggers/daily-cleanup/run
+curl -s -X POST http://localhost:8080/api/v1/triggers/dreaming/run
 ```
 
 ---
