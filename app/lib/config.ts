@@ -194,6 +194,7 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_EMAIL_FOLDER", path: "email.folder", type: "string" },
   { env: "ATLAS_EMAIL_WHITELIST", path: "email.whitelist", type: "string[]" },
   { env: "ATLAS_EMAIL_MARK_READ", path: "email.mark_read", type: "boolean" },
+  { env: "ATLAS_EMAIL_IDLE_TIMEOUT", aliases: ["EMAIL_IDLE_TIMEOUT"], path: "email.idle_timeout", type: "number" },
   { env: "ATLAS_DAILY_CLEANUP_ENABLED", path: "daily_cleanup.enabled", type: "boolean" },
   { env: "ATLAS_DAILY_CLEANUP_RETENTION_DAYS", path: "daily_cleanup.retention_days", type: "number" },
   { env: "ATLAS_DAILY_CLEANUP_METRICS_RETENTION_DAYS", path: "daily_cleanup.metrics_retention_days", type: "number" },

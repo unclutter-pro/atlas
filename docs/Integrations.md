@@ -180,6 +180,16 @@ email:
   folder: "INBOX"
   whitelist: ["alice@example.com", "example.org"]   # or empty
   mark_read: true
+
+  # Optional: pin folder names for archive/spam/delete/move. Auto-discovered
+  # via IMAP SPECIAL-USE (RFC 6154) for Mailcow, Gmail, Outlook, iCloud,
+  # Fastmail. Only set if your server uses non-standard names.
+  # folders:
+  #   archive: "Archive"
+  #   junk:    "Junk"          # Gmail: "[Gmail]/Spam"
+  #   trash:   "Trash"         # Outlook: "Deleted Items"
+  #   sent:    "Sent"
+  #   drafts:  "Drafts"
 ```
 
 **2. Store password**:
@@ -235,28 +245,69 @@ stderr_logfile_backups=1
 
 ### CLI Usage
 
+**Composing**
+
 ```bash
-# Reply to an existing thread (uses proper In-Reply-To + References headers)
+# Send a new email (--cc / --bcc / --attach are repeatable)
+email send alice@example.com "Subject" "Body"
+email send alice@example.com "Subject" "Body" --cc bob@x.com --bcc audit@x.com
+
+# Reply to a thread (reply-all by default — auto CCs the thread's CC list)
 email reply <thread_id> "Reply body"
-
-# Send a new email
-email send alice@example.com "Subject line" "Body text"
-
-# List tracked threads
-email threads
-
-# Show thread detail (participants, message history)
-email thread <thread_id>
-email thread <thread_id> --raw    # Output raw HTML instead of Markdown
-
-# Read a single email by ID
-email read <email_id>
-email read <email_id> --raw       # Output raw HTML instead of Markdown
-
-# Poll IMAP for new emails (background)
-email poll --once
-email poll                       # continuous mode
+email reply <thread_id> "Reply body" --no-cc         # Reply only to sender
+email reply <thread_id> "Reply body" --cc new@x.com  # Custom CC list
 ```
+
+**Inbox triage** — every command accepts a single email id or a thread_id (thread_id applies to all incoming messages in the thread).
+
+```bash
+# Focused to-do list: threads with unread messages in INBOX
+email inbox
+
+# Generic listing with filters
+email threads                          # All threads (any folder, any state)
+email threads --folder INBOX           # Threads currently in INBOX
+email threads --folder Archive         # Archived threads
+email threads --unread                 # Threads with at least one unread msg
+email threads --read                   # Threads where every incoming msg is read
+
+# Read state (synced to IMAP \Seen)
+email mark-read   <id|thread_id>
+email mark-unread <id|thread_id>
+
+# Folder moves (synced via IMAP UID MOVE)
+email archive <id|thread_id>           # Move to Archive
+email spam    <id|thread_id>           # Move to Junk/Spam
+email delete  <id|thread_id>           # Move to Trash (soft delete)
+email move    <id|thread_id> <folder>  # Move to a specific folder
+
+# Discover server folders + role mapping
+email folders
+```
+
+**Reading**
+
+```bash
+email thread <thread_id>          # Full thread (Markdown)
+email thread <thread_id> --raw    # Raw HTML
+email read <email_id>             # Single email by #N from thread view
+email read <email_id> --raw       # Raw HTML
+```
+
+**Polling (background)**
+
+```bash
+email poll --once   # one-shot
+email poll          # continuous via IMAP IDLE (supervisord)
+```
+
+### Folders and read/unread
+
+The addon mirrors the standard IMAP mental model: every incoming message lives in a folder (INBOX, Archive, Junk, Trash, …) and carries a read/unread flag. All triage commands sync changes to the IMAP server via `UID STORE` / `UID MOVE`, so the user's webmail stays in agreement.
+
+Folder name discovery uses IMAP `SPECIAL-USE` (RFC 6154), which Mailcow/Dovecot, Gmail, Outlook, iCloud, and Fastmail all advertise — there's no hard-coded folder list. Use `email folders` to inspect what the connected server reports. Override individual roles via the optional `folders:` config block above when a server uses non-standard names.
+
+The poller uses `BODY.PEEK[]` so it never auto-marks fetched messages as read; the explicit `mark_read: true` config controls whether the server-side `\Seen` flag is set after storage.
 
 ### Email Database
 
@@ -264,11 +315,11 @@ Each configured account gets its own SQLite database at `~/.index/email/<usernam
 
 | Table | Purpose |
 |-------|---------|
-| `threads` | Thread state: subject, last_message_id, references_chain, participants, message_count |
-| `emails` | All emails (in + out): sender, recipient, subject, body, thread association |
+| `threads` | Thread state: subject, last_message_id, references_chain, last_cc, participants, message_count |
+| `emails` | All emails (in + out) with `imap_uid`, `folder`, `is_read`, `cc` — every column needed to sync state back to IMAP |
 | `state` | Key-value state (e.g., `last_uid` for IMAP polling position) |
 
-Legacy JSON thread files (`email-threads/*.json`) and UID state are automatically migrated on first run.
+Legacy databases are migrated in place on first run: new columns (`imap_uid`, `is_read`, `folder`, `cc`, `last_cc`, `body_html`) are added idempotently and outgoing rows are backfilled to `folder = 'Sent'`.
 
 ### Email Thread Tracking
 

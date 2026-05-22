@@ -61,8 +61,12 @@ All config.yml values can be overridden via `ATLAS_*` environment variables.
 | `ATLAS_EMAIL_SMTP_PORT` | `email.smtp_port` | `587` |
 | `ATLAS_EMAIL_USERNAME` | `email.username` | `""` |
 | `ATLAS_EMAIL_PASSWORD_FILE` | `email.password_file` | `"$HOME/secrets/email-password"` |
+| `ATLAS_EMAIL_FOLDER` | `email.folder` | `"INBOX"` |
 | `ATLAS_EMAIL_WHITELIST` | `email.whitelist` | `[]` (comma-separated) |
 | `ATLAS_EMAIL_MARK_READ` | `email.mark_read` | `true` |
+| `ATLAS_EMAIL_IDLE_TIMEOUT` | `email.idle_timeout` | `1500` (seconds; cap on IMAP IDLE before NOOP) |
+
+The optional `email.folders` block (per-role server folder overrides for archive / junk / trash / sent / drafts) is config-file only — there are no env-var overrides because the values are rarely needed (IMAP SPECIAL-USE auto-discovery handles Mailcow, Gmail, Outlook, iCloud, and Fastmail out of the box). Set it in `~/config.yml` when the server uses non-standard folder names.
 
 ### Other
 
