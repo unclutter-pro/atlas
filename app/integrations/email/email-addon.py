@@ -568,6 +568,13 @@ def _fetch_new_emails(imap, db, config):
             is_read=initial_is_read,
         )
 
+        # 2a. Persist attachment metadata so display commands (email read /
+        # email thread) can surface them — without this row, an
+        # attachment-only message looks empty to the agent even though the
+        # bytes are sitting on disk.
+        if attachments:
+            db.insert_attachments(row_id, attachments)
+
         # 2b. Save as searchable file
         save_email_file(thread_id, sender, subject, msg.get("Date", ""), body, attachments)
 
@@ -1394,8 +1401,18 @@ def cmd_inbox(config, limit=20):
 
 # --- Format a single email as Markdown ---
 
-def _format_email_md(direction, sender, recipient, cc, subject, date, body, email_id=None):
-    """Format a single email as clean Markdown."""
+def _format_email_md(
+    direction, sender, recipient, cc, subject, date, body,
+    email_id=None, attachments=None,
+):
+    """Format a single email as clean Markdown.
+
+    ``attachments`` is an optional iterable of ``Attachment`` rows (or any
+    object with ``.filename``, ``.content_type``, ``.size``, ``.path``).
+    When present, they're rendered under the body so callers always see
+    that bytes came in — critical for attachment-only messages whose body
+    would otherwise look empty.
+    """
     arrow = "→" if direction == "out" else "←"
     who = f"**To:** {recipient}" if direction == "out" else f"**From:** {sender}"
     lines = []
@@ -1409,7 +1426,24 @@ def _format_email_md(direction, sender, recipient, cc, subject, date, body, emai
         lines.append(f"**Cc:** {cc}  ")
     lines.append(f"**Date:** {date}  ")
     lines.append("")
-    lines.append(body or "*(empty)*")
+    # Normalise to a list so we can len() it twice without exhausting an
+    # iterator. Empty list and None both mean "no attachments".
+    atts = list(attachments) if attachments else []
+    # Be explicit about "empty body + N attachments" so the agent never
+    # mistakes an attachment-only message for nothing.
+    if not body and atts:
+        lines.append(
+            f"*(empty body — {len(atts)} attachment(s) below)*"
+        )
+    else:
+        lines.append(body or "*(empty)*")
+    if atts:
+        lines.append("")
+        lines.append("**Attachments:**")
+        for a in atts:
+            lines.append(
+                f"- {a.filename} ({a.content_type}, {a.size} bytes) — `{a.path}`"
+            )
     lines.append("")
     return "\n".join(lines)
 
@@ -1425,6 +1459,11 @@ def cmd_thread_detail(config, thread_id, raw=False):
             print(f"Thread {thread_id} not found.", file=sys.stderr)
             sys.exit(1)
         emails = db.list_thread_emails(thread_id)
+        # One query for all attachments in the thread, then bucket by
+        # email_id — keeps the loop O(N+M) instead of O(N) DB hops.
+        attachments_by_email = {}
+        for a in db.list_attachments_for_thread(thread_id):
+            attachments_by_email.setdefault(a.email_id, []).append(a)
     finally:
         db.close()
 
@@ -1450,6 +1489,7 @@ def cmd_thread_detail(config, thread_id, raw=False):
             print(_format_email_md(
                 e.direction, e.sender, e.recipient, e.cc, e.subject,
                 e.created_at, e.body, email_id=e.id,
+                attachments=attachments_by_email.get(e.id, []),
             ))
         print("---")
         print("")
@@ -1464,6 +1504,9 @@ def cmd_read_email(config, email_id, raw=False):
     db = open_email_db(config)
     try:
         email = db.get_email(email_id)
+        # Fetch even if email is None so we don't open-and-close twice; the
+        # None-check below short-circuits before we touch ``atts``.
+        atts = db.list_attachments_for_email(email_id) if email else []
     finally:
         db.close()
 
@@ -1488,7 +1531,17 @@ def cmd_read_email(config, email_id, raw=False):
     print(f"**Date:** {email.created_at}  ")
     print(f"**Thread:** {email.thread_id}  ")
     print("")
-    print(email.body or "*(empty)*")
+    # Be explicit about "empty body + N attachments" so the agent never
+    # mistakes an attachment-only message for nothing.
+    if not email.body and atts:
+        print(f"*(empty body — {len(atts)} attachment(s) below)*")
+    else:
+        print(email.body or "*(empty)*")
+    if atts:
+        print("")
+        print("**Attachments:**")
+        for a in atts:
+            print(f"- {a.filename} ({a.content_type}, {a.size} bytes) — `{a.path}`")
     print("")
     print(f"Reply to this thread with: email reply \"{email.thread_id}\" \"<body>\"")
 

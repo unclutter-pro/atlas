@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from email_db import Email, EmailDb, EmailTarget, Thread
+from email_db import Attachment, Email, EmailDb, EmailTarget, Thread
 
 
 CONFIG = {"username": "agent@test.local"}
@@ -590,3 +590,165 @@ class TestSetEmailsState:
         db.set_emails_folder([eid], folder="O'Reilly's archive")
         db.commit()
         assert db.get_email(eid).folder == "O'Reilly's archive"
+
+
+# ── Attachments ────────────────────────────────────────────────────────────
+
+class TestAttachments:
+    """The attachments table is the fix for the empty-body bug — without
+    it, attachment-only messages looked empty to the agent because
+    display commands read from the DB while the bytes lived only on disk.
+    These tests pin the insert/list contracts the display layer relies on.
+    """
+
+    def _att(self, **overrides):
+        base = {
+            "filename": "doc.pdf",
+            "content_type": "application/pdf",
+            "size": 12345,
+            "path": "/tmp/doc.pdf",
+        }
+        base.update(overrides)
+        return base
+
+    def test_insert_returns_row_ids_in_insert_order(self, db):
+        _seed_thread(db)
+        eid = _seed_email(db)
+        ids = db.insert_attachments(eid, [
+            self._att(filename="a.pdf"),
+            self._att(filename="b.pdf"),
+        ])
+        assert len(ids) == 2
+        assert ids[0] < ids[1]  # autoincrement order
+
+    def test_empty_attachments_is_noop(self, db):
+        _seed_thread(db)
+        eid = _seed_email(db)
+        assert db.insert_attachments(eid, []) == []
+        assert db.insert_attachments(eid, None) == []
+
+    def test_list_returns_attachments_in_insert_order(self, db):
+        _seed_thread(db)
+        eid = _seed_email(db)
+        db.insert_attachments(eid, [
+            self._att(filename="first.pdf"),
+            self._att(filename="second.pdf"),
+        ])
+        atts = db.list_attachments_for_email(eid)
+        assert [a.filename for a in atts] == ["first.pdf", "second.pdf"]
+
+    def test_list_for_email_returns_empty_when_none(self, db):
+        _seed_thread(db)
+        eid = _seed_email(db)
+        assert db.list_attachments_for_email(eid) == []
+
+    def test_metadata_round_trip_preserves_all_fields(self, db):
+        _seed_thread(db)
+        eid = _seed_email(db)
+        db.insert_attachments(eid, [self._att(
+            filename="WissensWerk.docx",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            size=17113,
+            path="/home/agent/.index/email/attachments/t1/WissensWerk.docx",
+        )])
+        [a] = db.list_attachments_for_email(eid)
+        assert a.filename == "WissensWerk.docx"
+        assert a.content_type.startswith("application/vnd.openxml")
+        assert a.size == 17113
+        assert a.path.endswith("WissensWerk.docx")
+        assert a.email_id == eid
+
+    def test_missing_fields_coerced_to_safe_defaults(self, db):
+        """Real-world MIME parts sometimes lack filename or content_type —
+        we still want a row so the display layer can show *something*
+        rather than silently dropping the attachment."""
+        _seed_thread(db)
+        eid = _seed_email(db)
+        db.insert_attachments(eid, [{
+            # filename + content_type missing on purpose
+            "size": 100,
+            "path": "/tmp/x",
+        }])
+        [a] = db.list_attachments_for_email(eid)
+        assert a.filename == ""
+        assert a.content_type == ""
+        assert a.size == 100
+
+    def test_list_for_thread_groups_across_emails(self, db):
+        _seed_thread(db)
+        e1 = _seed_email(db, uid=1, message_id="<m1@x>")
+        e2 = _seed_email(db, uid=2, message_id="<m2@x>")
+        db.insert_attachments(e1, [self._att(filename="from-1.pdf")])
+        db.insert_attachments(e2, [
+            self._att(filename="from-2a.pdf"),
+            self._att(filename="from-2b.pdf"),
+        ])
+        atts = db.list_attachments_for_thread("t1")
+        # Ordered by email_id, then insert order — display loops over emails
+        # in the same order and groups by email_id, so this contract matters.
+        assert [(a.email_id, a.filename) for a in atts] == [
+            (e1, "from-1.pdf"),
+            (e2, "from-2a.pdf"),
+            (e2, "from-2b.pdf"),
+        ]
+
+    def test_list_for_thread_empty_thread(self, db):
+        _seed_thread(db, thread_id="empty")
+        assert db.list_attachments_for_thread("empty") == []
+
+    def test_attachments_table_has_email_id_index(self, db):
+        """Without idx_attachments_email, the list_attachments_for_thread
+        join scales linearly with the attachments table — fine for now,
+        ugly later. Pin the index so a refactor can't quietly drop it."""
+        rows = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='attachments'"
+        ).fetchall()
+        names = [r["name"] for r in rows]
+        assert "idx_attachments_email" in names
+
+    def test_attachments_table_created_on_fresh_db(self, tmp_path):
+        """The CREATE TABLE IF NOT EXISTS in _bootstrap_schema is what
+        gives a brand-new account the table without any migration step."""
+        db = EmailDb.open({"username": "fresh@x"}, db_dir=str(tmp_path))
+        try:
+            rows = db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='attachments'"
+            ).fetchall()
+            assert len(rows) == 1
+        finally:
+            db.close()
+
+    def test_attachments_table_added_to_legacy_db(self, tmp_path):
+        """A pre-attachments database opened by EmailDb.open() should pick
+        up the new table via CREATE TABLE IF NOT EXISTS — no manual
+        migration, no exception. This is the production upgrade path."""
+        import os, re
+        account = re.sub(r"[^a-zA-Z0-9@._-]", "_", "legacy@x")
+        path = tmp_path / f"{account}.db"
+        # Hand-build a pre-attachments schema (threads + emails + state only)
+        conn = sqlite3.connect(str(path))
+        conn.executescript("""
+            CREATE TABLE threads (thread_id TEXT PRIMARY KEY);
+            CREATE TABLE emails (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                 thread_id TEXT, message_id TEXT, direction TEXT,
+                                 sender TEXT, recipient TEXT, subject TEXT, body TEXT,
+                                 created_at TEXT DEFAULT (datetime('now')));
+            CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT);
+        """)
+        conn.commit()
+        conn.close()
+
+        # Opening should silently add the attachments table + index
+        db = EmailDb.open({"username": "legacy@x"}, db_dir=str(tmp_path))
+        try:
+            rows = db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='attachments'"
+            ).fetchall()
+            assert len(rows) == 1
+            # And the index landed too
+            idx = db.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_attachments_email'"
+            ).fetchall()
+            assert len(idx) == 1
+        finally:
+            db.close()
