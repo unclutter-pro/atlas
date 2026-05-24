@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 
-__all__ = ["EmailDb", "Thread", "Email", "EmailTarget"]
+__all__ = ["EmailDb", "Thread", "Email", "EmailTarget", "Attachment"]
 
 
 # ── Entity types ────────────────────────────────────────────────────────────
@@ -84,6 +84,24 @@ class EmailTarget:
     direction: str
 
 
+@dataclass(frozen=True)
+class Attachment:
+    """One row of the ``attachments`` table.
+
+    Attachments are extracted from incoming multipart messages and saved
+    to disk under ``ATTACHMENTS_DIR/<thread_id>/`` by the poller; this
+    row keeps the metadata so display commands (``email read`` /
+    ``email thread``) can surface them without re-scanning the filesystem.
+    """
+
+    id: int
+    email_id: int
+    filename: str
+    content_type: str
+    size: int
+    path: str
+
+
 # ── Result-row → entity helpers ─────────────────────────────────────────────
 
 # Cached column ordering for the SELECT * style reads used by get_thread /
@@ -98,6 +116,9 @@ _EMAIL_COLS = (
     "id", "thread_id", "message_id", "direction", "sender", "recipient",
     "cc", "subject", "body", "body_html", "headers_json", "inbox_msg_id",
     "imap_uid", "is_read", "folder", "created_at",
+)
+_ATTACHMENT_COLS = (
+    "id", "email_id", "filename", "content_type", "size", "path",
 )
 
 
@@ -135,6 +156,17 @@ def _row_to_email(row: Mapping[str, Any]) -> Email:
         is_read      = row["is_read"],
         folder       = row["folder"],
         created_at   = row["created_at"],
+    )
+
+
+def _row_to_attachment(row: Mapping[str, Any]) -> Attachment:
+    return Attachment(
+        id           = row["id"],
+        email_id     = row["email_id"],
+        filename     = row["filename"],
+        content_type = row["content_type"],
+        size         = row["size"],
+        path         = row["path"],
     )
 
 
@@ -253,8 +285,24 @@ class EmailDb:
                 value TEXT NOT NULL DEFAULT ''
             );
 
-            CREATE INDEX IF NOT EXISTS idx_emails_thread    ON emails(thread_id);
-            CREATE INDEX IF NOT EXISTS idx_emails_direction ON emails(direction);
+            -- Attachments persisted out-of-band — payload bytes live in
+            -- ATTACHMENTS_DIR on disk; this table just keeps the metadata
+            -- so display commands can show what came in without re-scanning
+            -- the filesystem. ON DELETE CASCADE on email_id keeps the table
+            -- consistent if/when emails are ever pruned.
+            CREATE TABLE IF NOT EXISTS attachments (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                email_id        INTEGER NOT NULL,
+                filename        TEXT NOT NULL DEFAULT '',
+                content_type    TEXT NOT NULL DEFAULT '',
+                size            INTEGER NOT NULL DEFAULT 0,
+                path            TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_emails_thread      ON emails(thread_id);
+            CREATE INDEX IF NOT EXISTS idx_emails_direction   ON emails(direction);
+            CREATE INDEX IF NOT EXISTS idx_attachments_email  ON attachments(email_id);
             -- folder / is_read indexes are created post-migration (below).
         """)
 
@@ -654,6 +702,69 @@ class EmailDb:
             ),
         )
         return int(cur.lastrowid or 0)
+
+    # --- Attachments ------------------------------------------------------
+
+    def insert_attachments(
+        self, email_id: int, attachments: Iterable[Mapping[str, Any]]
+    ) -> List[int]:
+        """Persist attachment metadata for one email.
+
+        Each ``attachments`` item must expose ``filename``, ``content_type``,
+        ``size`` and ``path`` (the keys produced by
+        ``email_addon.extract_attachments``). Empty/None inputs are a no-op
+        so callers don't need to special-case "no attachments".
+
+        Returns the list of newly-created attachment row IDs in insert order
+        so callers can correlate back if needed (tests use this).
+        """
+        if not attachments:
+            return []
+        ids: List[int] = []
+        for a in attachments:
+            cur = self._conn.execute(
+                """
+                INSERT INTO attachments (email_id, filename, content_type, size, path)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    email_id,
+                    str(a.get("filename") or ""),
+                    str(a.get("content_type") or ""),
+                    int(a.get("size") or 0),
+                    str(a.get("path") or ""),
+                ),
+            )
+            ids.append(int(cur.lastrowid or 0))
+        return ids
+
+    def list_attachments_for_email(self, email_id: int) -> List[Attachment]:
+        """All attachments belonging to one email, in insert order."""
+        rows = self._conn.execute(
+            "SELECT * FROM attachments WHERE email_id = ? ORDER BY id",
+            (email_id,),
+        ).fetchall()
+        return [_row_to_attachment(r) for r in rows]
+
+    def list_attachments_for_thread(
+        self, thread_id: str
+    ) -> List[Attachment]:
+        """All attachments across every email in a thread, ordered by email then insert order.
+
+        Convenience for thread-level views that want to render attachments
+        inline with each message without doing N+1 queries — callers can
+        group by ``email_id`` once.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT a.* FROM attachments a
+            JOIN emails e ON e.id = a.email_id
+            WHERE e.thread_id = ?
+            ORDER BY a.email_id, a.id
+            """,
+            (thread_id,),
+        ).fetchall()
+        return [_row_to_attachment(r) for r in rows]
 
     def set_inbox_msg_id(
         self, *, thread_id: str, message_id: str, inbox_msg_id: int

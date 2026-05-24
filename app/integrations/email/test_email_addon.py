@@ -1849,3 +1849,297 @@ class TestCmdPollEndToEnd:
         # so it could ask UID > 42, not the UNSEEN fallback.
         last_call = imap.search_new.call_args_list[-1]
         assert last_call.args[1] == 42
+
+
+# ---------------------------------------------------------------------------
+# Attachments — the empty-body bug fix
+# ---------------------------------------------------------------------------
+
+class TestCmdReadEmailAttachments:
+    """Bug being fixed: an attachment-only email rendered as "empty" because
+    the display layer never saw the attachment metadata. Pin the rendered
+    output so a regression — empty body + present attachment row → silent
+    drop — fails loudly here instead of in production.
+    """
+
+    def _seed(self, db_dir, *, body="Hi there", attachments=()):
+        conn = email_addon.open_email_db(CONFIG).conn
+        conn.execute("""
+            INSERT INTO threads (thread_id, subject, last_message_id,
+              references_chain, last_sender, last_sender_full, participants, message_count)
+            VALUES ('t1', 'Hello', '<m1@x>', '[]', 'alice@x.com', 'alice@x.com', '[]', 1)
+        """)
+        cur = conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES ('t1', '<m1@x>', 'in', 'alice@x.com', 'agent@test.local', '', 'Hello', ?)
+        """, (body,))
+        eid = cur.lastrowid
+        for a in attachments:
+            conn.execute("""
+                INSERT INTO attachments (email_id, filename, content_type, size, path)
+                VALUES (?, ?, ?, ?, ?)
+            """, (eid, a["filename"], a["content_type"], a["size"], a["path"]))
+        conn.commit()
+        conn.close()
+        return eid
+
+    def test_no_attachments_no_section(self, db_dir, capsys):
+        self._seed(db_dir)
+        email_addon.cmd_read_email(CONFIG, 1)
+        out = capsys.readouterr().out
+        assert "**Attachments:**" not in out
+
+    def test_single_attachment_shown(self, db_dir, capsys):
+        self._seed(db_dir, attachments=[{
+            "filename": "WissensWerk.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size": 17113,
+            "path": "/home/agent/.index/email/attachments/t1/WissensWerk.docx",
+        }])
+        out = capsys.readouterr().out
+        # cmd_read_email captures first
+        email_addon.cmd_read_email(CONFIG, 1)
+        out = capsys.readouterr().out
+        assert "**Attachments:**" in out
+        assert "WissensWerk.docx" in out
+        # Path should be present so the agent can pass it to skills/tools
+        assert "/home/agent/.index/email/attachments/t1/WissensWerk.docx" in out
+
+    def test_multiple_attachments_each_listed(self, db_dir, capsys):
+        self._seed(db_dir, attachments=[
+            {"filename": "a.pdf", "content_type": "application/pdf", "size": 1, "path": "/tmp/a.pdf"},
+            {"filename": "b.png", "content_type": "image/png",       "size": 2, "path": "/tmp/b.png"},
+        ])
+        email_addon.cmd_read_email(CONFIG, 1)
+        out = capsys.readouterr().out
+        assert "a.pdf" in out
+        assert "b.png" in out
+
+    def test_attachment_only_email_flagged_explicitly(self, db_dir, capsys):
+        """Empty body + attachment must not render as "*(empty)*" alone —
+        otherwise the agent reads "empty" and ignores the attachment.
+        """
+        self._seed(db_dir, body="", attachments=[{
+            "filename": "concept.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size": 17113,
+            "path": "/tmp/concept.docx",
+        }])
+        email_addon.cmd_read_email(CONFIG, 1)
+        out = capsys.readouterr().out
+        # The explicit marker is what distinguishes "genuinely empty" from
+        # "body empty because content lives in the attachment".
+        assert "empty body" in out.lower()
+        assert "1 attachment" in out
+        assert "concept.docx" in out
+
+    def test_content_type_and_size_shown(self, db_dir, capsys):
+        self._seed(db_dir, attachments=[{
+            "filename": "x.pdf", "content_type": "application/pdf",
+            "size": 12345, "path": "/tmp/x.pdf",
+        }])
+        email_addon.cmd_read_email(CONFIG, 1)
+        out = capsys.readouterr().out
+        assert "application/pdf" in out
+        assert "12345" in out
+
+
+class TestCmdThreadDetailAttachments:
+    """Same fix at the thread-level view. The thread view uses a single
+    bulk query (``list_attachments_for_thread``) and groups by email_id —
+    test that messages-with and messages-without attachments coexist
+    correctly, and that the bulk query doesn't issue N queries.
+    """
+
+    def _seed(self, db_dir):
+        conn = email_addon.open_email_db(CONFIG).conn
+        conn.execute("""
+            INSERT INTO threads (thread_id, subject, last_message_id,
+              references_chain, last_sender, last_sender_full, participants, message_count)
+            VALUES ('t1', 'Concept', '<m2@x>', '[]', 'alice@x.com', 'alice@x.com', '[]', 2)
+        """)
+        c1 = conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES ('t1', '<m1@x>', 'in', 'alice@x.com', 'agent@test.local', '', 'Concept', 'Have a look at the attached')
+        """)
+        e1 = c1.lastrowid
+        c2 = conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES ('t1', '<m2@x>', 'in', 'alice@x.com', 'agent@test.local', '', 'Re: Concept', '')
+        """)
+        e2 = c2.lastrowid
+        # e1 has one attachment, e2 has two (and an empty body — the bug case)
+        conn.execute("""
+            INSERT INTO attachments (email_id, filename, content_type, size, path)
+            VALUES (?, 'first.pdf', 'application/pdf', 100, '/tmp/first.pdf')
+        """, (e1,))
+        conn.execute("""
+            INSERT INTO attachments (email_id, filename, content_type, size, path)
+            VALUES (?, 'second-a.pdf', 'application/pdf', 200, '/tmp/second-a.pdf'),
+                   (?, 'second-b.png', 'image/png',       300, '/tmp/second-b.png')
+        """, (e2, e2))
+        conn.commit()
+        conn.close()
+        return e1, e2
+
+    def test_each_message_lists_its_own_attachments(self, db_dir, capsys):
+        self._seed(db_dir)
+        email_addon.cmd_thread_detail(CONFIG, "t1")
+        out = capsys.readouterr().out
+        # All three filenames appear in the output
+        assert "first.pdf" in out
+        assert "second-a.pdf" in out
+        assert "second-b.png" in out
+
+    def test_message_without_attachments_has_no_section(self, db_dir, capsys):
+        """Seed a thread where only one of two messages has attachments."""
+        conn = email_addon.open_email_db(CONFIG).conn
+        conn.execute("""
+            INSERT INTO threads (thread_id, subject, last_message_id,
+              references_chain, last_sender, last_sender_full, participants, message_count)
+            VALUES ('t1', 'Mixed', '<m2@x>', '[]', 'a@x', 'a@x', '[]', 2)
+        """)
+        c1 = conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES ('t1', '<m1@x>', 'in', 'a@x', 'me', '', 'Mixed', 'plain text only')
+        """)
+        c2 = conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient, cc, subject, body)
+            VALUES ('t1', '<m2@x>', 'in', 'a@x', 'me', '', 'Re: Mixed', 'has attachment')
+        """)
+        conn.execute("""
+            INSERT INTO attachments (email_id, filename, content_type, size, path)
+            VALUES (?, 'doc.pdf', 'application/pdf', 1, '/tmp/doc.pdf')
+        """, (c2.lastrowid,))
+        conn.commit()
+        conn.close()
+
+        email_addon.cmd_thread_detail(CONFIG, "t1")
+        out = capsys.readouterr().out
+        # Attachments section appears exactly once — for c2 only
+        assert out.count("**Attachments:**") == 1
+        assert "doc.pdf" in out
+
+    def test_attachment_only_message_marked_in_thread_view(self, db_dir, capsys):
+        """In the thread view, an attachment-only message gets the same
+        explicit marker as in the single-message view."""
+        self._seed(db_dir)
+        email_addon.cmd_thread_detail(CONFIG, "t1")
+        out = capsys.readouterr().out
+        assert "2 attachment(s) below" in out
+
+    def test_thread_view_uses_single_bulk_query_for_attachments(
+        self, db_dir, monkeypatch
+    ):
+        """Performance contract: per-email N+1 queries are bad form for a
+        view that already paginates by thread. Spy on the DB layer and
+        assert ``list_attachments_for_thread`` is the entry point — not
+        ``list_attachments_for_email`` once per message.
+        """
+        e1, e2 = self._seed(db_dir)
+        # Spy by wrapping the methods on the open DB inside cmd_thread_detail
+        calls = {"thread": 0, "per_email": 0}
+        orig_open = email_addon.open_email_db
+
+        def wrapped_open(cfg):
+            db = orig_open(cfg)
+            orig_thread = db.list_attachments_for_thread
+            orig_per = db.list_attachments_for_email
+
+            def t(tid):
+                calls["thread"] += 1
+                return orig_thread(tid)
+
+            def p(eid):
+                calls["per_email"] += 1
+                return orig_per(eid)
+
+            db.list_attachments_for_thread = t
+            db.list_attachments_for_email = p
+            return db
+
+        monkeypatch.setattr(email_addon, "open_email_db", wrapped_open)
+        email_addon.cmd_thread_detail(CONFIG, "t1")
+        assert calls["thread"] == 1
+        assert calls["per_email"] == 0  # no N+1
+
+
+class TestPollerPersistsAttachments:
+    """End-to-end: ``_fetch_new_emails`` must call ``db.insert_attachments``
+    so display commands later see the rows. The unit-level bug — extracting
+    attachments to disk but never persisting — lived in this exact gap.
+    """
+
+    def _build_raw(self):
+        return (
+            b"From: alice@x.com\r\n"
+            b"To: agent@test.local\r\n"
+            b"Subject: With attachment\r\n"
+            b"Message-ID: <m-att@x>\r\n"
+            b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+            b"\r\n"
+            b"body"
+        )
+
+    def _client(self, raw, uid=42):
+        client = MagicMock()
+        client.search_new.return_value = [uid]
+        client.fetch_peek_many.return_value = {uid: (raw, False)}
+        return client
+
+    def test_attachments_persisted_to_db(self, db_dir, monkeypatch):
+        """Faked extract_attachments returns one row → DB must contain it."""
+        fake_atts = [{
+            "filename": "concept.docx",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size": 17113,
+            "path": "/home/agent/.index/email/attachments/t/concept.docx",
+        }]
+        monkeypatch.setattr(email_addon, "write_to_atlas_inbox", lambda *a, **kw: 1)
+        monkeypatch.setattr(email_addon, "save_email_file",     lambda *a, **kw: "/tmp/x.md")
+        monkeypatch.setattr(email_addon, "extract_attachments", lambda *a, **kw: fake_atts)
+        monkeypatch.setattr(email_addon, "subprocess", MagicMock())
+
+        client = self._client(self._build_raw())
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            email_addon._fetch_new_emails(client, db, dict(CONFIG))
+        finally:
+            db.close()
+
+        # Re-open and assert the row landed
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            row = db.conn.execute(
+                "SELECT id FROM emails WHERE direction='in'"
+            ).fetchone()
+            assert row is not None
+            atts = db.list_attachments_for_email(row["id"])
+            assert len(atts) == 1
+            assert atts[0].filename == "concept.docx"
+            assert atts[0].size == 17113
+            assert atts[0].path.endswith("concept.docx")
+        finally:
+            db.close()
+
+    def test_no_attachments_does_not_insert_rows(self, db_dir, monkeypatch):
+        """Empty list path: insert_attachments(_, []) is a no-op; no spurious
+        rows from messages without attachments."""
+        monkeypatch.setattr(email_addon, "write_to_atlas_inbox", lambda *a, **kw: 1)
+        monkeypatch.setattr(email_addon, "save_email_file",     lambda *a, **kw: "/tmp/x.md")
+        monkeypatch.setattr(email_addon, "extract_attachments", lambda *a, **kw: [])
+        monkeypatch.setattr(email_addon, "subprocess", MagicMock())
+
+        client = self._client(self._build_raw())
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            email_addon._fetch_new_emails(client, db, dict(CONFIG))
+        finally:
+            db.close()
+
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            count = db.conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
+            assert count == 0
+        finally:
+            db.close()
