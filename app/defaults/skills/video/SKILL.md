@@ -1,6 +1,6 @@
 ---
 name: video
-description: "Use this skill whenever the user wants to programmatically create animated videos, motion graphics, screencasts, product demos, or explainer videos. Triggers include: any mention of 'video', 'animation', 'screencast', 'demo video', 'explainer', 'motion graphics', or requests to produce MP4/WebM output with animated content. Also use when combining visuals with voiceover (ElevenLabs, TTS) or background music. The primary tool is React Remotion, but this skill covers the full video creation workflow. Do NOT use for simple video file conversion, trimming, or ffmpeg-only tasks."
+description: "Use this skill to CREATE / GENERATE / PRODUCE animated videos, motion graphics, screencasts, product demos, explainer videos, intros, and brand videos from scratch. Triggers: 'erstelle ein Video', 'mache ein Video', 'create a video', 'animate', 'screencast', 'demo video', 'explainer', 'motion graphics', 'intro video', 'produce MP4/WebM with animation', plus mention of Remotion. Covers the full creation workflow: composition, animations, captions, voiceover (ElevenLabs/TTS), background music, sound effects, transparency. Primary tool: React Remotion. Do NOT use for: (1) editing/cutting existing video footage — use the `video-edit` skill. (2) understanding/analyzing existing video content (timestamps, descriptions, classification) — use a multimodal LLM directly via your normal Bash tools. (3) simple file conversion or transcoding — use raw FFmpeg."
 ---
 
 ## When to use
