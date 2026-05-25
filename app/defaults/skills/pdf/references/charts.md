@@ -142,23 +142,7 @@ Use `theme.accent` for primary series, `theme.muted` for axes, `theme.rule` for 
 - **Default Cetz palette without theme integration** — looks generic. Always pipe `theme.accent` into `bar-style`.
 - **Charts without titles** — the caption (in `figure(...)`) should state the question the chart answers.
 
-## Embedding an external PNG (only when you already have one)
-
-If you receive a chart from a third party as PNG/JPG, embed it the same way you would any image:
-
-```typst
-#figure(
-  image("charts/external-chart.png", width: 90%),
-  caption: [Marktgrößen DACH 2024. Quelle: Bitkom.],
-)
-```
-
-Path is relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so PNGs in your current working directory resolve.
-
-This is an escape hatch, not the default. If you control the data, draw with Cetz so the chart matches the document.
-
 ## See also
-- [custom-templates.md](../templates/custom-templates.md) § Image with caption
 - `templates/report.typ` § Wettbewerbslandschaft — uses Cetz directly
 - Cetz docs: <https://cetz-package.github.io/docs/>
 - cetz-plot docs: <https://github.com/cetz-package/cetz-plot>

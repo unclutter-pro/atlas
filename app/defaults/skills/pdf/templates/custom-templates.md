@@ -158,7 +158,7 @@ To know what's available: see `templates/themes.typ` (graphite default, indigo, 
 ITK wuchs 2024 um 4,7 %#footnote[Bitkom Marktdaten, Stand März 2025.].
 ```
 
-### Chart with caption (Cetz vector — default for chart-like figures)
+### Chart with caption (Cetz vector — the one chart story)
 ```typst
 #import "@preview/cetz:0.4.2"
 #import "@preview/cetz-plot:0.1.3": chart
@@ -178,14 +178,14 @@ ITK wuchs 2024 um 4,7 %#footnote[Bitkom Marktdaten, Stand März 2025.].
 ```
 Patterns per chart type in [references/charts.md](../references/charts.md).
 
-### External image with caption (when you already have a PNG)
+### Image with caption (logos, photos, screenshots)
 ```typst
 #figure(
   image("photos/team.png", width: 90%),
   caption: [Teamfoto Q2 2026.],
 )
 ```
-Path is relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so PNGs in the current working directory resolve.
+Path is relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so files in the current working directory resolve.
 
 ### Headers + footers with page numbers
 ```typst
