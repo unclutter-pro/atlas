@@ -43,16 +43,18 @@
     font-heading: "IBM Plex Serif",
     font-mono:    "JetBrains Mono",
   ),
-  // forest — editorial / sustainable. The trinity: warm sandy brown (forest
-  // floor / paper), light green (new growth / surface), dark green (canopy /
-  // accent). Body type in dark warm brown so even paragraph text reads forest.
+  // forest — editorial / sustainable. The trinity is present at every level:
+  //   sandy brown paper (background) + darker brown card (surface, layered
+  //   paper feel) carry the brown; sage green rules carry the light green;
+  //   deep canopy accent carries the dark green. Body type in warm dark brown
+  //   so even paragraph text feels earthy, not corporate.
   forest: (
     primary:      rgb("#3E2C1C"),
     accent:       rgb("#166534"),
     muted:        rgb("#78635A"),
-    rule:         rgb("#D6C9B3"),
+    rule:         rgb("#C2CFB6"),
     background:   rgb("#F5ECD8"),
-    surface:      rgb("#E8F0E0"),
+    surface:      rgb("#EDE0C5"),
     font-body:    "Inter",
     font-heading: "IBM Plex Serif",
     font-mono:    "JetBrains Mono",
