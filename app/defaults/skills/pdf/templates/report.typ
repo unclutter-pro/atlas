@@ -47,12 +47,14 @@
 #set par(justify: true, leading: 0.7em, spacing: 1em)
 
 // H1: page break + serif title in primary; accent shows up as a single short
-// rule below the title, never as the title's fill. H2/H3 stay neutral.
+// rule below the title, never as the title's fill. Tight leading keeps multi-
+// line chapter titles cohesive. H2/H3 stay neutral.
 #show heading.where(level: 1): it => {
   pagebreak(weak: true)
-  set text(font: font-heading, size: 28pt, weight: "semibold", fill: primary)
   v(0.5em)
-  it
+  par(leading: 0.4em)[
+    #text(font: font-heading, size: 28pt, weight: "semibold", fill: primary)[#it]
+  ]
   v(0.2em)
   line(length: 2.5em, stroke: 2pt + accent)
   v(1.2em)
@@ -71,14 +73,20 @@
 // --- Cover ---------------------------------------------------------------
 // One restrained accent splash: a short eyebrow rule + a small caps label.
 // The title itself is primary; the typography carries the impact.
+// Tight leading (0.3em) keeps wrapped title lines visually as one block —
+// default 0.65em leaves too much air between lines at 42pt display sizes.
 #page(header: none, footer: none, margin: (top: 7cm, bottom: 4cm, x: 3.5cm))[
   #line(length: 2.5em, stroke: 2pt + accent)
   #v(0.4em)
   #text(size: 9pt, tracking: 0.2em, weight: "semibold", fill: accent)[#upper(l.report-by + " " + author)]
   #v(2.5em)
-  #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
+  #par(leading: 0.5em)[
+    #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
+  ]
   #v(0.8em)
-  #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
+  #par(leading: 0.35em)[
+    #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
+  ]
   #v(4em)
   #text(font: font-body, size: 10pt, fill: muted)[#date]
 ]
