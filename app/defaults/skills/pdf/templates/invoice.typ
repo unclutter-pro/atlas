@@ -33,10 +33,15 @@
 #let l = t(lang)
 
 #let theme = resolve-theme()
-#let primary = theme.primary
-#let accent  = theme.accent
-#let muted   = theme.muted
-#let rule    = theme.rule
+#let primary    = theme.primary
+#let accent     = theme.accent
+#let muted      = theme.muted
+#let rule       = theme.rule
+#let background = theme.background
+#let surface    = theme.surface
+#let font-body    = theme.font-body
+#let font-heading = theme.font-heading
+#let font-mono    = theme.font-mono
 
 // Kleinunternehmer-Mode (German small-business exemption — labels remain even in EN/FR)
 #let is_kleinunternehmer = data.at("kleinunternehmer", default: false)
@@ -50,6 +55,7 @@
 #set page(
   paper: "a4",
   margin: (top: 2.8cm, bottom: 3.5cm, x: 2.5cm),
+  fill: background,
   header: context {
     if counter(page).get().first() > 1 {
       grid(
@@ -73,8 +79,8 @@
   ],
 )
 
-// All-sans, modern type stack.
-#set text(font: "Inter", size: 10pt, fill: primary, lang: lang)
+// All-sans, modern type stack — font from the active theme.
+#set text(font: font-body, size: 10pt, fill: primary, lang: lang)
 #set par(leading: 0.75em, spacing: 0.9em)
 
 // --- Header: tall, modern title block ------------------------------------
@@ -246,7 +252,7 @@
   #block(
     width: 100%,
     inset: 10pt,
-    fill: rule.lighten(60%),
+    fill: surface,
     radius: 4pt,
     breakable: false,
   )[

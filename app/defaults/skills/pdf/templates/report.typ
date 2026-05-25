@@ -19,15 +19,20 @@
 #let date = format-date(date-raw, lang: lang)
 
 #let theme = resolve-theme()
-#let primary = theme.primary
-#let accent  = theme.accent
-#let muted   = theme.muted
-#let rule    = theme.rule
+#let primary      = theme.primary
+#let accent       = theme.accent
+#let muted        = theme.muted
+#let rule         = theme.rule
+#let background   = theme.background
+#let surface      = theme.surface
+#let font-body    = theme.font-body
+#let font-heading = theme.font-heading
 
 // --- Page setup -----------------------------------------------------------
 #set page(
   paper: "a4",
   margin: (top: 2.8cm, bottom: 2.8cm, x: 2.5cm),
+  fill: background,
   header: align(right)[
     #text(size: 9pt, fill: muted)[#title]
   ],
@@ -38,34 +43,34 @@
     ]
   ],
 )
-#set text(font: "Inter", size: 11pt, fill: primary, lang: lang)
+#set text(font: font-body, size: 11pt, fill: primary, lang: lang)
 #set par(justify: true, leading: 0.7em, spacing: 1em)
 
 #show heading.where(level: 1): it => {
   pagebreak(weak: true)
-  set text(font: "IBM Plex Serif", size: 22pt, weight: "semibold", fill: accent)
+  set text(font: font-heading, size: 22pt, weight: "semibold", fill: accent)
   v(0.5em)
   it
   v(0.8em)
 }
 #show heading.where(level: 2): it => {
   v(0.6em)
-  set text(font: "Inter", size: 14pt, weight: "semibold")
+  set text(font: font-body, size: 14pt, weight: "semibold")
   it
   v(0.2em)
 }
-#show heading.where(level: 3): set text(font: "Inter", size: 12pt, weight: "medium")
+#show heading.where(level: 3): set text(font: font-body, size: 12pt, weight: "medium")
 
 #show table.cell.where(y: 0): set text(weight: "semibold", fill: accent)
 #set table(stroke: 0.5pt + rule, inset: 9pt)
 
 // --- Cover ---------------------------------------------------------------
 #page(header: none, footer: none, margin: (top: 7cm, bottom: 4cm, x: 3.5cm))[
-  #text(font: "IBM Plex Serif", size: 38pt, weight: "semibold", fill: accent)[#title]
+  #text(font: font-heading, size: 38pt, weight: "semibold", fill: accent)[#title]
   #v(0.8em)
-  #text(font: "Inter", size: 16pt, fill: muted)[#subtitle]
+  #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
   #v(3.5em)
-  #text(font: "Inter", size: 11pt, fill: muted)[
+  #text(font: font-body, size: 11pt, fill: muted)[
     #author · #date
   ]
 ]
@@ -74,7 +79,7 @@
 // Print the TOC on its own page, no header/footer, with dot-leader fills
 // connecting heading title and page number. Auto-populates from H1/H2.
 #page(header: none, footer: none, margin: (top: 3cm, bottom: 3cm, x: 3.5cm))[
-  #text(font: "IBM Plex Serif", size: 24pt, weight: "semibold", fill: accent)[#l.report-toc]
+  #text(font: font-heading, size: 24pt, weight: "semibold", fill: accent)[#l.report-toc]
   #v(1.2em)
   #show outline.entry: it => link(
     it.element.location(),

@@ -10,18 +10,30 @@ All four bundled templates import `templates/themes.typ` and call `resolve-theme
 build-pdf report --theme indigo output.pdf
 ```
 
-| Name | Primary | Accent | Use-case |
-|---|---|---|---|
-| `graphite` (default) | dark grey | warm dark grey | Neutral, business-default. Most reports. |
-| `indigo` | dark indigo | strong indigo | Corporate, slightly bolder than graphite. |
-| `forest` | dark green | forest green | Sustainability, natural-tone material. |
-| `amber` | dark brown | amber/orange | Warm, premium feel. |
-| `crimson` | dark grey | deep red | Confident, attention-grabbing. |
-| `mono` | black | dark zinc | Pure minimalist, no colour. |
+| Name | Accent | Background | Headline font | Use-case |
+|---|---|---|---|---|
+| `graphite` (default) | warm dark grey | white | IBM Plex Serif | Neutral, business-default. |
+| `indigo` | strong indigo | white | IBM Plex Serif | Corporate, slightly bolder. |
+| `forest` | forest green | white | IBM Plex Serif | Sustainability, natural-tone. |
+| `amber` | amber/orange | cream `#FFFBEB` | Crimson Pro | Warm, premium feel. |
+| `crimson` | deep red | white | IBM Plex Serif | Confident, attention-grabbing. |
+| `mono` | dark zinc | white | JetBrains Mono | Pure minimalist, all monospace. |
 
-Each palette has four tokens: `primary` (text), `accent` (headlines/emphasis), `muted` (captions, secondary text), `rule` (borders, dividers).
+Each palette defines nine tokens — six colours and three fonts:
 
-## Overriding individual colours
+| Token | Purpose |
+|---|---|
+| `primary` | Body text colour |
+| `accent` | Headlines, key totals, emphasis |
+| `muted` | Captions, secondary text, labels |
+| `rule` | Borders, dividers, table strokes |
+| `background` | Page fill (default: white) |
+| `surface` | Tinted block fill — memo header bar, notes callout, etc. |
+| `font-body` | Body / sans family for paragraphs, labels, tables |
+| `font-heading` | Display / serif family for cover titles + H1 |
+| `font-mono` | Monospace family (numerics, code blocks, IBAN, ...) |
+
+## Overriding individual tokens
 
 For brand-locked output without a fork:
 
@@ -29,21 +41,27 @@ For brand-locked output without a fork:
 build-pdf report --colors my-brand.json output.pdf
 ```
 
-`my-brand.json`:
+`my-brand.json` — set any subset, the rest stays from the active theme:
+
 ```json
 {
-  "primary": "#1F2937",
-  "accent":  "#2563EB",
-  "muted":   "#6B7280",
-  "rule":    "#E5E7EB"
+  "primary":       "#1F2937",
+  "accent":        "#7C3AED",
+  "muted":         "#6B7280",
+  "rule":          "#E5E7EB",
+  "background":    "#FAFAF9",
+  "surface":       "#F5F3FF",
+  "font-body":     "Inter",
+  "font-heading":  "Inter",
+  "font-mono":     "JetBrains Mono"
 }
 ```
 
-You only need to specify the keys you want to override — anything missing falls back to the active theme.
+The flag is named `--colors` for historical reasons but accepts all nine tokens including fonts. Colours are `#RRGGBB` hex; fonts are family names exactly as `fc-list` reports them.
 
 ## Writing your own theme
 
-Add a new palette entry to `templates/themes.typ`:
+Add a new palette entry to `templates/themes.typ` — all nine tokens are required so the templates can resolve them deterministically:
 
 ```typst
 #let palettes = (
@@ -51,10 +69,15 @@ Add a new palette entry to `templates/themes.typ`:
   indigo: (...),
   // ... existing entries ...
   ocean: (
-    primary: rgb("#0C2A4A"),
-    accent:  rgb("#0369A1"),
-    muted:   rgb("#64748B"),
-    rule:    rgb("#BAE6FD"),
+    primary:      rgb("#0C2A4A"),
+    accent:       rgb("#0369A1"),
+    muted:        rgb("#64748B"),
+    rule:         rgb("#BAE6FD"),
+    background:   rgb("#FFFFFF"),
+    surface:      rgb("#F0F9FF"),
+    font-body:    "Inter",
+    font-heading: "IBM Plex Serif",
+    font-mono:    "JetBrains Mono",
   ),
 )
 ```

@@ -17,18 +17,22 @@
 #let date = format-date(date-raw, lang: lang)
 
 #let theme = resolve-theme()
-#let primary = theme.primary
-#let accent  = theme.accent
-#let muted   = theme.muted
-#let rule    = theme.rule
+#let primary      = theme.primary
+#let accent       = theme.accent
+#let muted        = theme.muted
+#let rule         = theme.rule
+#let background   = theme.background
+#let surface      = theme.surface
+#let font-body    = theme.font-body
+#let font-heading = theme.font-heading
 
-#set page(paper: "a4", margin: (top: 2.5cm, bottom: 2.5cm, x: 2.5cm))
-#set text(font: "Inter", size: 11pt, fill: primary, lang: lang)
+#set page(paper: "a4", margin: (top: 2.5cm, bottom: 2.5cm, x: 2.5cm), fill: background)
+#set text(font: font-body, size: 11pt, fill: primary, lang: lang)
 #set par(justify: true, leading: 0.7em, spacing: 1em)
 
 #show heading.where(level: 1): it => {
   v(0.8em)
-  set text(font: "Inter", size: 14pt, weight: "semibold", fill: accent)
+  set text(font: font-body, size: 14pt, weight: "semibold", fill: accent)
   it
   v(0.4em)
 }
@@ -36,11 +40,11 @@
 // --- Header bar ----------------------------------------------------------
 #block(
   width: 100%,
-  fill: rule.lighten(40%),
+  fill: surface,
   inset: 16pt,
   radius: 6pt,
 )[
-  #text(font: "IBM Plex Serif", size: 18pt, weight: "semibold", fill: accent)[Memo · #title]
+  #text(font: font-heading, size: 18pt, weight: "semibold", fill: accent)[Memo · #title]
   #v(0.6em)
   #grid(
     columns: (auto, 1fr, auto, 1fr),

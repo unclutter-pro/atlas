@@ -25,14 +25,17 @@
 ).at(lang, default: "Betreff")
 
 #let theme = resolve-theme()
-#let primary = theme.primary
-#let muted   = theme.muted
+#let primary    = theme.primary
+#let muted      = theme.muted
+#let background = theme.background
+#let font-body  = theme.font-body
 
 #set page(
   paper: "a4",
   margin: (top: 4.5cm, bottom: 2.5cm, left: 2.5cm, right: 2cm),
+  fill: background,
 )
-#set text(font: "Inter", size: 11pt, fill: primary, lang: lang)
+#set text(font: font-body, size: 11pt, fill: primary, lang: lang)
 #set par(justify: false, leading: 0.7em, first-line-indent: 0pt, spacing: 1em)
 
 // --- Sender address (small, top-right) -----------------------------------

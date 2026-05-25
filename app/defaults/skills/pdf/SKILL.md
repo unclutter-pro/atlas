@@ -154,9 +154,16 @@ Add another language by extending `templates/i18n.typ` — drop a new entry into
 
 ## Fonts and themes
 
-Six built-in themes (`graphite` default, `indigo`, `forest`, `amber`, `crimson`, `mono`) selectable via `--theme <name>`. Per-brand colour overrides via `--colors brand.json`. Container ships with Inter, IBM Plex Serif, JetBrains Mono, Crimson Pro, Liberation, DejaVu, Noto + CJK — usable directly as `#set text(font: "Inter")`.
+Six built-in themes (`graphite` default, `indigo`, `forest`, `amber`, `crimson`, `mono`) selectable via `--theme <name>`. Each theme bundles **colours, fonts AND backgrounds** — nine design tokens:
 
-Full theme list, font swap recipes, brand-override JSON shape in [references/themes-and-fonts.md](references/themes-and-fonts.md).
+- Colours: `primary`, `accent`, `muted`, `rule`, `background`, `surface`
+- Fonts: `font-body`, `font-heading`, `font-mono`
+
+So picking `--theme amber` gives you cream page background + Crimson Pro headlines; `--theme mono` is all-monospace; `--theme indigo` keeps Inter + IBM Plex Serif but with indigo accents and a tinted surface.
+
+Per-brand override via `--colors brand.json` accepts any subset of the nine tokens. Container ships with Inter, IBM Plex Serif, JetBrains Mono, Crimson Pro, Liberation, DejaVu, Noto + CJK.
+
+Full theme list, token explanations, brand-override JSON shape in [references/themes-and-fonts.md](references/themes-and-fonts.md).
 
 ## E-Invoices (ZUGFeRD / Factur-X)
 
