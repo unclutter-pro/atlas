@@ -46,40 +46,50 @@
 #set text(font: font-body, size: 11pt, fill: primary, lang: lang)
 #set par(justify: true, leading: 0.7em, spacing: 1em)
 
+// H1: page break + serif title in primary; accent shows up as a single short
+// rule below the title, never as the title's fill. H2/H3 stay neutral.
 #show heading.where(level: 1): it => {
   pagebreak(weak: true)
-  set text(font: font-heading, size: 22pt, weight: "semibold", fill: accent)
+  set text(font: font-heading, size: 28pt, weight: "semibold", fill: primary)
   v(0.5em)
   it
-  v(0.8em)
+  v(0.2em)
+  line(length: 2.5em, stroke: 2pt + accent)
+  v(1.2em)
 }
 #show heading.where(level: 2): it => {
   v(0.6em)
-  set text(font: font-body, size: 14pt, weight: "semibold")
+  set text(font: font-body, size: 13pt, weight: "semibold", fill: primary)
   it
-  v(0.2em)
+  v(0.1em)
 }
-#show heading.where(level: 3): set text(font: font-body, size: 12pt, weight: "medium")
+#show heading.where(level: 3): set text(font: font-body, size: 11pt, weight: "medium", fill: muted)
 
 #show table.cell.where(y: 0): set text(weight: "semibold", fill: accent)
 #set table(stroke: 0.5pt + rule, inset: 9pt)
 
 // --- Cover ---------------------------------------------------------------
+// One restrained accent splash: a short eyebrow rule + a small caps label.
+// The title itself is primary; the typography carries the impact.
 #page(header: none, footer: none, margin: (top: 7cm, bottom: 4cm, x: 3.5cm))[
-  #text(font: font-heading, size: 38pt, weight: "semibold", fill: accent)[#title]
+  #line(length: 2.5em, stroke: 2pt + accent)
+  #v(0.4em)
+  #text(size: 9pt, tracking: 0.2em, weight: "semibold", fill: accent)[#upper(l.report-by + " " + author)]
+  #v(2.5em)
+  #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
   #v(0.8em)
   #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
-  #v(3.5em)
-  #text(font: font-body, size: 11pt, fill: muted)[
-    #author · #date
-  ]
+  #v(4em)
+  #text(font: font-body, size: 10pt, fill: muted)[#date]
 ]
 
 // --- Table of Contents ----------------------------------------------------
 // Print the TOC on its own page, no header/footer, with dot-leader fills
 // connecting heading title and page number. Auto-populates from H1/H2.
 #page(header: none, footer: none, margin: (top: 3cm, bottom: 3cm, x: 3.5cm))[
-  #text(font: font-heading, size: 24pt, weight: "semibold", fill: accent)[#l.report-toc]
+  #text(font: font-heading, size: 24pt, weight: "semibold", fill: primary)[#l.report-toc]
+  #v(0.3em)
+  #line(length: 1.5em, stroke: 1.5pt + accent)
   #v(1.2em)
   #show outline.entry: it => link(
     it.element.location(),

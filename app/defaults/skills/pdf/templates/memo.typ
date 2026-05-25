@@ -30,21 +30,28 @@
 #set text(font: font-body, size: 11pt, fill: primary, lang: lang)
 #set par(justify: true, leading: 0.7em, spacing: 1em)
 
+// Body headings rely on size + weight, not colour. Restraint over emphasis.
 #show heading.where(level: 1): it => {
   v(0.8em)
-  set text(font: font-body, size: 14pt, weight: "semibold", fill: accent)
+  set text(font: font-body, size: 13pt, weight: "semibold", fill: primary, tracking: 0.02em)
   it
+  v(0.3em)
+  line(length: 1.5em, stroke: 1.5pt + accent)
   v(0.4em)
 }
 
 // --- Header bar ----------------------------------------------------------
+// One single splash of accent: the eyebrow "MEMO". Title in primary so the
+// heading family carries the personality, not the colour.
 #block(
   width: 100%,
   fill: surface,
   inset: 16pt,
   radius: 6pt,
 )[
-  #text(font: font-heading, size: 18pt, weight: "semibold", fill: accent)[Memo · #title]
+  #text(size: 9pt, tracking: 0.18em, weight: "semibold", fill: accent)[#upper("Memo")]
+  #v(0.3em)
+  #text(font: font-heading, size: 20pt, weight: "semibold", fill: primary)[#title]
   #v(0.6em)
   #grid(
     columns: (auto, 1fr, auto, 1fr),

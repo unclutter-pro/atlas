@@ -1,116 +1,104 @@
 // themes.typ — design tokens (colors + fonts + surfaces) for the bundled templates.
 //
-// Pick a theme by name via --theme:
+// Design philosophy: each theme is a *complete visual personality*, not just a
+// colour swap. Body text stays near-black across all themes (readability +
+// professional restraint). The accent appears only 3–5 times per page —
+// title eyebrow, grand total, a single rule — never on every heading.
+// Hierarchy is carried by typography (weight · size · tracking · whitespace),
+// not by colour.
+//
+// Pick a theme:
 //   build-pdf report --theme graphite output/report.pdf
 //
-// Or override individual tokens with a brand-overlay JSON:
+// Or override individual tokens with a brand JSON:
 //   build-pdf report --colors my-brand.json output/report.pdf
 //
-// my-brand.json may set any subset of the tokens below. Missing tokens fall
-// back to the active theme. Colors are #RRGGBB hex; fonts are family names.
-// Example:
-//   {
-//     "primary":       "#1F2937",
-//     "accent":        "#2563EB",
-//     "muted":         "#6B7280",
-//     "rule":          "#E5E7EB",
-//     "background":    "#FFFFFF",
-//     "surface":       "#F3F4F6",
-//     "font-body":     "Inter",
-//     "font-heading":  "IBM Plex Serif",
-//     "font-mono":     "JetBrains Mono"
-//   }
-//
-// Tokens explained:
-//   primary    — body text colour
-//   accent     — headlines, key totals, emphasis
-//   muted      — captions, secondary text, labels
-//   rule       — borders, dividers, table strokes
-//   background — page background (kept white for printing in default themes)
-//   surface    — tinted block backgrounds (memo header bar, notes callout, ...)
-//   font-body  — body/sans family used for paragraphs, labels, tables
-//   font-heading — display/serif family for cover titles + H1
-//   font-mono  — monospace family (numerics, code blocks, IBAN, ...)
+// my-brand.json may set any subset of the nine tokens below.
 
 #let palettes = (
-  // graphite — neutral, business-default (warm dark grey accent)
+  // graphite — neutral / monochrome. The "no-colour" theme; relies on
+  // typography alone. Pick this when the brand should disappear behind
+  // the message.
   graphite: (
-    primary:      rgb("#111827"),
-    accent:       rgb("#374151"),
+    primary:      rgb("#0F172A"),
+    accent:       rgb("#334155"),
+    muted:        rgb("#64748B"),
+    rule:         rgb("#E2E8F0"),
+    background:   rgb("#FFFFFF"),
+    surface:      rgb("#F8FAFC"),
+    font-body:    "Inter",
+    font-heading: "IBM Plex Serif",
+    font-mono:    "JetBrains Mono",
+  ),
+  // indigo — tech / corporate. SaaS-style restraint, single deep indigo
+  // accent used very sparingly.
+  indigo: (
+    primary:      rgb("#0F172A"),
+    accent:       rgb("#4338CA"),
+    muted:        rgb("#64748B"),
+    rule:         rgb("#E2E8F0"),
+    background:   rgb("#FFFFFF"),
+    surface:      rgb("#F5F3FF"),
+    font-body:    "Inter",
+    font-heading: "IBM Plex Serif",
+    font-mono:    "JetBrains Mono",
+  ),
+  // forest — editorial / sustainable. Eggshell paper, deep forest accent,
+  // generous breathing room.
+  forest: (
+    primary:      rgb("#1F2937"),
+    accent:       rgb("#166534"),
     muted:        rgb("#6B7280"),
     rule:         rgb("#E5E7EB"),
-    background:   rgb("#FFFFFF"),
-    surface:      rgb("#F9FAFB"),
+    background:   rgb("#FAFAF7"),
+    surface:      rgb("#F4F4F0"),
     font-body:    "Inter",
     font-heading: "IBM Plex Serif",
     font-mono:    "JetBrains Mono",
   ),
-  // indigo — bolder than the original sky-blue, still corporate
-  indigo: (
-    primary:      rgb("#1E1B4B"),
-    accent:       rgb("#4338CA"),
-    muted:        rgb("#6B7280"),
-    rule:         rgb("#E0E7FF"),
-    background:   rgb("#FFFFFF"),
-    surface:      rgb("#EEF2FF"),
-    font-body:    "Inter",
-    font-heading: "IBM Plex Serif",
-    font-mono:    "JetBrains Mono",
-  ),
-  // forest — natural / sustainability tone
-  forest: (
-    primary:      rgb("#14532D"),
-    accent:       rgb("#15803D"),
-    muted:        rgb("#6B7280"),
-    rule:         rgb("#D1FAE5"),
-    background:   rgb("#FFFFFF"),
-    surface:      rgb("#ECFDF5"),
-    font-body:    "Inter",
-    font-heading: "IBM Plex Serif",
-    font-mono:    "JetBrains Mono",
-  ),
-  // amber — warm, premium feel (warmer serif for headlines)
+  // amber — editorial-warm / premium. Warm paper, burnt-amber accent,
+  // serif headlines (Crimson Pro) for character.
   amber: (
-    primary:      rgb("#451A03"),
-    accent:       rgb("#D97706"),
+    primary:      rgb("#292524"),
+    accent:       rgb("#B45309"),
     muted:        rgb("#78716C"),
-    rule:         rgb("#FEF3C7"),
-    background:   rgb("#FFFBEB"),
-    surface:      rgb("#FEF3C7"),
+    rule:         rgb("#E7E5E4"),
+    background:   rgb("#FDF8EE"),
+    surface:      rgb("#FAF1DD"),
     font-body:    "Inter",
     font-heading: "Crimson Pro",
     font-mono:    "JetBrains Mono",
   ),
-  // crimson — confident, attention-grabbing
+  // crimson — confident / magazine. Single deep-crimson accent (never
+  // bright red), white paper, Plex Serif headlines.
   crimson: (
-    primary:      rgb("#1F2937"),
-    accent:       rgb("#BE123C"),
-    muted:        rgb("#6B7280"),
-    rule:         rgb("#FECDD3"),
-    background:   rgb("#FFFFFF"),
-    surface:      rgb("#FFF1F2"),
-    font-body:    "Inter",
-    font-heading: "IBM Plex Serif",
-    font-mono:    "JetBrains Mono",
-  ),
-  // mono — pure black/grey, minimalist (all monospace)
-  mono: (
-    primary:      rgb("#000000"),
-    accent:       rgb("#27272A"),
+    primary:      rgb("#18181B"),
+    accent:       rgb("#9F1239"),
     muted:        rgb("#71717A"),
     rule:         rgb("#E4E4E7"),
     background:   rgb("#FFFFFF"),
     surface:      rgb("#FAFAFA"),
+    font-body:    "Inter",
+    font-heading: "IBM Plex Serif",
+    font-mono:    "JetBrains Mono",
+  ),
+  // mono — brutalist / archival. Pure black on white, JetBrains Mono
+  // throughout, deliberately raw and unstyled.
+  mono: (
+    primary:      rgb("#000000"),
+    accent:       rgb("#525252"),
+    muted:        rgb("#737373"),
+    rule:         rgb("#D4D4D4"),
+    background:   rgb("#FFFFFF"),
+    surface:      rgb("#F5F5F5"),
     font-body:    "JetBrains Mono",
     font-heading: "JetBrains Mono",
     font-mono:    "JetBrains Mono",
   ),
 )
 
-// Resolve the active theme from --input theme=<name>, with graphite default.
-// Optionally override individual tokens via --input colors=<json-path>.
-// Color tokens (primary/accent/muted/rule/background/surface) parsed via rgb().
-// Font tokens (font-body/font-heading/font-mono) used as strings.
+// Token classification for override parsing (colour tokens parsed via rgb(),
+// font tokens passed as strings).
 #let _color-keys = ("primary", "accent", "muted", "rule", "background", "surface")
 #let _font-keys  = ("font-body", "font-heading", "font-mono")
 
