@@ -1,340 +1,246 @@
 ---
 name: pdf
-description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
-license: Proprietary. LICENSE.txt has complete terms
+description: "Use this skill for any PDF authoring or post-processing task that doesn't require READING the content. CREATE / GENERATE / PRODUCE PDFs from scratch — reports, invoices, business letters, memos, status updates, market analyses, proposals (Typst engine, charts via Cetz, four bundled templates: report, invoice, letter, memo). FILL existing PDF forms — text fields, checkboxes, radio buttons. MERGE / SPLIT / ROTATE / WATERMARK / ENCRYPT existing PDFs via qpdf and pypdf. Embed ZUGFeRD / Factur-X XML for EU e-invoices. Triggers: 'erstelle PDF', 'baue Rechnung', 'mache einen Bericht als PDF', 'create a PDF', 'generate a report', 'render an invoice', 'business letter', 'Geschäftsbrief', 'Memo', 'merge PDFs', 'split a PDF', 'rotate pages', 'watermark this PDF', 'encrypt PDF', 'PDF Formular ausfüllen', 'fill this form'. Do NOT use for READING / EXTRACTING text from existing PDFs or OCR on scanned documents — use the `document-parse` skill (LiteParse)."
 ---
 
-# PDF Processing Guide
+# PDF Generation Skill
 
-## Overview
+Produces professional, brand-consistent PDFs with **Typst** as the primary engine. Optimized for fast iteration: write `.typ` source, run one `build-pdf` command, get a polished PDF.
 
-This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see reference.md. If you need to fill out a PDF form, read forms.md and follow its instructions.
+## When to use this skill
 
-## Quick Start
+**Create new PDFs from scratch:**
+- **Reports** — market research, status reports, deliverables (template: `report`)
+- **Invoices** — Rechnungen mit USt-konformer Struktur (template: `invoice`)
+- **Letters** — DIN-5008 Geschäftsbriefe (template: `letter`)
+- **Memos** — Single-page interne Notizen / Recaps (template: `memo`)
+- **Custom PDFs** — own `.typ` source with full Typst flexibility
 
-```python
-from pypdf import PdfReader, PdfWriter
+**Work with existing PDFs:**
+- **Fill PDF forms** — text fields, checkboxes, radio buttons → [references/forms.md](references/forms.md)
+- **Merge, split, rotate** — combine, extract page ranges, rotate pages → [references/existing-pdfs.md](references/existing-pdfs.md)
+- **Watermark, encrypt, repair** — qpdf and pypdf one-liners → [references/existing-pdfs.md](references/existing-pdfs.md)
 
-# Read a PDF
-reader = PdfReader("document.pdf")
-print(f"Pages: {len(reader.pages)}")
+### Form-filling decision tree
 
-# Extract text
-text = ""
-for page in reader.pages:
-    text += page.extract_text()
-```
+1. `python scripts/check_fillable_fields.py <file.pdf>` — does the PDF have AcroForm fields?
+2. **Has fillable fields** → `scripts/extract_form_field_info.py` to inspect, then `scripts/fill_fillable_fields.py` to fill.
+3. **No fillable fields** (flat scan or rendered form) → fall back to the visual estimation path in [references/forms.md](references/forms.md).
 
-## Python Libraries
+## When NOT to use this skill
 
-### pypdf - Basic Operations
+- Reading or extracting text from existing PDFs → `document-parse` skill
+- OCR on scanned documents → `document-parse` skill
 
-#### Merge PDFs
-```python
-from pypdf import PdfWriter, PdfReader
+## Quick start
 
-writer = PdfWriter()
-for pdf_file in ["doc1.pdf", "doc2.pdf", "doc3.pdf"]:
-    reader = PdfReader(pdf_file)
-    for page in reader.pages:
-        writer.add_page(page)
-
-with open("merged.pdf", "wb") as output:
-    writer.write(output)
-```
-
-#### Split PDF
-```python
-reader = PdfReader("input.pdf")
-for i, page in enumerate(reader.pages):
-    writer = PdfWriter()
-    writer.add_page(page)
-    with open(f"page_{i+1}.pdf", "wb") as output:
-        writer.write(output)
-```
-
-#### Extract Metadata
-```python
-reader = PdfReader("document.pdf")
-meta = reader.metadata
-print(f"Title: {meta.title}")
-print(f"Author: {meta.author}")
-print(f"Subject: {meta.subject}")
-print(f"Creator: {meta.creator}")
-```
-
-#### Rotate Pages
-```python
-reader = PdfReader("input.pdf")
-writer = PdfWriter()
-
-page = reader.pages[0]
-page.rotate(90)  # Rotate 90 degrees clockwise
-writer.add_page(page)
-
-with open("rotated.pdf", "wb") as output:
-    writer.write(output)
-```
-
-### pdfplumber - Text and Table Extraction
-
-#### Extract Text with Layout
-```python
-import pdfplumber
-
-with pdfplumber.open("document.pdf") as pdf:
-    for page in pdf.pages:
-        text = page.extract_text()
-        print(text)
-```
-
-#### Extract Tables
-```python
-with pdfplumber.open("document.pdf") as pdf:
-    for i, page in enumerate(pdf.pages):
-        tables = page.extract_tables()
-        for j, table in enumerate(tables):
-            print(f"Table {j+1} on page {i+1}:")
-            for row in table:
-                print(row)
-```
-
-#### Advanced Table Extraction
-```python
-import pandas as pd
-
-with pdfplumber.open("document.pdf") as pdf:
-    all_tables = []
-    for page in pdf.pages:
-        tables = page.extract_tables()
-        for table in tables:
-            if table:  # Check if table is not empty
-                df = pd.DataFrame(table[1:], columns=table[0])
-                all_tables.append(df)
-
-# Combine all tables
-if all_tables:
-    combined_df = pd.concat(all_tables, ignore_index=True)
-    combined_df.to_excel("extracted_tables.xlsx", index=False)
-```
-
-### reportlab - Create PDFs
-
-#### Basic PDF Creation
-```python
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-
-c = canvas.Canvas("hello.pdf", pagesize=letter)
-width, height = letter
-
-# Add text
-c.drawString(100, height - 100, "Hello World!")
-c.drawString(100, height - 120, "This is a PDF created with reportlab")
-
-# Add a line
-c.line(100, height - 140, 400, height - 140)
-
-# Save
-c.save()
-```
-
-#### Create PDF with Multiple Pages
-```python
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet
-
-doc = SimpleDocTemplate("report.pdf", pagesize=letter)
-styles = getSampleStyleSheet()
-story = []
-
-# Add content
-title = Paragraph("Report Title", styles['Title'])
-story.append(title)
-story.append(Spacer(1, 12))
-
-body = Paragraph("This is the body of the report. " * 20, styles['Normal'])
-story.append(body)
-story.append(PageBreak())
-
-# Page 2
-story.append(Paragraph("Page 2", styles['Heading1']))
-story.append(Paragraph("Content for page 2", styles['Normal']))
-
-# Build PDF
-doc.build(story)
-```
-
-#### Subscripts and Superscripts
-
-**IMPORTANT**: Never use Unicode subscript/superscript characters (₀₁₂₃₄₅₆₇₈₉, ⁰¹²³⁴⁵⁶⁷⁸⁹) in ReportLab PDFs. The built-in fonts do not include these glyphs, causing them to render as solid black boxes.
-
-Instead, use ReportLab's XML markup tags in Paragraph objects:
-```python
-from reportlab.platypus import Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
-
-styles = getSampleStyleSheet()
-
-# Subscripts: use <sub> tag
-chemical = Paragraph("H<sub>2</sub>O", styles['Normal'])
-
-# Superscripts: use <super> tag
-squared = Paragraph("x<super>2</super> + y<super>2</super>", styles['Normal'])
-```
-
-For canvas-drawn text (not Paragraph objects), manually adjust font the size and position rather than using Unicode subscripts/superscripts.
-
-#### Non-ASCII Characters (Umlauts, Accents, Cyrillic, CJK)
-
-**IMPORTANT**: ReportLab's built-in fonts (`Helvetica`, `Times-Roman`, `Courier`) only encode WinAnsi (≈Latin-1). Characters outside that range — including some compositions and most non-Latin scripts — fail silently or render as black boxes. German Umlauts (ÄÖÜäöüß) are inside Latin-1 so usually render, but anything broader requires a Unicode TTF.
-
-**Register a Unicode TTF for safety**:
-```python
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
-# DejaVuSans ships with most Linux distros at /usr/share/fonts/truetype/dejavu/
-pdfmetrics.registerFont(TTFont("DejaVuSans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
-
-# Canvas
-c.setFont("DejaVuSans", 12)
-c.drawString(100, 700, "Universität München — Größenänderung — Ωmega — 北京")
-
-# Paragraph stylesheets
-from reportlab.lib.styles import ParagraphStyle
-style = ParagraphStyle("body", fontName="DejaVuSans", fontSize=11, leading=14)
-```
-
-**Reading source text**: always `open(path, encoding="utf-8")` — implicit decoding can mangle Umlauts on non-UTF-8 hosts.
-
-**XML emergency entities** for inline Paragraph markup when a literal character won't paste cleanly: `&#196;` Ä · `&#214;` Ö · `&#220;` Ü · `&#228;` ä · `&#246;` ö · `&#252;` ü · `&#223;` ß
-
-## Command-Line Tools
-
-### pdftotext (poppler-utils)
 ```bash
-# Extract text
-pdftotext input.pdf output.txt
+# Pick a template and pipe in your data:
+build-pdf report \
+  --title "Markt-Recherche DACH" \
+  --subtitle "Tech / Beratung / Agentur" \
+  --author "Atlas" \
+  output/report.pdf
 
-# Extract text preserving layout
-pdftotext -layout input.pdf output.txt
+build-pdf invoice --data examples/invoice-sample.json output/invoice.pdf
 
-# Extract specific pages
-pdftotext -f 1 -l 5 input.pdf output.txt  # Pages 1-5
+build-pdf letter  --data my-letter.json              output/letter.pdf
+
+build-pdf memo \
+  --title "Sprint Recap KW 22" \
+  --to "Team" \
+  --from "Max" \
+  output/memo.pdf
+
+# Custom template? Just pass the .typ path:
+build-pdf path/to/custom.typ output/custom.pdf
 ```
 
-### qpdf
+The `build-pdf` script lives in `scripts/build-pdf` of this skill.
+
+## The four bundled templates
+
+### `report` — multi-page research / status / market reports
+
+- Cover page with title + subtitle + author + date
+- Auto headers/footers + page numbers
+- H1 forces a page break, H2/H3 inline
+- Tables with brand-coloured headers and subtle row rules
+- Native Cetz vector charts (`cetz.canvas { chart.barchart(...) }`) inside `figure(...)` with captions
+- Footnote-style source citations: `text#footnote[Bitkom, 2024]`
+
+Inputs (all optional, sensible defaults):
+
+| `--key` | Purpose |
+|---|---|
+| `--title` | Cover title |
+| `--subtitle` | Cover subtitle |
+| `--author` | Cover footer |
+| `--date` | Header date (ISO `YYYY-MM-DD` → locale-formatted; default: today) |
+| `--lang` | `de` (default) / `en` / `fr` — affects labels (Inhalt/Contents/Sommaire, Seite/Page) and date format |
+
+**Note**: The bundled `report.typ` is a *starter scaffold* with placeholder German chapter headings and lorem-ipsum body text. The `--key` flags only control cover/header metadata — actual content (sections, charts, tables) must be added by copying `templates/report.typ` and editing it. For voice, structure, chart usage, and pre-flight checklist see [references/writing-reports.md](references/writing-reports.md). For pure metadata-driven output (no edits needed), use `memo` or `letter` instead.
+
+### `invoice` — DIN-A4 Rechnung
+
+- Sender block top-left + invoice metadata grid
+- Recipient block on the left, metadata (Rechnungs-Nr, Datum, Fällig) on the right
+- Line items table with running sums
+- Totals block: Subtotal · USt-% · Total
+- IBAN / BIC / USt-IdNr footer block
+- Optional `notes` line
+- Invoice number auto-scales (28pt → 20pt → 14pt) so DATEV-style long numbers stay readable
+- Dates accept ISO `YYYY-MM-DD` (locale-formatted) or pre-formatted free-form strings; service date can be a range like `"2026-05-15 — 2026-05-23"`
+- Numbers locale-formatted: DE `1.600,00` · EN `1,600.00` · FR `1 600,00`
+
+Inputs: `--data path/to/invoice.json` (see `examples/invoice-sample.json` for shape). Add `"lang": "en"` (or `"fr"`, default `"de"`) to switch labels and date/number format.
+
+### `letter` — DIN-5008 Geschäftsbrief
+
+- Sender mini-address top-right
+- Underlined Rücksendezeile (DIN 5008)
+- Recipient in the postal-window area
+- Right-aligned date + bold subject
+- Body with multi-paragraph support (separate paragraphs by `\n\n` in JSON)
+- Salutation, body, closing, signature in correct German business style
+
+Inputs: `--data path/to/letter.json` (see `examples/letter-sample.json`). Add `"lang": "en"` (or `"fr"`) to switch the subject label and date format — note: DIN-5008 letters often pre-format the date with a city prefix ("Stuttgart, 25. Mai 2026"), which passes through unchanged.
+
+### `memo` — single-page recap
+
+- Slim header bar with title (auto-shrinks 20pt → 17pt → 14pt for long titles), To, From, Date
+- Three default sections: *Was passiert ist* · *Entscheidungen* · *Nächste Schritte*
+- Compact table for owner / task / deadline
+- **Single-page discipline**: if your content overflows to page 2, you wrote a report — see [references/writing-memos.md](references/writing-memos.md)
+
+Inputs: `--title`, `--to`, `--from`, `--date` (ISO `YYYY-MM-DD` → locale-formatted), `--lang` (`de` / `en` / `fr`).
+
+## Charts and figures
+
+Draw charts with **Cetz + cetz-plot** — native to Typst, vector all the way, inherits the document's theme:
+
+```typst
+#import "@preview/cetz:0.4.2"
+#import "@preview/cetz-plot:0.1.3": chart
+
+#figure(
+  cetz.canvas({
+    chart.barchart(
+      mode: "basic",
+      size: (10, 4),
+      label-key: 0, value-key: 1,
+      bar-style: i => (fill: accent),
+      (("Tech", 225.9), ("Beratung", 48.7), ("Agenturen", 27.6)),
+    )
+  }),
+  caption: [Marktgrößen DACH 2024 (Mrd. €).],
+)
+```
+
+Patterns per chart type (horizontal bar, vertical bar, line, stacked, diverging), theme integration, anti-patterns in [references/charts.md](references/charts.md).
+
+## Languages
+
+All four templates support **`de`** (default) / **`en`** / **`fr`** via the `lang` input.
+
+| Aspect | `de` | `en` | `fr` |
+|---|---|---|---|
+| Labels | Rechnung, Fällig bis, ... | Invoice, Due by, ... | Facture, Échéance, ... |
+| Date format | `25.05.2026` | `2026-05-25` (ISO) | `25/05/2026` |
+| Number format | `1.600,00` | `1,600.00` | `1 600,00` (NBSP) |
+
+Set via `--lang en` for memo/report (CLI flag), or `"lang": "en"` in the invoice/letter JSON.
+
+Add another language by extending `templates/i18n.typ` — drop a new entry into the `labels` dict and add date/number format branches.
+
+## Fonts and themes
+
+Six built-in themes (`graphite` default, `indigo`, `forest`, `amber`, `crimson`, `mono`) selectable via `--theme <name>`. Each theme bundles **colours, fonts AND backgrounds** — nine design tokens:
+
+- Colours: `primary`, `accent`, `muted`, `rule`, `background`, `surface`
+- Fonts: `font-body`, `font-heading`, `font-mono`
+
+So picking `--theme amber` gives you cream page background + Crimson Pro headlines; `--theme mono` is all-monospace; `--theme indigo` keeps Inter + IBM Plex Serif but with indigo accents and a tinted surface.
+
+Per-brand override via `--colors brand.json` accepts any subset of the nine tokens. Container ships with Inter, IBM Plex Serif, JetBrains Mono, Crimson Pro, Liberation, DejaVu, Noto + CJK.
+
+Full theme list, token explanations, brand-override JSON shape in [references/themes-and-fonts.md](references/themes-and-fonts.md).
+
+## E-Invoices (ZUGFeRD / Factur-X)
+
+For German B2B and EU public-sector invoices, the `invoice` template pairs with the `scripts/invoice-zugferd` helper to embed a CII XML (EN 16931 profile):
+
 ```bash
-# Merge PDFs
-qpdf --empty --pages file1.pdf file2.pdf -- merged.pdf
-
-# Split pages
-qpdf input.pdf --pages . 1-5 -- pages1-5.pdf
-qpdf input.pdf --pages . 6-10 -- pages6-10.pdf
-
-# Rotate pages
-qpdf input.pdf output.pdf --rotate=+90:1  # Rotate page 1 by 90 degrees
-
-# Remove password
-qpdf --password=mypassword --decrypt encrypted.pdf decrypted.pdf
+build-pdf invoice --data invoice.json invoice.pdf
+invoice-zugferd invoice.pdf invoice.json invoice_factur-x.pdf
 ```
 
-### pdftk (if available)
+Profile choices, recipient compatibility, current limitations (multiple VAT rates, Skonto, reverse charge), and validation commands in [references/zugferd.md](references/zugferd.md).
+
+## Pre-flight checklist
+
+Before delivering a PDF:
+
+- [ ] `typst compile` succeeds with no warnings (variable-font warnings are red flags)
+- [ ] All charts render and external image paths resolve — open the PDF to confirm
+- [ ] Source citations consistent (URLs or footnotes, not mixed)
+- [ ] Footer with date/version if the user will share externally
+- [ ] PDF opens cleanly (`head -c 8 my.pdf` → `%PDF-1.7`)
+- [ ] File size sane (< 3 MB for a 15-page report unless heavy images)
+- [ ] For Factur-X invoices: `facturx-xmlcheck out.pdf` passes (schema + schematron)
+
+## Common pitfalls
+
+1. **Curly quotes "…" terminate Typst strings** — German typographic quotes (U+201C/U+201D) are ASCII-identical to `"`. Inside string literals use plain `"`; inside content blocks (`[…]`) anything goes.
+2. **Variable fonts** — reference `"Inter"`, not `"Inter Variable"`. The container ships static cuts only.
+3. **Table overflows** — narrow column headers or wrap the body with `text(size: 9pt)`.
+
+For Typst-authoring gotchas (image paths, `context` for `counter(page).final()`, `table.header(...)` repeat, `pagebreak(weak: true)`) see [templates/custom-templates.md § Common gotchas](templates/custom-templates.md).
+
+## Useful one-liners
+
 ```bash
-# Merge
-pdftk file1.pdf file2.pdf cat output merged.pdf
+# Render and open immediately:
+build-pdf memo --title "Stand $(date +%V)" /tmp/memo.pdf && xdg-open /tmp/memo.pdf
 
-# Split
-pdftk input.pdf burst
+# Iterate on a custom template — auto-recompile on save:
+typst watch my-report.typ my-report.pdf
 
-# Rotate
-pdftk input.pdf rotate 1east output rotated.pdf
+# Combine multiple PDFs (see references/existing-pdfs.md):
+qpdf --empty --pages report.pdf invoice.pdf -- bundle.pdf
 ```
 
-## Common Tasks
+## Writing your own templates
 
-### Extract Text from Scanned PDFs
-```python
-# Requires: pip install pytesseract pdf2image
-import pytesseract
-from pdf2image import convert_from_path
+When the four bundled templates don't fit, write your own `.typ` from scratch. See [templates/custom-templates.md](templates/custom-templates.md) for a hands-on guide: the four Typst building blocks (`#set` / `#show` / `#let` / layout primitives), how to pull data via `--input` flags or JSON, theme reuse, plus a cookbook of recipes (two-column pages, right-aligned totals, repeating table headers, footnotes, auto-TOC, callouts, German money formatting). The "Common gotchas" section at the end (curly quotes, variable fonts, `context` for page-counter, image paths, ...) saves the first hour of frustration.
 
-# Convert PDF to images
-images = convert_from_path('scanned.pdf')
+## File layout
 
-# OCR each page
-text = ""
-for i, image in enumerate(images):
-    text += f"Page {i+1}:\n"
-    text += pytesseract.image_to_string(image)
-    text += "\n\n"
-
-print(text)
+```
+pdf/
+├── SKILL.md                          ← you are here
+├── templates/
+│   ├── custom-templates.md           Guide for writing your own Typst templates
+│   ├── themes.typ                    Theme palette definitions
+│   └── report.typ  invoice.typ  letter.typ  memo.typ
+├── examples/
+│   ├── invoice-sample.json
+│   └── letter-sample.json
+├── scripts/
+│   ├── build-pdf                     One-command typst compile wrapper
+│   ├── invoice-zugferd               Embeds Factur-X XML into rendered invoice
+│   └── *.py                          PDF form-filling helpers (see references/forms.md)
+└── references/
+    ├── writing-reports.md            How to write a good report — workflow, structure, voice, pitfalls
+    ├── writing-memos.md              How to keep memos single-page and operational
+    ├── typst-cheatsheet.md           Escape rules, common patterns, theme tokens
+    ├── charts.md                     Cetz / cetz-plot chart patterns and anti-patterns
+    ├── themes-and-fonts.md           6 built-in themes, font swap recipes, brand override
+    ├── zugferd.md                    Factur-X profile choices, EN 16931 mapping, recipient compatibility
+    ├── existing-pdfs.md              Merge, split, rotate, watermark, encrypt existing PDFs
+    └── forms.md                      Filling existing PDF forms (radio, checkbox, text fields)
 ```
 
-### Add Watermark
-```python
-from pypdf import PdfReader, PdfWriter
+## Companion skills
 
-# Create watermark (or load existing)
-watermark = PdfReader("watermark.pdf").pages[0]
-
-# Apply to all pages
-reader = PdfReader("document.pdf")
-writer = PdfWriter()
-
-for page in reader.pages:
-    page.merge_page(watermark)
-    writer.add_page(page)
-
-with open("watermarked.pdf", "wb") as output:
-    writer.write(output)
-```
-
-### Extract Images
-```bash
-# Using pdfimages (poppler-utils)
-pdfimages -j input.pdf output_prefix
-
-# This extracts all images as output_prefix-000.jpg, output_prefix-001.jpg, etc.
-```
-
-### Password Protection
-```python
-from pypdf import PdfReader, PdfWriter
-
-reader = PdfReader("input.pdf")
-writer = PdfWriter()
-
-for page in reader.pages:
-    writer.add_page(page)
-
-# Add password
-writer.encrypt("userpassword", "ownerpassword")
-
-with open("encrypted.pdf", "wb") as output:
-    writer.write(output)
-```
-
-## Quick Reference
-
-| Task | Best Tool | Command/Code |
-|------|-----------|--------------|
-| Merge PDFs | pypdf | `writer.add_page(page)` |
-| Split PDFs | pypdf | One page per file |
-| Extract text | pdfplumber | `page.extract_text()` |
-| Extract tables | pdfplumber | `page.extract_tables()` |
-| Create PDFs | reportlab | Canvas or Platypus |
-| Command line merge | qpdf | `qpdf --empty --pages ...` |
-| OCR scanned PDFs | pytesseract | Convert to image first |
-| Fill PDF forms | pdf-lib or pypdf (see forms.md) | See forms.md |
-
-## Next Steps
-
-- For advanced pypdfium2 usage, see reference.md
-- For JavaScript libraries (pdf-lib), see reference.md
-- If you need to fill out a PDF form, follow the instructions in forms.md
-- For troubleshooting guides, see reference.md
+- `document-parse` — reading PDFs (OCR, text extraction).

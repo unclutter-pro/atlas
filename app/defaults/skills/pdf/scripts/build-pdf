@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# build-pdf — wrapper around `typst compile` that uses the bundled templates and JSON inputs.
+#
+# Usage:
+#   build-pdf <template> [options] <output.pdf>
+#   build-pdf report    --title "Marktrecherche" --subtitle "DACH" --author "Atlas"  out/report.pdf
+#   build-pdf invoice   --data path/to/invoice.json                                    out/invoice.pdf
+#   build-pdf letter    --data path/to/letter.json                                     out/letter.pdf
+#   build-pdf memo      --title "Sprint Recap" --to "Team" --from "Max"                out/memo.pdf
+#
+# Bundled templates: report | invoice | letter | memo
+# Custom .typ files: build-pdf path/to/file.typ output.pdf
+#
+# Set --root to the template's parent dir so it can read images/charts/json sitting next to it.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+
+print_usage() {
+  cat <<'EOF'
+Usage: build-pdf <template-or-path> [--key value ...] <output.pdf>
+
+Templates bundled in the skill:
+  report   --title "..." --subtitle "..." --author "..." --date "..."
+  invoice  --data path/to/invoice.json
+  letter   --data path/to/letter.json
+  memo     --title "..." --to "..." --from "..." --date "..."
+
+Custom: pass a path to any .typ file as the first argument.
+EOF
+}
+
+# --help / -h on any position
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) print_usage; exit 0 ;;
+  esac
+done
+
+if [ $# -lt 2 ]; then
+  print_usage >&2
+  exit 1
+fi
+
+TEMPLATE_ARG="$1"; shift
+
+# Resolve template path
+case "$TEMPLATE_ARG" in
+  report|invoice|letter|memo)
+    TEMPLATE="$SKILL_DIR/templates/${TEMPLATE_ARG}.typ"
+    ;;
+  *.typ)
+    TEMPLATE="$TEMPLATE_ARG"
+    ;;
+  *)
+    echo "error: unknown template '$TEMPLATE_ARG' — must be report|invoice|letter|memo or *.typ" >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -f "$TEMPLATE" ]; then
+  echo "error: template not found: $TEMPLATE" >&2
+  exit 1
+fi
+
+# Collect --key value pairs as --input flags, last positional is the output path.
+# For --data, resolve the path to absolute so the template can read it via
+# json("/abs/path.json") regardless of cwd.
+INPUTS=()
+OUTPUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data=*|--data)
+      if [[ "$1" == --data=* ]]; then
+        DATA_VAL="${1#--data=}"; shift
+      else
+        DATA_VAL="${2:-}"; shift 2
+      fi
+      if [ -z "$DATA_VAL" ]; then
+        echo "error: --data requires a path" >&2
+        exit 1
+      fi
+      if [ ! -f "$DATA_VAL" ]; then
+        echo "error: --data file not found: $DATA_VAL" >&2
+        exit 1
+      fi
+      DATA_ABS="$(realpath "$DATA_VAL")"
+      INPUTS+=("--input" "data=${DATA_ABS}")
+      ;;
+    --*=*)
+      INPUTS+=("--input" "${1#--}")
+      shift
+      ;;
+    --*)
+      KEY="${1#--}"
+      VALUE="${2:-}"
+      INPUTS+=("--input" "${KEY}=${VALUE}")
+      shift 2
+      ;;
+    *)
+      OUTPUT="$1"
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$OUTPUT" ]; then
+  echo "error: missing output PDF path" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$OUTPUT")"
+
+# --root / gives Typst access to absolute paths for templates and data files
+# (template lives in the skill dir; --data may be anywhere).
+typst compile \
+  --root / \
+  "${INPUTS[@]}" \
+  "$TEMPLATE" \
+  "$OUTPUT"
+
+echo "✓ $OUTPUT"

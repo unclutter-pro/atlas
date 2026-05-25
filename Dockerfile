@@ -48,7 +48,11 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
   libxcomposite1 libxdamage1 libxkbcommon0 \
   libnss3 libdrm2 libgbm1 libasound2t64 libcups2t64 \
-  libpango-1.0-0 libcairo2 fonts-liberation \
+  libpango-1.0-0 libcairo2 \
+  # --- Fonts for PDF generation (pdf skill / Typst pipeline) ---
+  fonts-liberation fonts-dejavu \
+  fonts-inter fonts-ibm-plex fonts-jetbrains-mono \
+  fonts-crimson-pro fonts-noto fonts-noto-cjk \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
   && useradd -m -s /bin/bash -G sudo agent \
@@ -90,7 +94,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
   && npm cache clean --force \
   # --- Python packages (used by messaging addons for config parsing) ---
-  && pip install --break-system-packages pyyaml html2text \
+  && pip install --break-system-packages pyyaml html2text factur-x lxml \
   # --- Claude Code CLI ---
   && npm install -g @anthropic-ai/claude-code \
   && claude --version \

@@ -1,6 +1,6 @@
 ---
 name: document-parse
-description: Use this skill when the user asks to parse, perform multi-format document conversion or when you want to spatially extract text from an unstructured file (PDF, DOCX, PPTX, XLSX, images, etc.).
+description: "Use this skill to READ / EXTRACT / PARSE / OCR existing documents — pull text and structure out of PDF, DOCX, PPTX, XLSX, EPUB, HTML, images (JPG/PNG/TIFF/WebP), scanned-document PDFs, or any unstructured file. Triggers: 'parse this PDF', 'extract text', 'OCR this image', 'text aus scan', 'lies das Dokument', 'convert PDF to markdown', 'erkenne Text', 'transcribe document', 'spatial layout extraction', plus any time the user provides a file and asks what's inside. Runs LiteParse locally — Tesseract.js OCR built-in, optional external OCR server (EasyOCR / PaddleOCR) for higher accuracy. Output is clean markdown ready for downstream LLM processing. Do NOT use for: (1) CREATING a new PDF from scratch — use the `pdf` skill. (2) Filling forms in an existing PDF — see `pdf` skill `forms.md`. (3) Pure speech-to-text from audio/video — use the `stt` skill."
 ---
 
 # Document to Text
