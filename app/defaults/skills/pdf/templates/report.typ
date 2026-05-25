@@ -78,7 +78,7 @@
   #v(2.5em)
   // Title: left-aligned (justify off so word spaces don't stretch) with
   // generous 0.9em leading for the display-size headline.
-  #par(justify: false, leading: 0.9em)[
+  #par(justify: false, leading: 1.2em)[
     #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
   ]
   #v(0.8em)
