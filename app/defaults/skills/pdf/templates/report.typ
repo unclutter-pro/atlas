@@ -79,10 +79,10 @@
   // Title: left-aligned (justify off so word spaces don't stretch).
   // Leading is computed from the title size, not the body em — otherwise
   // `1.4em` would resolve against the 11pt body and stay invisibly small.
-  // leading = title-size × 1.4 (factor relative to title em, not body em).
-  #let title-size = 42pt
-  #par(justify: false, leading: title-size * 1.4)[
-    #text(font: font-heading, size: title-size, weight: "semibold", fill: primary)[#title]
+  // `em` is resolved against the surrounding text size — putting `text(size:)`
+  // OUTSIDE the par lets `leading: 1.4em` mean 1.4 × the title size.
+  #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[
+    #par(justify: false, leading: 1.4em)[#title]
   ]
   #v(0.8em)
   #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
