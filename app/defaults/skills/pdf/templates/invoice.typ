@@ -149,7 +149,7 @@
   )).flatten(),
 )
 
-#v(2em)
+#v(1.5em)
 
 // --- Totals block, kept together (no page break inside) ------------------
 #let subtotal = data.items.fold(0.0, (acc, it) => acc + it.qty * it.unit_price)
@@ -157,33 +157,36 @@
 #let total = subtotal + vat
 
 #block(breakable: false)[
-  // A right-aligned totals panel that hugs the right margin.
-  // Two columns: labels right-aligned in column 1, amounts right-aligned in column 2.
-  // The whole grid is right-aligned on the page via the outer align(right).
-  #align(right)[
-    #table(
-      columns: (auto, auto),
-      align: (right, right),
-      stroke: none,
-      inset: (x: 0pt, y: 4pt),
-      column-gutter: 2em,
-      text(size: 10pt, fill: muted)[Zwischensumme (netto)],
-      text(size: 10pt)[#fmt(subtotal) #data.currency],
-      ..(if is_kleinunternehmer { () } else {
-        (
-          text(size: 10pt, fill: muted)[USt #calc.round(vat_rate * 100) %],
-          text(size: 10pt)[#fmt(vat) #data.currency],
-        )
-      }),
-      table.cell(colspan: 2, inset: (x: 0pt, y: 6pt))[
-        #line(length: 100%, stroke: 0.4pt + rule)
-      ],
-      text(size: 12pt, weight: "semibold")[Gesamtbetrag],
-      text(size: 22pt, weight: "semibold", fill: accent)[#fmt(total) #data.currency],
-    )
+  // Full-width two-column layout for the totals.
+  //   col 1 (1fr): pushes labels to the right, so they sit at the gutter edge
+  //   col 2 (auto): amounts grow from the gutter to the page's right margin
+  // Both right-aligned → every amount's right edge lines up with the page
+  // right margin, every label's right edge sits at the same gutter line.
+  #table(
+    columns: (1fr, auto),
+    align: (right + horizon, right + horizon),
+    stroke: none,
+    inset: (x: 0pt, y: 6pt),
+    column-gutter: 2.5em,
+    text(size: 10pt, fill: muted)[Zwischensumme (netto)],
+    text(size: 10pt)[#fmt(subtotal) #data.currency],
+    ..(if is_kleinunternehmer { () } else {
+      (
+        text(size: 10pt, fill: muted)[USt #calc.round(vat_rate * 100) %],
+        text(size: 10pt)[#fmt(vat) #data.currency],
+      )
+    }),
+    // thin rule above the grand total — only as wide as the amount column
+    table.cell(colspan: 2, inset: (x: 0pt, y: 4pt))[
+      #align(right)[#box(width: 7cm, line(length: 100%, stroke: 0.5pt + rule))]
+    ],
+    text(size: 11pt, weight: "semibold")[Gesamtbetrag],
+    text(size: 16pt, weight: "semibold", fill: accent)[#fmt(total) #data.currency],
+  )
 
-    #if is_kleinunternehmer [
-      #v(0.8em)
+  #if is_kleinunternehmer [
+    #v(0.8em)
+    #align(right)[
       #text(size: 9pt, fill: muted, style: "italic")[
         Gemäß § 19 UStG wird keine Umsatzsteuer ausgewiesen.
       ]
@@ -191,7 +194,7 @@
   ]
 ]
 
-#v(3em)
+#v(2em)
 
 // --- Payment block, also kept together -----------------------------------
 #block(breakable: false)[
@@ -228,12 +231,13 @@
 ]
 
 #if data.at("notes", default: "") != "" [
-  #v(1.5em)
+  #v(1em)
   #block(
     width: 100%,
-    inset: 12pt,
+    inset: 10pt,
     fill: rule.lighten(60%),
     radius: 4pt,
+    breakable: false,
   )[
     #text(size: 9pt, fill: muted)[#data.notes]
   ]

@@ -62,6 +62,29 @@
   ]
 ]
 
+// --- Table of Contents ----------------------------------------------------
+// Print the TOC on its own page, no header/footer, with dot-leader fills
+// connecting heading title and page number. Auto-populates from H1/H2.
+#page(header: none, footer: none, margin: (top: 3cm, bottom: 3cm, x: 3.5cm))[
+  #text(font: "IBM Plex Serif", size: 24pt, weight: "semibold", fill: accent)[Inhalt]
+  #v(1.2em)
+  #show outline.entry: it => link(
+    it.element.location(),
+    it.indented(it.prefix(), {
+      // body title with dot leader to the page number
+      it.body()
+      box(width: 1fr, repeat[#h(0.3em).#h(0.3em)])
+      it.page()
+    }),
+  )
+  #outline(
+    title: none,
+    target: heading.where(level: 1).or(heading.where(level: 2)),
+    indent: auto,
+    depth: 2,
+  )
+]
+
 // --- Executive Summary ----------------------------------------------------
 = Executive Summary
 
