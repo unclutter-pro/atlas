@@ -253,7 +253,7 @@ With dot-leaders and right-aligned page numbers:
 
 1. **Curly quotes "…" terminate strings**. German typographic quotes `"…"` (U+201C/U+201D) are ASCII-identical to `"` to Typst's lexer. Inside string literals use plain `"`, inside content blocks (`[…]`) anything goes.
 
-2. **Variable fonts cause warnings**. The Atlas Dockerfile installs *static* font cuts: Inter, IBM Plex Serif, JetBrains Mono, Crimson Pro. Don't reference `Inter Variable` or `Inter Tight VF`.
+2. **Variable fonts cause warnings**. The container ships *static* font cuts: Inter, IBM Plex Serif, JetBrains Mono, Crimson Pro. Don't reference `Inter Variable` or `Inter Tight VF`.
 
 3. **`counter(page).final()` needs `context`**. Wrap the surrounding expression in `context { ... }` or `context align(...)[...]` — otherwise Typst evaluates it during the first pass before the page count exists.
 

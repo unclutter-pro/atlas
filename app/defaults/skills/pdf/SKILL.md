@@ -101,11 +101,7 @@ Inputs: `--title`, `--to`, `--from`, `--date`.
 
 ## Charts and figures
 
-Two approaches, pick what fits:
-
-### Option A — matplotlib PNGs (most flexible)
-
-Pre-generate chart PNGs in a `charts/` subfolder next to the report and reference them:
+Embed pre-rendered PNGs from matplotlib, or compile vector charts inline with Cetz:
 
 ```typst
 #figure(
@@ -114,44 +110,24 @@ Pre-generate chart PNGs in a `charts/` subfolder next to the report and referenc
 )
 ```
 
-Default DPI 150, A4 width-friendly figure sizes ~10x5 inches.
+Full pattern library — matplotlib defaults, recommended chart types per use case (horizontal bar, donut, stacked, diverging, heatmap), Cetz examples, anti-patterns — in [references/charts.md](references/charts.md).
 
-### Option B — Cetz / cetz-plot (native Typst)
+## Fonts and themes
 
-For brand-consistent vector charts compiled together with the document:
+Six built-in themes (`graphite` default, `indigo`, `forest`, `amber`, `crimson`, `mono`) selectable via `--theme <name>`. Per-brand colour overrides via `--colors brand.json`. Container ships with Inter, IBM Plex Serif, JetBrains Mono, Crimson Pro, Liberation, DejaVu, Noto + CJK — usable directly as `#set text(font: "Inter")`.
 
-```typst
-#import "@preview/cetz:0.4.2"
-#import "@preview/cetz-plot:0.1.4"
+Full theme list, font swap recipes, brand-override JSON shape in [references/themes-and-fonts.md](references/themes-and-fonts.md).
 
-#figure(
-  cetz.canvas({
-    import cetz.draw: *
-    cetz-plot.plot.plot(size: (10, 5), {
-      cetz-plot.plot.add-bar((("Tech", 225.9), ("Beratung", 48.7), ("Agenturen", 27.6)))
-    })
-  }),
-  caption: [Marktgrößen DACH 2024 (Mrd. €).],
-)
+## E-Invoices (ZUGFeRD / Factur-X)
+
+For German B2B and EU public-sector invoices, the `invoice` template pairs with the `scripts/invoice-zugferd` helper to embed a CII XML (EN 16931 profile):
+
+```bash
+build-pdf invoice --data invoice.json invoice.pdf
+invoice-zugferd invoice.pdf invoice.json invoice_factur-x.pdf
 ```
 
-Cetz is slower to compile but stays as crisp vector at any zoom, and inherits the document fonts/colours.
-
-## Fonts available in the container
-
-Pre-installed by the Atlas Dockerfile:
-
-| Family | Use |
-|---|---|
-| `Inter` | Body sans, UI, captions (modern, screen-friendly) |
-| `IBM Plex Serif` | Body serif, headlines for reports/letters (business-appropriate) |
-| `JetBrains Mono` | Monospace for code, numerals, technical content |
-| `Crimson Pro` | Long-form serif (essays, op-eds) |
-| `Liberation Sans/Serif/Mono` | Drop-in replacements for Arial/Times/Courier |
-| `DejaVu Sans/Serif/Mono` | Broad Unicode coverage incl. Cyrillic, Greek, math symbols |
-| `Noto Sans` + `Noto Sans CJK` | International scripts including Chinese, Japanese, Korean |
-
-Use any of these in Typst as `#set text(font: "Inter")` etc. — no manual font loading needed.
+Profile choices, recipient compatibility, current limitations (multiple VAT rates, Skonto, reverse charge), and validation commands in [references/zugferd.md](references/zugferd.md).
 
 ## Pre-flight checklist
 
@@ -166,7 +142,7 @@ Before delivering a PDF:
 
 ## Common pitfalls
 
-1. **Variable fonts in Typst** — variable Inter/Plex builds throw `font fallback list must not be empty`. The Dockerfile installs static cuts.
+1. **Variable fonts in Typst** — variable Inter/Plex builds throw `font fallback list must not be empty`. Use the static cuts installed in the container.
 2. **Curly quotes in template strings** — German `"…"` (U+201C/U+201D) terminate Typst strings since they're ASCII-identical to `"`. Use plain ASCII quotes inside strings.
 3. **`#image("...")` path resolution** — relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so chart PNGs in your CWD work.
 4. **Table overflows** — narrow your column headers or wrap with `text(size: 9pt)` for the table body.
@@ -188,12 +164,36 @@ qpdf --empty --pages report.pdf invoice.pdf -- bundle.pdf
 
 When the four bundled templates don't fit, write your own `.typ` from scratch. See [templates/AUTHORING.md](templates/AUTHORING.md) for a hands-on guide: the four Typst building blocks (`#set` / `#show` / `#let` / layout primitives), how to pull data via `--input` flags or JSON, theme reuse, plus a cookbook of recipes (two-column pages, right-aligned totals, repeating table headers, footnotes, auto-TOC, callouts, German money formatting). The "Common gotchas" section at the end (curly quotes, variable fonts, `context` for page-counter, image paths, ...) saves the first hour of frustration.
 
+## File layout
+
+```
+pdf/
+├── SKILL.md                          ← you are here
+├── templates/
+│   ├── AUTHORING.md                  Custom Typst template cookbook
+│   ├── themes.typ                    Theme palette definitions
+│   ├── report.typ  invoice.typ  letter.typ  memo.typ
+├── examples/
+│   ├── invoice-sample.json
+│   └── letter-sample.json
+├── scripts/
+│   ├── build-pdf                     One-command typst compile wrapper
+│   ├── invoice-zugferd               Embeds Factur-X XML into rendered invoice
+│   └── *.py                          PDF form-filling helpers (see forms.md)
+└── references/
+    ├── charts.md                     matplotlib + Cetz patterns and anti-patterns
+    ├── themes-and-fonts.md           6 built-in themes, font swap recipes, brand override
+    ├── zugferd.md                    Factur-X profile choices, EN 16931 mapping, recipient compatibility
+    ├── existing-pdfs.md              Working WITH existing PDFs (merge, split, watermark, encrypt)
+    └── forms.md                      Filling existing PDF forms (radio, checkbox, text fields)
+```
+
 ## See also
 
 - [templates/AUTHORING.md](templates/AUTHORING.md) — write your own Typst templates from scratch.
-- [reference.md](reference.md) — qpdf / pypdf one-liners for existing PDFs (merge, split, watermark, encrypt).
-- [forms.md](forms.md) — filling existing PDF forms (kept for backwards compat).
-- `templates/` — the four bundled Typst templates.
-- `examples/` — sample JSON inputs for invoice and letter.
-- `scripts/build-pdf` — wrapper around `typst compile`.
-- `document-parse` skill — for the inverse direction (reading existing PDFs).
+- [references/charts.md](references/charts.md) — chart cookbook (matplotlib + Cetz).
+- [references/themes-and-fonts.md](references/themes-and-fonts.md) — theming + typography.
+- [references/zugferd.md](references/zugferd.md) — Factur-X / EN 16931 e-invoices.
+- [references/existing-pdfs.md](references/existing-pdfs.md) — operating on PDFs you didn't create here.
+- [references/forms.md](references/forms.md) — filling existing PDF forms.
+- `document-parse` skill — reading PDFs (OCR, text extraction).

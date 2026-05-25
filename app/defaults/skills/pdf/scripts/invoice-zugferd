@@ -21,7 +21,7 @@ Profiles supported (--profile flag):
   - EN 16931     — DEFAULT, full EU baseline
   - EXTENDED     — EN 16931 + extended fields (delivery refs etc.)
 
-Dependencies (installed by the Atlas Dockerfile):
+Dependencies (pre-installed in the container):
   - facturx (pip)
   - lxml (pip)
 """

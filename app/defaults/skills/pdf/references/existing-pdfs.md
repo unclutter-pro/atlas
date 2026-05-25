@@ -1,6 +1,10 @@
-# PDF Processing Advanced Reference
+# Working with Existing PDFs
 
-This document contains advanced PDF processing features, detailed examples, and additional libraries not covered in the main skill instructions.
+This file is the reference for operating on PDFs you already have — merging, splitting, watermarking, encrypting, rendering to images. It pairs the `pdf` skill (which is creation-focused with Typst) when you need to manipulate files that exist.
+
+For reading text from PDFs, use the **`document-parse` skill** instead — LiteParse handles OCR, layout extraction, and conversion to clean markdown.
+
+For filling PDF forms, see [forms.md](forms.md) in this folder.
 
 ## pypdfium2 Library (Apache/BSD License)
 
