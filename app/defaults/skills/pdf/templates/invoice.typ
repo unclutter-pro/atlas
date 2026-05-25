@@ -208,6 +208,7 @@
         columns: (auto, 1fr),
         stroke: none,
         inset: (x: 0pt, y: 4pt),
+        column-gutter: 1em,
         align: (left + top, left + top),
         text(size: 9pt, fill: muted)[IBAN],
         text(size: 10pt)[#data.from.iban],

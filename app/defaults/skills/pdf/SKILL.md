@@ -184,8 +184,13 @@ typst watch my-report.typ my-report.pdf
 qpdf --empty --pages report.pdf invoice.pdf -- bundle.pdf
 ```
 
+## Authoring custom templates
+
+When the four bundled templates don't fit, write your own `.typ` from scratch. See [templates/AUTHORING.md](templates/AUTHORING.md) for a hands-on guide: the four Typst building blocks (`#set` / `#show` / `#let` / layout primitives), how to pull data via `--input` flags or JSON, theme reuse, plus a cookbook of recipes (two-column pages, right-aligned totals, repeating table headers, footnotes, auto-TOC, callouts, German money formatting). The "Common gotchas" section at the end (curly quotes, variable fonts, `context` for page-counter, image paths, ...) saves the first hour of frustration.
+
 ## See also
 
+- [templates/AUTHORING.md](templates/AUTHORING.md) — write your own Typst templates from scratch.
 - [reference.md](reference.md) — qpdf / pypdf one-liners for existing PDFs (merge, split, watermark, encrypt).
 - [forms.md](forms.md) — filling existing PDF forms (kept for backwards compat).
 - `templates/` — the four bundled Typst templates.
