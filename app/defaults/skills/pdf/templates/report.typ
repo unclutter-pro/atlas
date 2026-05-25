@@ -76,9 +76,9 @@
   #v(0.4em)
   #text(size: 9pt, tracking: 0.2em, weight: "semibold", fill: accent)[#upper(l.report-by + " " + author)]
   #v(2.5em)
-  // Title in its own paragraph: justify off (otherwise word spaces get
-  // stretched on wrapped lines), tighter leading than body default.
-  #par(justify: false, leading: 0.4em)[
+  // Title: left-aligned (justify off so word spaces don't stretch) with
+  // generous 0.9em leading for the display-size headline.
+  #par(justify: false, leading: 0.9em)[
     #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
   ]
   #v(0.8em)
