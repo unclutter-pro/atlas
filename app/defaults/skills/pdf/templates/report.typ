@@ -78,7 +78,7 @@
   #v(2.5em)
   // Tight leading on the cover title — at 42pt the default 0.65em leaves too
   // much air between wrapped lines; 0.5em reads as one heading block.
-  #par(leading: 0.58em)[
+  #par(leading: 0.9em)[
     #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
   ]
   #v(0.8em)
