@@ -41,14 +41,37 @@ def _money(n: float) -> str:
     return f"{Decimal(str(n)).quantize(Decimal('0.01'))}"
 
 
+_RANGE_SEPARATORS = (" — ", " – ", " - ", " bis ", " to ")
+
+
 def _format_date(d: str) -> str:
-    """Convert YYYY-MM-DD or YYYY-MM-DD — YYYY-MM-DD to YYYYMMDD (EN 16931 format 102)."""
-    # Take the first ISO date in the string
-    s = d.split(" — ")[0].split(" - ")[0].strip()
+    """Convert YYYY-MM-DD or the first date of a range to YYYYMMDD (EN 16931 format 102)."""
+    s = d.strip()
+    for sep in _RANGE_SEPARATORS:
+        if sep in s:
+            s = s.split(sep, 1)[0].strip()
+            break
     try:
         return datetime.fromisoformat(s).strftime("%Y%m%d")
     except ValueError:
         return s.replace("-", "")
+
+
+def _parse_service_date(value: str | None, fallback_iso: str) -> tuple[str, str | None]:
+    """Return (start_yyyymmdd, end_yyyymmdd_or_None).
+
+    `value` may be:
+      - empty / None      → use the fallback (invoice date) as a single delivery date
+      - "YYYY-MM-DD"      → single delivery date (BT-72)
+      - "YYYY-MM-DD — YYYY-MM-DD" / " – " / " bis " → invoicing period (BG-14)
+    """
+    if not value:
+        return _format_date(fallback_iso), None
+    for sep in _RANGE_SEPARATORS:
+        if sep in value:
+            start, end = value.split(sep, 1)
+            return _format_date(start.strip()), _format_date(end.strip())
+    return _format_date(value), None
 
 
 def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
@@ -67,7 +90,10 @@ def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
 
     invoice_date = _format_date(data["date"])
     due_date = _format_date(data["due_date"])
-    service_date = _format_date(data.get("service_date", data["date"]))
+    service_start, service_end = _parse_service_date(
+        data.get("service_date"),
+        fallback_iso=data["date"],
+    )
 
     currency = data.get("currency", "EUR")
     inv_no = data["invoice_no"]
@@ -125,7 +151,7 @@ def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
     <ram:ApplicableHeaderTradeDelivery>
       <ram:ActualDeliverySupplyChainEvent>
         <ram:OccurrenceDateTime>
-          <udt:DateTimeString format="102">{service_date}</udt:DateTimeString>
+          <udt:DateTimeString format="102">{service_end if service_end is not None else service_start}</udt:DateTimeString>
         </ram:OccurrenceDateTime>
       </ram:ActualDeliverySupplyChainEvent>
     </ram:ApplicableHeaderTradeDelivery>
@@ -139,6 +165,17 @@ def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
         <ram:CategoryCode>{'E' if is_klein else 'S'}</ram:CategoryCode>
         <ram:RateApplicablePercent>{_money(vat_rate * 100)}</ram:RateApplicablePercent>
       </ram:ApplicableTradeTax>
+      {(
+        f'''<ram:BillingSpecifiedPeriod>
+        <ram:StartDateTime>
+          <udt:DateTimeString format="102">{service_start}</udt:DateTimeString>
+        </ram:StartDateTime>
+        <ram:EndDateTime>
+          <udt:DateTimeString format="102">{service_end}</udt:DateTimeString>
+        </ram:EndDateTime>
+      </ram:BillingSpecifiedPeriod>'''
+        if service_end is not None else ""
+      )}
       <ram:SpecifiedTradePaymentTerms>
         <ram:DueDateDateTime>
           <udt:DateTimeString format="102">{due_date}</udt:DateTimeString>

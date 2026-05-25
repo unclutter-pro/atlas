@@ -157,28 +157,27 @@
 #let total = subtotal + vat
 
 #block(breakable: false)[
+  // A right-aligned totals panel that hugs the right margin.
+  // Two columns: labels right-aligned in column 1, amounts right-aligned in column 2.
+  // The whole grid is right-aligned on the page via the outer align(right).
   #align(right)[
-    #grid(
+    #table(
       columns: (auto, auto),
-      gutter: (1.5em, 0.7em),
       align: (right, right),
-      text(size: 10pt, fill: muted)[Zwischensumme (netto)], text(size: 10pt)[#fmt(subtotal) #data.currency],
+      stroke: none,
+      inset: (x: 0pt, y: 4pt),
+      column-gutter: 2em,
+      text(size: 10pt, fill: muted)[Zwischensumme (netto)],
+      text(size: 10pt)[#fmt(subtotal) #data.currency],
       ..(if is_kleinunternehmer { () } else {
         (
           text(size: 10pt, fill: muted)[USt #calc.round(vat_rate * 100) %],
           text(size: 10pt)[#fmt(vat) #data.currency],
         )
       }),
-    )
-
-    #v(0.6em)
-    #line(length: 8cm, stroke: 0.4pt + rule)
-    #v(0.3em)
-
-    #grid(
-      columns: (auto, auto),
-      gutter: 1.5em,
-      align: (right, right),
+      table.cell(colspan: 2, inset: (x: 0pt, y: 6pt))[
+        #line(length: 100%, stroke: 0.4pt + rule)
+      ],
       text(size: 12pt, weight: "semibold")[Gesamtbetrag],
       text(size: 22pt, weight: "semibold", fill: accent)[#fmt(total) #data.currency],
     )
