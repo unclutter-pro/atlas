@@ -82,7 +82,7 @@
   // `em` is resolved against the surrounding text size — putting `text(size:)`
   // OUTSIDE the par lets `leading: 1.4em` mean 1.4 × the title size.
   #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[
-    #par(justify: false, leading: 1.4em)[#title]
+    #par(justify: false, leading: 1.24em)[#title]
   ]
   #v(0.8em)
   #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
