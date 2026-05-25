@@ -51,7 +51,13 @@
 )[
   #text(size: 9pt, tracking: 0.18em, weight: "semibold", fill: accent)[#upper("Memo")]
   #v(0.3em)
-  #text(font: font-heading, size: 20pt, weight: "semibold", fill: primary)[#title]
+  // Title auto-shrinks so long titles still fit on one line; protects the
+  // single-page promise of memo.
+  #let title-size = {
+    let n = title.len()
+    if n > 60 { 14pt } else if n > 35 { 17pt } else { 20pt }
+  }
+  #text(font: font-heading, size: title-size, weight: "semibold", fill: primary)[#title]
   #v(0.6em)
   #grid(
     columns: (auto, 1fr, auto, 1fr),

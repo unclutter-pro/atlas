@@ -79,7 +79,7 @@ Inputs (all optional, sensible defaults):
 | `--date` | Header date (ISO `YYYY-MM-DD` → locale-formatted; default: today) |
 | `--lang` | `de` (default) / `en` / `fr` — affects labels (Inhalt/Contents/Sommaire, Seite/Page) and date format |
 
-**Note**: The bundled `report.typ` is a *starter scaffold* with placeholder German chapter headings and lorem-ipsum body text. The `--key` flags only control cover/header metadata — actual content (sections, charts, tables) must be added by copying `templates/report.typ` and editing it, or by writing a custom `.typ`. For pure metadata-driven output (no edits needed), use `memo` or `letter` instead.
+**Note**: The bundled `report.typ` is a *starter scaffold* with placeholder German chapter headings and lorem-ipsum body text. The `--key` flags only control cover/header metadata — actual content (sections, charts, tables) must be added by copying `templates/report.typ` and editing it. For voice, structure, chart usage, and pre-flight checklist see [references/writing-reports.md](references/writing-reports.md). For pure metadata-driven output (no edits needed), use `memo` or `letter` instead.
 
 ### `invoice` — DIN-A4 Rechnung
 
@@ -108,9 +108,10 @@ Inputs: `--data path/to/letter.json` (see `examples/letter-sample.json`). Add `"
 
 ### `memo` — single-page recap
 
-- Slim header bar with title, To, From, Date
+- Slim header bar with title (auto-shrinks 20pt → 17pt → 14pt for long titles), To, From, Date
 - Three default sections: *Was passiert ist* · *Entscheidungen* · *Nächste Schritte*
 - Compact table for owner / task / deadline
+- **Single-page discipline**: if your content overflows to page 2, you wrote a report — see [references/writing-memos.md](references/writing-memos.md)
 
 Inputs: `--title`, `--to`, `--from`, `--date` (ISO `YYYY-MM-DD` → locale-formatted), `--lang` (`de` / `en` / `fr`).
 
@@ -230,6 +231,9 @@ pdf/
 │   ├── invoice-zugferd               Embeds Factur-X XML into rendered invoice
 │   └── *.py                          PDF form-filling helpers (see references/forms.md)
 └── references/
+    ├── writing-reports.md            How to write a good report — workflow, structure, voice, pitfalls
+    ├── writing-memos.md              How to keep memos single-page and operational
+    ├── typst-cheatsheet.md           Escape rules, common patterns, theme tokens
     ├── charts.md                     Cetz / cetz-plot chart patterns and anti-patterns
     ├── themes-and-fonts.md           6 built-in themes, font swap recipes, brand override
     ├── zugferd.md                    Factur-X profile choices, EN 16931 mapping, recipient compatibility
