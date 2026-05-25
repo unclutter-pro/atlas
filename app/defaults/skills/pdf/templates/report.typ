@@ -76,11 +76,17 @@
   #v(0.4em)
   #text(size: 9pt, tracking: 0.2em, weight: "semibold", fill: accent)[#upper(l.report-by + " " + author)]
   #v(2.5em)
-  // Tight leading on the cover title — at 42pt the default 0.65em leaves too
-  // much air between wrapped lines; 0.5em reads as one heading block.
-  #par(leading: 0.9em)[
-    #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
-  ]
+  // Auto-shrink the cover title by length so it stays single-line. Wrapped
+  // display type at 42pt never looks right regardless of leading — same
+  // pattern as the memo title + invoice number.
+  #let cover-size = {
+    let n = title.len()
+    if n > 55 { 22pt }
+    else if n > 40 { 28pt }
+    else if n > 25 { 34pt }
+    else { 42pt }
+  }
+  #text(font: font-heading, size: cover-size, weight: "semibold", fill: primary)[#title]
   #v(0.8em)
   #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
   #v(4em)
