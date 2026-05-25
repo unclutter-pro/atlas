@@ -76,10 +76,13 @@
   #v(0.4em)
   #text(size: 9pt, tracking: 0.2em, weight: "semibold", fill: accent)[#upper(l.report-by + " " + author)]
   #v(2.5em)
-  // Title: left-aligned (justify off so word spaces don't stretch) with
-  // generous 0.9em leading for the display-size headline.
-  #par(justify: false, leading: 1.2em)[
-    #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
+  // Title: left-aligned (justify off so word spaces don't stretch).
+  // Leading is computed from the title size, not the body em — otherwise
+  // `1.4em` would resolve against the 11pt body and stay invisibly small.
+  // leading = title-size × 1.4 (factor relative to title em, not body em).
+  #let title-size = 42pt
+  #par(justify: false, leading: title-size * 1.4)[
+    #text(font: font-heading, size: title-size, weight: "semibold", fill: primary)[#title]
   ]
   #v(0.8em)
   #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
