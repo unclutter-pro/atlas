@@ -1,14 +1,29 @@
-// letter.typ — DIN-5008 business letter template.
+// letter.typ — DIN-5008-style business letter template.
+//
+// The page geometry (4.5cm header, recipient window position, Rücksendezeile,
+// right-aligned date + bold subject) follows German DIN 5008. The same layout
+// is perfectly usable for EN/FR letters — only the labels change.
 //
 // Usage:
 //   build-pdf letter --data letter.json [--theme indigo|...] letter.pdf
+//
+// JSON may include `"lang": "en" | "fr"` (default: "de") for the date format
+// and (when subject is provided as plain text) the "Subject:" label.
 
 #import "themes.typ": resolve-theme
+#import "i18n.typ": format-date
 
 // `data` input is an absolute path resolved by build-pdf. Fallback used only
 // when invoking `typst compile` directly without --input data=...
 #let data-path = sys.inputs.at("data", default: "../examples/letter-sample.json")
 #let data = json(data-path)
+#let lang = data.at("lang", default: "de")
+#let subject-label = (
+  de: "Betreff",
+  en: "Subject",
+  fr: "Objet",
+).at(lang, default: "Betreff")
+
 #let theme = resolve-theme()
 #let primary = theme.primary
 #let muted   = theme.muted
@@ -17,7 +32,7 @@
   paper: "a4",
   margin: (top: 4.5cm, bottom: 2.5cm, left: 2.5cm, right: 2cm),
 )
-#set text(font: "Inter", size: 11pt, fill: primary, lang: "de")
+#set text(font: "Inter", size: 11pt, fill: primary, lang: lang)
 #set par(justify: false, leading: 0.7em, first-line-indent: 0pt, spacing: 1em)
 
 // --- Sender address (small, top-right) -----------------------------------
@@ -53,10 +68,10 @@
 #v(2cm)
 
 // --- Date + subject ------------------------------------------------------
-#align(right)[#text(size: 10pt)[#data.date]]
+#align(right)[#text(size: 10pt)[#format-date(data.date, lang: lang)]]
 
 #v(1em)
-#text(weight: "semibold")[Betreff: #data.subject]
+#text(weight: "semibold")[#subject-label: #data.subject]
 
 #v(1.5em)
 

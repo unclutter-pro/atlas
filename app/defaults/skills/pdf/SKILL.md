@@ -76,7 +76,8 @@ Inputs (all optional, sensible defaults):
 | `--title` | Cover title |
 | `--subtitle` | Cover subtitle |
 | `--author` | Cover footer |
-| `--date` | Header date (default: today) |
+| `--date` | Header date (ISO `YYYY-MM-DD` → locale-formatted; default: today) |
+| `--lang` | `de` (default) / `en` / `fr` — affects labels (Inhalt/Contents/Sommaire, Seite/Page) and date format |
 
 **Note**: The bundled `report.typ` is a *starter scaffold* with placeholder German chapter headings and lorem-ipsum body text. The `--key` flags only control cover/header metadata — actual content (sections, charts, tables) must be added by copying `templates/report.typ` and editing it, or by writing a custom `.typ`. For pure metadata-driven output (no edits needed), use `memo` or `letter` instead.
 
@@ -89,8 +90,10 @@ Inputs (all optional, sensible defaults):
 - IBAN / BIC / USt-IdNr footer block
 - Optional `notes` line
 - Invoice number auto-scales (28pt → 20pt → 14pt) so DATEV-style long numbers stay readable
+- Dates accept ISO `YYYY-MM-DD` (locale-formatted) or pre-formatted free-form strings; service date can be a range like `"2026-05-15 — 2026-05-23"`
+- Numbers locale-formatted: DE `1.600,00` · EN `1,600.00` · FR `1 600,00`
 
-Inputs: `--data path/to/invoice.json` (see `examples/invoice-sample.json` for shape).
+Inputs: `--data path/to/invoice.json` (see `examples/invoice-sample.json` for shape). Add `"lang": "en"` (or `"fr"`, default `"de"`) to switch labels and date/number format.
 
 ### `letter` — DIN-5008 Geschäftsbrief
 
@@ -101,7 +104,7 @@ Inputs: `--data path/to/invoice.json` (see `examples/invoice-sample.json` for sh
 - Body with multi-paragraph support (separate paragraphs by `\n\n` in JSON)
 - Salutation, body, closing, signature in correct German business style
 
-Inputs: `--data path/to/letter.json` (see `examples/letter-sample.json`).
+Inputs: `--data path/to/letter.json` (see `examples/letter-sample.json`). Add `"lang": "en"` (or `"fr"`) to switch the subject label and date format — note: DIN-5008 letters often pre-format the date with a city prefix ("Stuttgart, 25. Mai 2026"), which passes through unchanged.
 
 ### `memo` — single-page recap
 
@@ -109,7 +112,7 @@ Inputs: `--data path/to/letter.json` (see `examples/letter-sample.json`).
 - Three default sections: *Was passiert ist* · *Entscheidungen* · *Nächste Schritte*
 - Compact table for owner / task / deadline
 
-Inputs: `--title`, `--to`, `--from`, `--date`.
+Inputs: `--title`, `--to`, `--from`, `--date` (ISO `YYYY-MM-DD` → locale-formatted), `--lang` (`de` / `en` / `fr`).
 
 ## Charts and figures
 
@@ -134,6 +137,20 @@ Draw charts with **Cetz + cetz-plot** — native to Typst, vector all the way, i
 ```
 
 Patterns per chart type (horizontal bar, vertical bar, line, stacked, diverging), theme integration, anti-patterns in [references/charts.md](references/charts.md).
+
+## Languages
+
+All four templates support **`de`** (default) / **`en`** / **`fr`** via the `lang` input.
+
+| Aspect | `de` | `en` | `fr` |
+|---|---|---|---|
+| Labels | Rechnung, Fällig bis, ... | Invoice, Due by, ... | Facture, Échéance, ... |
+| Date format | `25.05.2026` | `2026-05-25` (ISO) | `25/05/2026` |
+| Number format | `1.600,00` | `1,600.00` | `1 600,00` (NBSP) |
+
+Set via `--lang en` for memo/report (CLI flag), or `"lang": "en"` in the invoice/letter JSON.
+
+Add another language by extending `templates/i18n.typ` — drop a new entry into the `labels` dict and add date/number format branches.
 
 ## Fonts and themes
 

@@ -4,13 +4,19 @@
 //   build-pdf report --title "..." --subtitle "..." --author "..." [--theme indigo|forest|amber|crimson|mono] output.pdf
 
 #import "themes.typ": resolve-theme
+#import "i18n.typ": t, format-date
 #import "@preview/cetz:0.4.2"
 #import "@preview/cetz-plot:0.1.3": chart
 
-#let title = sys.inputs.at("title", default: "Report-Titel")
-#let subtitle = sys.inputs.at("subtitle", default: "Untertitel mit Kontext")
+#let title = sys.inputs.at("title", default: "Report")
+#let subtitle = sys.inputs.at("subtitle", default: "")
 #let author = sys.inputs.at("author", default: "Atlas")
-#let date = sys.inputs.at("date", default: datetime.today().display())
+#let lang = sys.inputs.at("lang", default: "de")
+#let l = t(lang)
+
+// Date: ISO YYYY-MM-DD preferred (gets locale-formatted), any other string passes through.
+#let date-raw = sys.inputs.at("date", default: datetime.today().display("[year]-[month]-[day]"))
+#let date = format-date(date-raw, lang: lang)
 
 #let theme = resolve-theme()
 #let primary = theme.primary
@@ -27,12 +33,12 @@
   ],
   footer: context align(center)[
     #text(size: 9pt, fill: muted)[
-      Seite #counter(page).display() / #counter(page).final().last()
+      #l.page #counter(page).display() / #counter(page).final().last()
       · #date
     ]
   ],
 )
-#set text(font: "Inter", size: 11pt, fill: primary, lang: "de")
+#set text(font: "Inter", size: 11pt, fill: primary, lang: lang)
 #set par(justify: true, leading: 0.7em, spacing: 1em)
 
 #show heading.where(level: 1): it => {
@@ -68,7 +74,7 @@
 // Print the TOC on its own page, no header/footer, with dot-leader fills
 // connecting heading title and page number. Auto-populates from H1/H2.
 #page(header: none, footer: none, margin: (top: 3cm, bottom: 3cm, x: 3.5cm))[
-  #text(font: "IBM Plex Serif", size: 24pt, weight: "semibold", fill: accent)[Inhalt]
+  #text(font: "IBM Plex Serif", size: 24pt, weight: "semibold", fill: accent)[#l.report-toc]
   #v(1.2em)
   #show outline.entry: it => link(
     it.element.location(),

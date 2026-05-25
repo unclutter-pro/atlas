@@ -1,6 +1,6 @@
-// invoice.typ — DIN-A4 invoice template, §14 UStG-conform, multi-page-safe.
+// invoice.typ — DIN-A4 invoice template, §14 UStG-conform, multi-page-safe, i18n.
 //
-// Pflichtangaben nach §14 Abs. 4 UStG implemented:
+// Pflichtangaben nach §14 Abs. 4 UStG implemented (German tax law):
 //  1. Vollständiger Name + Anschrift Leistender + Empfänger
 //  2. Steuernummer ODER USt-IdNr des Leistenden
 //  3. Ausstellungsdatum
@@ -11,6 +11,9 @@
 //  8. Anzuwendender Steuersatz oder Hinweis auf Steuerbefreiung
 //  9. Bei Kleinunternehmer (§19): Hinweis "Gemäß § 19 UStG wird keine Umsatzsteuer ausgewiesen"
 //
+// Languages: de (default) / en / fr — set via `"lang": "en"` in the JSON.
+// Dates accept ISO YYYY-MM-DD; ranges like "2026-05-15 — 2026-05-23" are also handled.
+//
 // Combine with the helper script `scripts/invoice-zugferd` to produce a ZUGFeRD / Factur-X
 // PDF/A-3 with embedded XML (EN 16931, EU e-invoice standard).
 //
@@ -18,6 +21,7 @@
 //   build-pdf invoice --data path/to/invoice.json [--theme indigo|...] invoice.pdf
 
 #import "themes.typ": resolve-theme
+#import "i18n.typ": t, format-date, format-date-or-range, format-money
 
 // `data` input is an absolute path resolved by build-pdf. When invoked
 // directly with `typst compile` and no --input, fall back to the bundled
@@ -25,15 +29,22 @@
 #let data-path = sys.inputs.at("data", default: "../examples/invoice-sample.json")
 #let data = json(data-path)
 
+#let lang = data.at("lang", default: "de")
+#let l = t(lang)
+
 #let theme = resolve-theme()
 #let primary = theme.primary
 #let accent  = theme.accent
 #let muted   = theme.muted
 #let rule    = theme.rule
 
-// Kleinunternehmer-Mode
+// Kleinunternehmer-Mode (German small-business exemption — labels remain even in EN/FR)
 #let is_kleinunternehmer = data.at("kleinunternehmer", default: false)
 #let vat_rate = if is_kleinunternehmer { 0.0 } else { data.vat_rate }
+
+#let inv-date = format-date(data.date, lang: lang)
+#let due-date = format-date(data.due_date, lang: lang)
+#let svc-date = format-date-or-range(data.at("service_date", default: data.date), lang: lang)
 
 // Page layout — generous margins, modern feel, multi-page safe.
 #set page(
@@ -46,7 +57,7 @@
         align: (left, right),
         text(size: 9pt, weight: "semibold", fill: primary)[#data.from.name],
         text(size: 9pt, fill: muted)[
-          Rechnung #data.invoice_no · #data.date
+          #l.invoice #data.invoice_no · #inv-date
         ],
       )
       v(0.3em)
@@ -55,23 +66,23 @@
   },
   footer: context align(center)[
     #text(size: 8pt, fill: muted)[
-      Seite #counter(page).display() / #counter(page).final().last()
+      #l.page #counter(page).display() / #counter(page).final().last()
       · #data.from.name
-      #if data.from.at("tax_id", default: "") != "" [ · USt-IdNr.: #data.from.tax_id]
+      #if data.from.at("tax_id", default: "") != "" [ · #l.vat-id: #data.from.tax_id]
     ]
   ],
 )
 
 // All-sans, modern type stack.
-#set text(font: "Inter", size: 10pt, fill: primary, lang: "de")
+#set text(font: "Inter", size: 10pt, fill: primary, lang: lang)
 #set par(leading: 0.75em, spacing: 0.9em)
 
 // --- Header: tall, modern title block ------------------------------------
 // Invoice number is auto-scaled to fit. Long numbers (DATEV-style with
 // project codes etc.) shrink from 28pt down to a still-prominent 14pt.
 #let inv-no-size = {
-  let l = data.invoice_no.len()
-  if l > 24 { 14pt } else if l > 14 { 20pt } else { 28pt }
+  let n = data.invoice_no.len()
+  if n > 24 { 14pt } else if n > 14 { 20pt } else { 28pt }
 }
 
 #grid(
@@ -79,7 +90,7 @@
   align: (left, top + right),
   column-gutter: 1.5em,
   [
-    #text(size: 11pt, weight: "semibold", tracking: 0.1em, fill: accent)[#upper("Rechnung")]
+    #text(size: 11pt, weight: "semibold", tracking: 0.1em, fill: accent)[#upper(l.invoice)]
     #v(0.4em)
     #text(size: 26pt, weight: "semibold")[#data.from.name]
     #v(0.4em)
@@ -101,7 +112,7 @@
   columns: (1fr, 1fr),
   gutter: 2.5em,
   [
-    #text(size: 8pt, tracking: 0.1em, fill: muted)[#upper("Rechnung an")]
+    #text(size: 8pt, tracking: 0.1em, fill: muted)[#upper(l.invoice-to)]
     #v(0.5em)
     #text(size: 11pt, weight: "semibold")[#data.to.name]
     #v(0.2em)
@@ -109,7 +120,7 @@
       #data.to.address1 \
       #data.to.address2
       #if data.to.at("tax_id", default: "") != "" [\
-        #text(size: 9pt, fill: muted)[USt-IdNr.: #data.to.tax_id]
+        #text(size: 9pt, fill: muted)[#l.vat-id: #data.to.tax_id]
       ]
     ]
   ],
@@ -117,24 +128,15 @@
     #grid(
       columns: (auto, 1fr),
       gutter: (0.8em, 0.5em),
-      text(size: 9pt, fill: muted)[Rechnungsnummer], text(size: 10pt, weight: "semibold")[#data.invoice_no],
-      text(size: 9pt, fill: muted)[Rechnungsdatum],  text(size: 10pt)[#data.date],
-      text(size: 9pt, fill: muted)[Leistungsdatum],  text(size: 10pt)[#data.at("service_date", default: data.date)],
-      text(size: 9pt, fill: muted)[Fällig bis],      text(size: 10pt, weight: "semibold")[#data.due_date],
+      text(size: 9pt, fill: muted)[#l.invoice-no],  text(size: 10pt, weight: "semibold")[#data.invoice_no],
+      text(size: 9pt, fill: muted)[#l.invoice-date], text(size: 10pt)[#inv-date],
+      text(size: 9pt, fill: muted)[#l.service-date], text(size: 10pt)[#svc-date],
+      text(size: 9pt, fill: muted)[#l.due-by],       text(size: 10pt, weight: "semibold")[#due-date],
     )
   ],
 )
 
 #v(3em)
-
-// --- Number formatter (German decimal comma) -----------------------------
-#let fmt(n) = {
-  let s = str(calc.round(n * 100) / 100)
-  if not s.contains(".") { s = s + ".00" }
-  let parts = s.split(".")
-  let cents = if parts.at(1).len() == 1 { parts.at(1) + "0" } else { parts.at(1) }
-  parts.at(0) + "," + cents
-}
 
 // --- Line items table (multi-page safe via table.header repeat) ----------
 #table(
@@ -145,20 +147,20 @@
   ),
   inset: 10pt,
   table.header(
-    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper("Pos.")],
-    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper("Beschreibung")],
-    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper("Menge")],
-    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper("Einh.")],
-    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper("Einzelpreis")],
-    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper("Gesamt")],
+    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper(l.pos)],
+    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper(l.description)],
+    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper(l.qty)],
+    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper(l.unit)],
+    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper(l.unit-price)],
+    text(size: 8pt, tracking: 0.1em, fill: accent)[#upper(l.line-total)],
   ),
   ..data.items.enumerate().map(((i, it)) => (
     text(fill: muted)[#str(i + 1)],
     it.description,
-    fmt(it.qty),
+    format-money(it.qty, lang: lang),
     it.unit,
-    fmt(it.unit_price) + " " + data.currency,
-    text(weight: "medium")[#fmt(it.qty * it.unit_price) #data.currency],
+    format-money(it.unit_price, lang: lang) + " " + data.currency,
+    text(weight: "medium")[#format-money(it.qty * it.unit_price, lang: lang) #data.currency],
   )).flatten(),
 )
 
@@ -170,38 +172,33 @@
 #let total = subtotal + vat
 
 #block(breakable: false)[
-  // Full-width two-column layout for the totals.
-  //   col 1 (1fr): pushes labels to the right, so they sit at the gutter edge
-  //   col 2 (auto): amounts grow from the gutter to the page's right margin
-  // Both right-aligned → every amount's right edge lines up with the page
-  // right margin, every label's right edge sits at the same gutter line.
   #table(
     columns: (1fr, auto),
     align: (right + horizon, right + horizon),
     stroke: none,
     inset: (x: 0pt, y: 6pt),
     column-gutter: 2.5em,
-    text(size: 10pt, fill: muted)[Zwischensumme (netto)],
-    text(size: 10pt)[#fmt(subtotal) #data.currency],
+    text(size: 10pt, fill: muted)[#l.subtotal-net],
+    text(size: 10pt)[#format-money(subtotal, lang: lang) #data.currency],
     ..(if is_kleinunternehmer { () } else {
       (
-        text(size: 10pt, fill: muted)[USt #calc.round(vat_rate * 100) %],
-        text(size: 10pt)[#fmt(vat) #data.currency],
+        text(size: 10pt, fill: muted)[#l.vat #calc.round(vat_rate * 100) %],
+        text(size: 10pt)[#format-money(vat, lang: lang) #data.currency],
       )
     }),
     // thin rule above the grand total — only as wide as the amount column
     table.cell(colspan: 2, inset: (x: 0pt, y: 4pt))[
       #align(right)[#box(width: 7cm, line(length: 100%, stroke: 0.5pt + rule))]
     ],
-    text(size: 11pt, weight: "semibold")[Gesamtbetrag],
-    text(size: 16pt, weight: "semibold", fill: accent)[#fmt(total) #data.currency],
+    text(size: 11pt, weight: "semibold")[#l.grand-total],
+    text(size: 16pt, weight: "semibold", fill: accent)[#format-money(total, lang: lang) #data.currency],
   )
 
   #if is_kleinunternehmer [
     #v(0.8em)
     #align(right)[
       #text(size: 9pt, fill: muted, style: "italic")[
-        Gemäß § 19 UStG wird keine Umsatzsteuer ausgewiesen.
+        #l.kleinunternehmer-note
       ]
     ]
   ]
@@ -215,7 +212,7 @@
     columns: (1fr, 1fr),
     gutter: 2em,
     [
-      #text(size: 8pt, tracking: 0.1em, fill: muted)[#upper("Bankverbindung")]
+      #text(size: 8pt, tracking: 0.1em, fill: muted)[#upper(l.bank-details)]
       #v(0.5em)
       #table(
         columns: (auto, 1fr),
@@ -223,22 +220,22 @@
         inset: (x: 0pt, y: 4pt),
         column-gutter: 1em,
         align: (left + top, left + top),
-        text(size: 9pt, fill: muted)[IBAN],
+        text(size: 9pt, fill: muted)[#l.iban],
         text(size: 10pt)[#data.from.iban],
-        text(size: 9pt, fill: muted)[BIC],
+        text(size: 9pt, fill: muted)[#l.bic],
         text(size: 10pt)[#data.from.bic],
         ..(if data.from.at("bank_name", default: "") != "" {
-          (text(size: 9pt, fill: muted)[Bank], text(size: 10pt)[#data.from.bank_name])
+          (text(size: 9pt, fill: muted)[#l.bank-name], text(size: 10pt)[#data.from.bank_name])
         } else { () }),
       )
     ],
     [
-      #text(size: 8pt, tracking: 0.1em, fill: muted)[#upper("Zahlungsziel")]
+      #text(size: 8pt, tracking: 0.1em, fill: muted)[#upper(l.payment-due)]
       #v(0.5em)
-      #text(size: 11pt, weight: "semibold")[#data.due_date]
+      #text(size: 11pt, weight: "semibold")[#due-date]
       #v(0.3em)
       #text(size: 9pt, fill: muted)[
-        Bitte unter Angabe der Rechnungs-Nr. #data.invoice_no überweisen.
+        #l.remit-note.replace("{n}", data.invoice_no)
       ]
     ],
   )
