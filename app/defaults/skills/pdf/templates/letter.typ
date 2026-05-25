@@ -5,7 +5,10 @@
 
 #import "themes.typ": resolve-theme
 
-#let data = json(sys.inputs.at("data", default: "examples/letter-sample.json"))
+// `data` input is an absolute path resolved by build-pdf. Fallback used only
+// when invoking `typst compile` directly without --input data=...
+#let data-path = sys.inputs.at("data", default: "../examples/letter-sample.json")
+#let data = json(data-path)
 #let theme = resolve-theme()
 #let primary = theme.primary
 #let muted   = theme.muted

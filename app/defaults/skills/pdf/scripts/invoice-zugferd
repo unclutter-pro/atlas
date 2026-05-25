@@ -74,13 +74,31 @@ def _parse_service_date(value: str | None, fallback_iso: str) -> tuple[str, str 
     return _format_date(value), None
 
 
-def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
-    """Build a minimal valid CII XML (EN 16931 conform) from invoice JSON.
+# Profile URNs per Factur-X / ZUGFeRD 2.x spec.
+# MINIMUM and BASIC WL require strictly fewer fields than this script emits, so
+# we don't pretend to support them. EN 16931 is the strict baseline; BASIC and
+# EXTENDED accept the same XML content but advertise a different conformance level.
+_PROFILE_URNS = {
+    "BASIC":    "urn:cen.eu:en16931:2017#compliant#urn:factur-x.eu:1p0:basic",
+    "EN 16931": "urn:cen.eu:en16931:2017",
+    "EXTENDED": "urn:cen.eu:en16931:2017#conformant#urn:factur-x.eu:1p0:extended",
+}
 
-    This is intentionally hand-rolled rather than a heavy framework — keeps the
-    Atlas image lean. For more advanced fields (multiple tax rates, payment
-    references, etc.) extend the elements below.
+
+def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
+    """Build a CII XML (EN 16931 conform) from invoice JSON.
+
+    Hand-rolled rather than via a heavy framework — keeps the container lean.
+    For more advanced fields (multiple tax rates, payment references, etc.)
+    extend the elements below.
     """
+    if profile not in _PROFILE_URNS:
+        raise ValueError(
+            f"unsupported profile '{profile}'. "
+            f"Supported: {', '.join(_PROFILE_URNS)}. "
+            f"MINIMUM and BASIC WL require a stripped-down XML that this script does not emit."
+        )
+    guideline_urn = _PROFILE_URNS[profile]
     is_klein = data.get("kleinunternehmer", False)
     vat_rate = Decimal("0.00") if is_klein else Decimal(str(data.get("vat_rate", 0.19)))
     items = data["items"]
@@ -114,7 +132,7 @@ def build_cii_xml(data: dict, profile: str = "EN 16931") -> bytes:
     xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
   <rsm:ExchangedDocumentContext>
     <ram:GuidelineSpecifiedDocumentContextParameter>
-      <ram:ID>urn:cen.eu:en16931:2017</ram:ID>
+      <ram:ID>{guideline_urn}</ram:ID>
     </ram:GuidelineSpecifiedDocumentContextParameter>
   </rsm:ExchangedDocumentContext>
   <rsm:ExchangedDocument>
@@ -264,8 +282,8 @@ def main() -> int:
     p.add_argument("input_pdf", help="The PDF rendered by build-pdf invoice")
     p.add_argument("input_json", help="The invoice JSON used to render the PDF")
     p.add_argument("output_pdf", nargs="?", help="Output path (default: <input>_factur-x.pdf)")
-    p.add_argument("--profile", default="EN 16931",
-                   help="ZUGFeRD profile (MINIMUM, BASIC WL, BASIC, EN 16931, EXTENDED). Default: EN 16931")
+    p.add_argument("--profile", default="EN 16931", choices=list(_PROFILE_URNS),
+                   help="ZUGFeRD profile. Default: EN 16931")
     args = p.parse_args()
 
     if not os.path.exists(args.input_pdf):

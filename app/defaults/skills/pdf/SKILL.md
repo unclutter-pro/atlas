@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: "Use this skill for any PDF authoring or post-processing task that doesn't require READING the content. CREATE / GENERATE / PRODUCE PDFs from scratch — reports, invoices, business letters, memos, status updates, market analyses, proposals (Typst engine, charts via Cetz, four bundled templates: report, invoice, letter, memo). FILL existing PDF forms — text fields, checkboxes, radio buttons (see references/forms.md). MERGE / SPLIT / ROTATE / WATERMARK / ENCRYPT existing PDFs via qpdf and pypdf (see references/existing-pdfs.md). Embed ZUGFeRD / Factur-X XML for EU e-invoices (see references/zugferd.md). Triggers: 'erstelle PDF', 'baue Rechnung', 'mache einen Bericht als PDF', 'create a PDF', 'generate a report', 'render an invoice', 'business letter', 'Geschäftsbrief', 'Memo', 'merge PDFs', 'split a PDF', 'rotate pages', 'watermark this PDF', 'encrypt PDF', 'PDF Formular ausfüllen', 'fill this form'. Do NOT use for READING / EXTRACTING text from existing PDFs or OCR on scanned documents — use the `document-parse` skill (LiteParse)."
+description: "Use this skill for any PDF authoring or post-processing task that doesn't require READING the content. CREATE / GENERATE / PRODUCE PDFs from scratch — reports, invoices, business letters, memos, status updates, market analyses, proposals (Typst engine, charts via Cetz, four bundled templates: report, invoice, letter, memo). FILL existing PDF forms — text fields, checkboxes, radio buttons. MERGE / SPLIT / ROTATE / WATERMARK / ENCRYPT existing PDFs via qpdf and pypdf. Embed ZUGFeRD / Factur-X XML for EU e-invoices. Triggers: 'erstelle PDF', 'baue Rechnung', 'mache einen Bericht als PDF', 'create a PDF', 'generate a report', 'render an invoice', 'business letter', 'Geschäftsbrief', 'Memo', 'merge PDFs', 'split a PDF', 'rotate pages', 'watermark this PDF', 'encrypt PDF', 'PDF Formular ausfüllen', 'fill this form'. Do NOT use for READING / EXTRACTING text from existing PDFs or OCR on scanned documents — use the `document-parse` skill (LiteParse)."
 ---
 
 # PDF Generation Skill
@@ -20,6 +20,12 @@ Produces professional, brand-consistent PDFs with **Typst** as the primary engin
 - **Fill PDF forms** — text fields, checkboxes, radio buttons → [references/forms.md](references/forms.md)
 - **Merge, split, rotate** — combine, extract page ranges, rotate pages → [references/existing-pdfs.md](references/existing-pdfs.md)
 - **Watermark, encrypt, repair** — qpdf and pypdf one-liners → [references/existing-pdfs.md](references/existing-pdfs.md)
+
+### Form-filling decision tree
+
+1. `python scripts/check_fillable_fields.py <file.pdf>` — does the PDF have AcroForm fields?
+2. **Has fillable fields** → `scripts/extract_form_field_info.py` to inspect, then `scripts/fill_fillable_fields.py` to fill.
+3. **No fillable fields** (flat scan or rendered form) → fall back to the visual estimation path in [references/forms.md](references/forms.md).
 
 ## When NOT to use this skill
 
@@ -71,6 +77,8 @@ Inputs (all optional, sensible defaults):
 | `--subtitle` | Cover subtitle |
 | `--author` | Cover footer |
 | `--date` | Header date (default: today) |
+
+**Note**: The bundled `report.typ` is a *starter scaffold* with placeholder German chapter headings and lorem-ipsum body text. The `--key` flags only control cover/header metadata — actual content (sections, charts, tables) must be added by copying `templates/report.typ` and editing it, or by writing a custom `.typ`. For pure metadata-driven output (no edits needed), use `memo` or `letter` instead.
 
 ### `invoice` — DIN-A4 Rechnung
 
@@ -153,13 +161,15 @@ Before delivering a PDF:
 - [ ] Footer with date/version if the user will share externally
 - [ ] PDF opens cleanly (`head -c 8 my.pdf` → `%PDF-1.7`)
 - [ ] File size sane (< 3 MB for a 15-page report unless heavy images)
+- [ ] For Factur-X invoices: `facturx-xmlcheck out.pdf` passes (schema + schematron)
 
 ## Common pitfalls
 
-1. **Variable fonts in Typst** — variable Inter/Plex builds throw `font fallback list must not be empty`. Use the static cuts installed in the container.
-2. **Curly quotes in template strings** — German `"…"` (U+201C/U+201D) terminate Typst strings since they're ASCII-identical to `"`. Use plain ASCII quotes inside strings.
-3. **`#image("...")` path resolution** — relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so external PNGs in your CWD work.
-4. **Table overflows** — narrow your column headers or wrap with `text(size: 9pt)` for the table body.
+1. **Curly quotes "…" terminate Typst strings** — German typographic quotes (U+201C/U+201D) are ASCII-identical to `"`. Inside string literals use plain `"`; inside content blocks (`[…]`) anything goes.
+2. **Variable fonts** — reference `"Inter"`, not `"Inter Variable"`. The container ships static cuts only.
+3. **Table overflows** — narrow column headers or wrap the body with `text(size: 9pt)`.
+
+For Typst-authoring gotchas (image paths, `context` for `counter(page).final()`, `table.header(...)` repeat, `pagebreak(weak: true)`) see [templates/custom-templates.md § Common gotchas](templates/custom-templates.md).
 
 ## Useful one-liners
 
@@ -202,12 +212,6 @@ pdf/
     └── forms.md                      Filling existing PDF forms (radio, checkbox, text fields)
 ```
 
-## See also
+## Companion skills
 
-- [templates/custom-templates.md](templates/custom-templates.md) — write your own Typst templates from scratch.
-- [references/charts.md](references/charts.md) — chart cookbook (Cetz / cetz-plot).
-- [references/themes-and-fonts.md](references/themes-and-fonts.md) — theming + typography.
-- [references/zugferd.md](references/zugferd.md) — Factur-X / EN 16931 e-invoices.
-- [references/existing-pdfs.md](references/existing-pdfs.md) — merge / split / rotate / watermark / encrypt existing PDFs.
-- [references/forms.md](references/forms.md) — filling existing PDF forms.
-- `document-parse` skill — reading PDFs (OCR, text extraction).
+- `document-parse` — reading PDFs (OCR, text extraction).

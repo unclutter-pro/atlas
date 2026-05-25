@@ -82,21 +82,23 @@ Edge cases not yet covered (in priority order — open an issue/PR if you need o
 4. **Down-payment invoices and final invoices** (TypeCode 386 / 389 mixed flows).
 5. **XRechnung profile** — public-sector preferred format. The current helper emits the EN 16931 profile, which most public-sector portals accept, but XRechnung adds a few German-specific identifiers (Leitweg-ID, etc.).
 
-## Profiles supported by Factur-X (--profile flag)
+## Profiles supported by this helper (`--profile` flag)
 
-| Profile | Use |
-|---|---|
-| `MINIMUM` | Buyer + seller + totals only. Rarely useful in practice. |
-| `BASIC WL` | "Without lines" — totals + tax breakdown, no line items. |
-| `BASIC` | Totals + line items. |
-| `EN 16931` ← **default** | Full EU baseline. The right answer for most B2B. |
-| `EXTENDED` | EN 16931 + delivery refs and extended fields. |
+| Profile | Use | This helper |
+|---|---|---|
+| `MINIMUM` | Buyer + seller + totals only. Rarely useful. | ❌ Not supported (requires stripped XML) |
+| `BASIC WL` | "Without lines" — totals + tax breakdown, no line items. | ❌ Not supported (requires stripped XML) |
+| `BASIC` | Totals + line items. | ✅ |
+| `EN 16931` ← **default** | Full EU baseline. The right answer for most B2B. | ✅ |
+| `EXTENDED` | EN 16931 conformant + extended fields. | ✅ (same content as EN 16931, different conformance URN) |
 
 The helper defaults to `EN 16931`. To switch:
 
 ```bash
 invoice-zugferd invoice.pdf data.json out.pdf --profile EXTENDED
 ```
+
+`MINIMUM` and `BASIC WL` require a strictly reduced XML body that this script does not emit — passing them raises `ValueError`.
 
 ## Recipient compatibility (informal)
 

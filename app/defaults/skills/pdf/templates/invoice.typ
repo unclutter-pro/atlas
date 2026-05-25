@@ -19,7 +19,11 @@
 
 #import "themes.typ": resolve-theme
 
-#let data = json(sys.inputs.at("data", default: "examples/invoice-sample.json"))
+// `data` input is an absolute path resolved by build-pdf. When invoked
+// directly with `typst compile` and no --input, fall back to the bundled
+// sample relative to this template.
+#let data-path = sys.inputs.at("data", default: "../examples/invoice-sample.json")
+#let data = json(data-path)
 
 #let theme = resolve-theme()
 #let primary = theme.primary

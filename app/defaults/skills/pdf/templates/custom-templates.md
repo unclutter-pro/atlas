@@ -277,7 +277,7 @@ With dot-leaders and right-aligned page numbers:
 
 3. **`counter(page).final()` needs `context`**. Wrap the surrounding expression in `context { ... }` or `context align(...)[...]` — otherwise Typst evaluates it during the first pass before the page count exists.
 
-4. **Image paths are relative to the `.typ` file**, not the working directory. Use `image("photos/x.png")` and put external images next to the template. The `build-pdf` script also sets `--root "$(pwd)"` so things in your CWD resolve.
+4. **Image paths are relative to the `.typ` file**, not the working directory. Use `image("photos/x.png")` and put external images next to the template. The `build-pdf` script sets `--root /` so absolute paths work too.
 
 5. **Tables with `columns: (1fr, auto)`**: 1fr stretches to fill, auto is content-width. Use this for two-column layouts where you want labels on the left squeezed against amounts on the right.
 

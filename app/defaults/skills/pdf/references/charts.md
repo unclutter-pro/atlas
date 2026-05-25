@@ -74,13 +74,15 @@ Use `theme.accent` for primary series, `theme.muted` for axes, `theme.rule` for 
 ### Stacked bar — composition over categories
 
 ```typst
+#let stack-colors = (theme.accent, theme.muted, theme.rule)
+
 #cetz.canvas({
   chart.barchart(
     mode: "stacked",
     size: (10, 4.5),
     label-key: 0,
     value-key: (1, 2, 3),
-    bar-style: palette.tab10,
+    bar-style: i => (fill: stack-colors.at(calc.rem(i, stack-colors.len()))),
     (
       ("Q1", 60, 25, 15),
       ("Q2", 65, 22, 13),
