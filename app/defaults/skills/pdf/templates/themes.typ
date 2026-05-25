@@ -43,15 +43,16 @@
     font-heading: "IBM Plex Serif",
     font-mono:    "JetBrains Mono",
   ),
-  // forest — editorial / sustainable. Eggshell paper, deep forest accent,
-  // generous breathing room.
+  // forest — editorial / sustainable. The trinity: warm sandy brown (forest
+  // floor / paper), light green (new growth / surface), dark green (canopy /
+  // accent). Body type in dark warm brown so even paragraph text reads forest.
   forest: (
-    primary:      rgb("#1F2937"),
+    primary:      rgb("#3E2C1C"),
     accent:       rgb("#166534"),
-    muted:        rgb("#6B7280"),
-    rule:         rgb("#E5E7EB"),
-    background:   rgb("#FAFAF7"),
-    surface:      rgb("#F4F4F0"),
+    muted:        rgb("#78635A"),
+    rule:         rgb("#D6C9B3"),
+    background:   rgb("#F5ECD8"),
+    surface:      rgb("#E8F0E0"),
     font-body:    "Inter",
     font-heading: "IBM Plex Serif",
     font-mono:    "JetBrains Mono",
