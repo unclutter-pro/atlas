@@ -88,6 +88,7 @@ Inputs (all optional, sensible defaults):
 - Totals block: Subtotal · USt-% · Total
 - IBAN / BIC / USt-IdNr footer block
 - Optional `notes` line
+- Invoice number auto-scales (28pt → 20pt → 14pt) so DATEV-style long numbers stay readable
 
 Inputs: `--data path/to/invoice.json` (see `examples/invoice-sample.json` for shape).
 

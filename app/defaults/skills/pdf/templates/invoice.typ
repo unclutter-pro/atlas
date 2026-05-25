@@ -67,9 +67,17 @@
 #set par(leading: 0.75em, spacing: 0.9em)
 
 // --- Header: tall, modern title block ------------------------------------
+// Invoice number is auto-scaled to fit. Long numbers (DATEV-style with
+// project codes etc.) shrink from 28pt down to a still-prominent 14pt.
+#let inv-no-size = {
+  let l = data.invoice_no.len()
+  if l > 24 { 14pt } else if l > 14 { 20pt } else { 28pt }
+}
+
 #grid(
-  columns: (1fr, auto),
+  columns: (1fr, 40%),
   align: (left, top + right),
+  column-gutter: 1.5em,
   [
     #text(size: 11pt, weight: "semibold", tracking: 0.1em, fill: accent)[#upper("Rechnung")]
     #v(0.4em)
@@ -80,7 +88,7 @@
     ]
   ],
   [
-    #text(size: 28pt, weight: "light", fill: muted)[№ #data.invoice_no]
+    #text(size: inv-no-size, weight: "light", fill: muted)[№ #data.invoice_no]
   ],
 )
 
@@ -109,9 +117,10 @@
     #grid(
       columns: (auto, 1fr),
       gutter: (0.8em, 0.5em),
-      text(size: 9pt, fill: muted)[Rechnungsdatum],   text(size: 10pt)[#data.date],
-      text(size: 9pt, fill: muted)[Leistungsdatum],   text(size: 10pt)[#data.at("service_date", default: data.date)],
-      text(size: 9pt, fill: muted)[Fällig bis],       text(size: 10pt, weight: "semibold")[#data.due_date],
+      text(size: 9pt, fill: muted)[Rechnungsnummer], text(size: 10pt, weight: "semibold")[#data.invoice_no],
+      text(size: 9pt, fill: muted)[Rechnungsdatum],  text(size: 10pt)[#data.date],
+      text(size: 9pt, fill: muted)[Leistungsdatum],  text(size: 10pt)[#data.at("service_date", default: data.date)],
+      text(size: 9pt, fill: muted)[Fällig bis],      text(size: 10pt, weight: "semibold")[#data.due_date],
     )
   ],
 )
