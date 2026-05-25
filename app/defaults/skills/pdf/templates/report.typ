@@ -76,7 +76,11 @@
   #v(0.4em)
   #text(size: 9pt, tracking: 0.2em, weight: "semibold", fill: accent)[#upper(l.report-by + " " + author)]
   #v(2.5em)
-  #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
+  // Tight leading on the cover title — at 42pt the default 0.65em leaves too
+  // much air between wrapped lines; 0.5em reads as one heading block.
+  #par(leading: 0.5em)[
+    #text(font: font-heading, size: 42pt, weight: "semibold", fill: primary)[#title]
+  ]
   #v(0.8em)
   #text(font: font-body, size: 16pt, fill: muted)[#subtitle]
   #v(4em)
