@@ -587,18 +587,8 @@ qpdf --replace-input corrupted.pdf
 ```
 
 ### Text Extraction Issues
-```python
-# Fallback to OCR for scanned PDFs
-import pytesseract
-from pdf2image import convert_from_path
 
-def extract_text_with_ocr(pdf_path):
-    images = convert_from_path(pdf_path)
-    text = ""
-    for i, image in enumerate(images):
-        text += pytesseract.image_to_string(image)
-    return text
-```
+For scanned PDFs or when `pdfplumber` returns empty text, use the **`document-parse`** skill instead — it runs LiteParse (Tesseract.js + structure detection) and produces clean markdown. That's the supported path going forward; the OCR helpers that used to live in this reference have been retired.
 
 ## License Information
 

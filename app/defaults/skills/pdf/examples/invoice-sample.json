@@ -1,0 +1,26 @@
+{
+  "from": {
+    "name": "Beispiel GmbH",
+    "address1": "Musterstraße 1",
+    "address2": "70173 Stuttgart",
+    "tax_id": "DE123456789",
+    "iban": "DE89 3704 0044 0532 0130 00",
+    "bic": "COBADEFFXXX"
+  },
+  "to": {
+    "name": "Kunde AG",
+    "address1": "Beispielweg 42",
+    "address2": "80331 München"
+  },
+  "invoice_no": "2026-001",
+  "date": "2026-05-25",
+  "due_date": "2026-06-25",
+  "items": [
+    { "description": "Beratung Strategie", "qty": 4, "unit": "h", "unit_price": 220.00 },
+    { "description": "Workshop-Moderation", "qty": 1, "unit": "Tag", "unit_price": 1600.00 },
+    { "description": "Folgekonzept (Pauschal)", "qty": 1, "unit": "Stück", "unit_price": 1200.00 }
+  ],
+  "vat_rate": 0.19,
+  "currency": "EUR",
+  "notes": "Vielen Dank für die Zusammenarbeit."
+}

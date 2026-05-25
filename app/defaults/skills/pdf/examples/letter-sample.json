@@ -1,0 +1,22 @@
+{
+  "sender": {
+    "name": "Max Mustermann",
+    "company": "Beispiel GmbH",
+    "address": "Musterstraße 1",
+    "city": "70173 Stuttgart",
+    "phone": "+49 711 1234567",
+    "email": "max@beispiel.de"
+  },
+  "recipient": {
+    "name": "Frau Erika Beispielfrau",
+    "company": "Kunde AG",
+    "address": "Beispielweg 42",
+    "city": "80331 München"
+  },
+  "subject": "Angebot zur strategischen Beratung",
+  "salutation": "Sehr geehrte Frau Beispielfrau,",
+  "body": "vielen Dank für unser angenehmes Gespräch in der vergangenen Woche. Wie besprochen sende ich Ihnen anbei mein Angebot zur strategischen Beratung Ihrer Markteintrittsstrategie.\n\nDer Umfang beläuft sich auf vier Workshop-Termine über sechs Wochen, ergänzt um schriftliche Deliverables. Eine detaillierte Aufstellung der Module und Preise finden Sie in der beigefügten Rechnung.\n\nIch freue mich auf Ihre Rückmeldung und einen möglichen Projektstart Anfang Juli. Bei Fragen stehe ich Ihnen jederzeit telefonisch oder per E-Mail zur Verfügung.",
+  "closing": "Mit freundlichen Grüßen",
+  "signature": "Max Mustermann",
+  "date": "Stuttgart, 25. Mai 2026"
+}

@@ -1,340 +1,194 @@
 ---
 name: pdf
-description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
+description: "Use this skill to CREATE / GENERATE / PRODUCE professional PDF documents from scratch — reports, invoices, business letters, memos, status updates, market analyses, proposals, anything where layout and visual quality matter. Triggers: 'erstelle PDF', 'baue Rechnung', 'mache einen Bericht als PDF', 'create a PDF', 'generate a report', 'render an invoice', 'business letter', 'Geschäftsbrief', 'Memo', plus any deliverable where the user expects a polished printable artifact. Primary engine: Typst (modern, fast, clean syntax). Charts via matplotlib (PNG) or Cetz (native Typst). Four ready-to-use templates bundled: report, invoice, letter, memo. Do NOT use for: (1) READING / EXTRACTING text from existing PDFs, OCR on scanned documents, parsing forms — use the `document-parse` skill (LiteParse). (2) Filling pre-existing fillable PDF forms — see `forms.md` reference. (3) Merging / splitting / rotating existing PDFs — see `reference.md` for qpdf / pypdf one-liners."
 license: Proprietary. LICENSE.txt has complete terms
 ---
 
-# PDF Processing Guide
+# PDF Generation Skill
 
-## Overview
+Produces professional, brand-consistent PDFs with **Typst** as the primary engine. Optimized for fast iteration: write `.typ` source, run one `build-pdf` command, get a polished PDF.
 
-This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see reference.md. If you need to fill out a PDF form, read forms.md and follow its instructions.
+## When to use this skill
 
-## Quick Start
+- **Reports** — market research, status reports, deliverables (template: `report`)
+- **Invoices** — Rechnungen mit USt-konformer Struktur (template: `invoice`)
+- **Letters** — DIN-5008 Geschäftsbriefe (template: `letter`)
+- **Memos** — Single-page interne Notizen / Recaps (template: `memo`)
+- **Custom PDFs** — own `.typ` source with full Typst flexibility
 
-```python
-from pypdf import PdfReader, PdfWriter
+## When NOT to use this skill
 
-# Read a PDF
-reader = PdfReader("document.pdf")
-print(f"Pages: {len(reader.pages)}")
+- Reading or extracting text from existing PDFs → `document-parse` skill
+- OCR on scanned documents → `document-parse` skill
+- Filling existing PDF forms → see [forms.md](forms.md)
+- Merging / splitting / rotating existing PDFs → see [reference.md](reference.md) for qpdf
 
-# Extract text
-text = ""
-for page in reader.pages:
-    text += page.extract_text()
-```
+## Quick start
 
-## Python Libraries
-
-### pypdf - Basic Operations
-
-#### Merge PDFs
-```python
-from pypdf import PdfWriter, PdfReader
-
-writer = PdfWriter()
-for pdf_file in ["doc1.pdf", "doc2.pdf", "doc3.pdf"]:
-    reader = PdfReader(pdf_file)
-    for page in reader.pages:
-        writer.add_page(page)
-
-with open("merged.pdf", "wb") as output:
-    writer.write(output)
-```
-
-#### Split PDF
-```python
-reader = PdfReader("input.pdf")
-for i, page in enumerate(reader.pages):
-    writer = PdfWriter()
-    writer.add_page(page)
-    with open(f"page_{i+1}.pdf", "wb") as output:
-        writer.write(output)
-```
-
-#### Extract Metadata
-```python
-reader = PdfReader("document.pdf")
-meta = reader.metadata
-print(f"Title: {meta.title}")
-print(f"Author: {meta.author}")
-print(f"Subject: {meta.subject}")
-print(f"Creator: {meta.creator}")
-```
-
-#### Rotate Pages
-```python
-reader = PdfReader("input.pdf")
-writer = PdfWriter()
-
-page = reader.pages[0]
-page.rotate(90)  # Rotate 90 degrees clockwise
-writer.add_page(page)
-
-with open("rotated.pdf", "wb") as output:
-    writer.write(output)
-```
-
-### pdfplumber - Text and Table Extraction
-
-#### Extract Text with Layout
-```python
-import pdfplumber
-
-with pdfplumber.open("document.pdf") as pdf:
-    for page in pdf.pages:
-        text = page.extract_text()
-        print(text)
-```
-
-#### Extract Tables
-```python
-with pdfplumber.open("document.pdf") as pdf:
-    for i, page in enumerate(pdf.pages):
-        tables = page.extract_tables()
-        for j, table in enumerate(tables):
-            print(f"Table {j+1} on page {i+1}:")
-            for row in table:
-                print(row)
-```
-
-#### Advanced Table Extraction
-```python
-import pandas as pd
-
-with pdfplumber.open("document.pdf") as pdf:
-    all_tables = []
-    for page in pdf.pages:
-        tables = page.extract_tables()
-        for table in tables:
-            if table:  # Check if table is not empty
-                df = pd.DataFrame(table[1:], columns=table[0])
-                all_tables.append(df)
-
-# Combine all tables
-if all_tables:
-    combined_df = pd.concat(all_tables, ignore_index=True)
-    combined_df.to_excel("extracted_tables.xlsx", index=False)
-```
-
-### reportlab - Create PDFs
-
-#### Basic PDF Creation
-```python
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-
-c = canvas.Canvas("hello.pdf", pagesize=letter)
-width, height = letter
-
-# Add text
-c.drawString(100, height - 100, "Hello World!")
-c.drawString(100, height - 120, "This is a PDF created with reportlab")
-
-# Add a line
-c.line(100, height - 140, 400, height - 140)
-
-# Save
-c.save()
-```
-
-#### Create PDF with Multiple Pages
-```python
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet
-
-doc = SimpleDocTemplate("report.pdf", pagesize=letter)
-styles = getSampleStyleSheet()
-story = []
-
-# Add content
-title = Paragraph("Report Title", styles['Title'])
-story.append(title)
-story.append(Spacer(1, 12))
-
-body = Paragraph("This is the body of the report. " * 20, styles['Normal'])
-story.append(body)
-story.append(PageBreak())
-
-# Page 2
-story.append(Paragraph("Page 2", styles['Heading1']))
-story.append(Paragraph("Content for page 2", styles['Normal']))
-
-# Build PDF
-doc.build(story)
-```
-
-#### Subscripts and Superscripts
-
-**IMPORTANT**: Never use Unicode subscript/superscript characters (₀₁₂₃₄₅₆₇₈₉, ⁰¹²³⁴⁵⁶⁷⁸⁹) in ReportLab PDFs. The built-in fonts do not include these glyphs, causing them to render as solid black boxes.
-
-Instead, use ReportLab's XML markup tags in Paragraph objects:
-```python
-from reportlab.platypus import Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
-
-styles = getSampleStyleSheet()
-
-# Subscripts: use <sub> tag
-chemical = Paragraph("H<sub>2</sub>O", styles['Normal'])
-
-# Superscripts: use <super> tag
-squared = Paragraph("x<super>2</super> + y<super>2</super>", styles['Normal'])
-```
-
-For canvas-drawn text (not Paragraph objects), manually adjust font the size and position rather than using Unicode subscripts/superscripts.
-
-#### Non-ASCII Characters (Umlauts, Accents, Cyrillic, CJK)
-
-**IMPORTANT**: ReportLab's built-in fonts (`Helvetica`, `Times-Roman`, `Courier`) only encode WinAnsi (≈Latin-1). Characters outside that range — including some compositions and most non-Latin scripts — fail silently or render as black boxes. German Umlauts (ÄÖÜäöüß) are inside Latin-1 so usually render, but anything broader requires a Unicode TTF.
-
-**Register a Unicode TTF for safety**:
-```python
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
-# DejaVuSans ships with most Linux distros at /usr/share/fonts/truetype/dejavu/
-pdfmetrics.registerFont(TTFont("DejaVuSans", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"))
-pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
-
-# Canvas
-c.setFont("DejaVuSans", 12)
-c.drawString(100, 700, "Universität München — Größenänderung — Ωmega — 北京")
-
-# Paragraph stylesheets
-from reportlab.lib.styles import ParagraphStyle
-style = ParagraphStyle("body", fontName="DejaVuSans", fontSize=11, leading=14)
-```
-
-**Reading source text**: always `open(path, encoding="utf-8")` — implicit decoding can mangle Umlauts on non-UTF-8 hosts.
-
-**XML emergency entities** for inline Paragraph markup when a literal character won't paste cleanly: `&#196;` Ä · `&#214;` Ö · `&#220;` Ü · `&#228;` ä · `&#246;` ö · `&#252;` ü · `&#223;` ß
-
-## Command-Line Tools
-
-### pdftotext (poppler-utils)
 ```bash
-# Extract text
-pdftotext input.pdf output.txt
+# Pick a template and pipe in your data:
+build-pdf report \
+  --title "Markt-Recherche DACH" \
+  --subtitle "Tech / Beratung / Agentur" \
+  --author "Atlas" \
+  output/report.pdf
 
-# Extract text preserving layout
-pdftotext -layout input.pdf output.txt
+build-pdf invoice --data examples/invoice-sample.json output/invoice.pdf
 
-# Extract specific pages
-pdftotext -f 1 -l 5 input.pdf output.txt  # Pages 1-5
+build-pdf letter  --data my-letter.json              output/letter.pdf
+
+build-pdf memo \
+  --title "Sprint Recap KW 22" \
+  --to "Team" \
+  --from "Max" \
+  output/memo.pdf
+
+# Custom template? Just pass the .typ path:
+build-pdf path/to/custom.typ output/custom.pdf
 ```
 
-### qpdf
+The `build-pdf` script lives in `scripts/build-pdf` of this skill.
+
+## The four bundled templates
+
+### `report` — multi-page research / status / market reports
+
+- Cover page with title + subtitle + author + date
+- Auto headers/footers + page numbers
+- H1 forces a page break, H2/H3 inline
+- Tables with brand-coloured headers and subtle row rules
+- Image embedding via `image("charts/chart1.png", width: 90%)` with `figure(...)` captions
+- Footnote-style source citations: `text#footnote[Bitkom, 2024]`
+
+Inputs (all optional, sensible defaults):
+
+| `--key` | Purpose |
+|---|---|
+| `--title` | Cover title |
+| `--subtitle` | Cover subtitle |
+| `--author` | Cover footer |
+| `--date` | Header date (default: today) |
+
+### `invoice` — DIN-A4 Rechnung
+
+- Sender block top-left + invoice metadata grid
+- Recipient block on the left, metadata (Rechnungs-Nr, Datum, Fällig) on the right
+- Line items table with running sums
+- Totals block: Subtotal · USt-% · Total
+- IBAN / BIC / USt-IdNr footer block
+- Optional `notes` line
+
+Inputs: `--data path/to/invoice.json` (see `examples/invoice-sample.json` for shape).
+
+### `letter` — DIN-5008 Geschäftsbrief
+
+- Sender mini-address top-right
+- Underlined Rücksendezeile (DIN 5008)
+- Recipient in the postal-window area
+- Right-aligned date + bold subject
+- Body with multi-paragraph support (separate paragraphs by `\n\n` in JSON)
+- Salutation, body, closing, signature in correct German business style
+
+Inputs: `--data path/to/letter.json` (see `examples/letter-sample.json`).
+
+### `memo` — single-page recap
+
+- Slim header bar with title, To, From, Date
+- Three default sections: *Was passiert ist* · *Entscheidungen* · *Nächste Schritte*
+- Compact table for owner / task / deadline
+
+Inputs: `--title`, `--to`, `--from`, `--date`.
+
+## Charts and figures
+
+Two approaches, pick what fits:
+
+### Option A — matplotlib PNGs (most flexible)
+
+Pre-generate chart PNGs in a `charts/` subfolder next to the report and reference them:
+
+```typst
+#figure(
+  image("charts/marktgroessen.png", width: 90%),
+  caption: [Marktgrößen DACH 2024. Quelle: Bitkom.],
+)
+```
+
+Default DPI 150, A4 width-friendly figure sizes ~10x5 inches.
+
+### Option B — Cetz / cetz-plot (native Typst)
+
+For brand-consistent vector charts compiled together with the document:
+
+```typst
+#import "@preview/cetz:0.4.2"
+#import "@preview/cetz-plot:0.1.4"
+
+#figure(
+  cetz.canvas({
+    import cetz.draw: *
+    cetz-plot.plot.plot(size: (10, 5), {
+      cetz-plot.plot.add-bar((("Tech", 225.9), ("Beratung", 48.7), ("Agenturen", 27.6)))
+    })
+  }),
+  caption: [Marktgrößen DACH 2024 (Mrd. €).],
+)
+```
+
+Cetz is slower to compile but stays as crisp vector at any zoom, and inherits the document fonts/colours.
+
+## Fonts available in the container
+
+Pre-installed by the Atlas Dockerfile:
+
+| Family | Use |
+|---|---|
+| `Inter` | Body sans, UI, captions (modern, screen-friendly) |
+| `IBM Plex Serif` | Body serif, headlines for reports/letters (business-appropriate) |
+| `JetBrains Mono` | Monospace for code, numerals, technical content |
+| `Crimson Pro` | Long-form serif (essays, op-eds) |
+| `Liberation Sans/Serif/Mono` | Drop-in replacements for Arial/Times/Courier |
+| `DejaVu Sans/Serif/Mono` | Broad Unicode coverage incl. Cyrillic, Greek, math symbols |
+| `Noto Sans` + `Noto Sans CJK` | International scripts including Chinese, Japanese, Korean |
+
+Use any of these in Typst as `#set text(font: "Inter")` etc. — no manual font loading needed.
+
+## Pre-flight checklist
+
+Before delivering a PDF:
+
+- [ ] `typst compile` succeeds with no warnings (variable-font warnings are red flags)
+- [ ] All `image(...)` paths resolve — open the PDF to confirm charts render
+- [ ] Source citations consistent (URLs or footnotes, not mixed)
+- [ ] Footer with date/version if the user will share externally
+- [ ] PDF opens cleanly (`head -c 8 my.pdf` → `%PDF-1.7`)
+- [ ] File size sane (< 3 MB for a 15-page report unless heavy images)
+
+## Common pitfalls
+
+1. **Variable fonts in Typst** — variable Inter/Plex builds throw `font fallback list must not be empty`. The Dockerfile installs static cuts.
+2. **Curly quotes in template strings** — German `"…"` (U+201C/U+201D) terminate Typst strings since they're ASCII-identical to `"`. Use plain ASCII quotes inside strings.
+3. **`#image("...")` path resolution** — relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so chart PNGs in your CWD work.
+4. **Table overflows** — narrow your column headers or wrap with `text(size: 9pt)` for the table body.
+
+## Useful one-liners
+
 ```bash
-# Merge PDFs
-qpdf --empty --pages file1.pdf file2.pdf -- merged.pdf
+# Render and open immediately:
+build-pdf memo --title "Stand $(date +%V)" /tmp/memo.pdf && xdg-open /tmp/memo.pdf
 
-# Split pages
-qpdf input.pdf --pages . 1-5 -- pages1-5.pdf
-qpdf input.pdf --pages . 6-10 -- pages6-10.pdf
+# Iterate on a custom template — auto-recompile on save:
+typst watch my-report.typ my-report.pdf
 
-# Rotate pages
-qpdf input.pdf output.pdf --rotate=+90:1  # Rotate page 1 by 90 degrees
-
-# Remove password
-qpdf --password=mypassword --decrypt encrypted.pdf decrypted.pdf
+# Combine multiple PDFs (see reference.md):
+qpdf --empty --pages report.pdf invoice.pdf -- bundle.pdf
 ```
 
-### pdftk (if available)
-```bash
-# Merge
-pdftk file1.pdf file2.pdf cat output merged.pdf
+## See also
 
-# Split
-pdftk input.pdf burst
-
-# Rotate
-pdftk input.pdf rotate 1east output rotated.pdf
-```
-
-## Common Tasks
-
-### Extract Text from Scanned PDFs
-```python
-# Requires: pip install pytesseract pdf2image
-import pytesseract
-from pdf2image import convert_from_path
-
-# Convert PDF to images
-images = convert_from_path('scanned.pdf')
-
-# OCR each page
-text = ""
-for i, image in enumerate(images):
-    text += f"Page {i+1}:\n"
-    text += pytesseract.image_to_string(image)
-    text += "\n\n"
-
-print(text)
-```
-
-### Add Watermark
-```python
-from pypdf import PdfReader, PdfWriter
-
-# Create watermark (or load existing)
-watermark = PdfReader("watermark.pdf").pages[0]
-
-# Apply to all pages
-reader = PdfReader("document.pdf")
-writer = PdfWriter()
-
-for page in reader.pages:
-    page.merge_page(watermark)
-    writer.add_page(page)
-
-with open("watermarked.pdf", "wb") as output:
-    writer.write(output)
-```
-
-### Extract Images
-```bash
-# Using pdfimages (poppler-utils)
-pdfimages -j input.pdf output_prefix
-
-# This extracts all images as output_prefix-000.jpg, output_prefix-001.jpg, etc.
-```
-
-### Password Protection
-```python
-from pypdf import PdfReader, PdfWriter
-
-reader = PdfReader("input.pdf")
-writer = PdfWriter()
-
-for page in reader.pages:
-    writer.add_page(page)
-
-# Add password
-writer.encrypt("userpassword", "ownerpassword")
-
-with open("encrypted.pdf", "wb") as output:
-    writer.write(output)
-```
-
-## Quick Reference
-
-| Task | Best Tool | Command/Code |
-|------|-----------|--------------|
-| Merge PDFs | pypdf | `writer.add_page(page)` |
-| Split PDFs | pypdf | One page per file |
-| Extract text | pdfplumber | `page.extract_text()` |
-| Extract tables | pdfplumber | `page.extract_tables()` |
-| Create PDFs | reportlab | Canvas or Platypus |
-| Command line merge | qpdf | `qpdf --empty --pages ...` |
-| OCR scanned PDFs | pytesseract | Convert to image first |
-| Fill PDF forms | pdf-lib or pypdf (see forms.md) | See forms.md |
-
-## Next Steps
-
-- For advanced pypdfium2 usage, see reference.md
-- For JavaScript libraries (pdf-lib), see reference.md
-- If you need to fill out a PDF form, follow the instructions in forms.md
-- For troubleshooting guides, see reference.md
+- [reference.md](reference.md) — qpdf / pypdf one-liners for existing PDFs (merge, split, watermark, encrypt).
+- [forms.md](forms.md) — filling existing PDF forms (kept for backwards compat).
+- `templates/` — the four bundled Typst templates.
+- `examples/` — sample JSON inputs for invoice and letter.
+- `scripts/build-pdf` — wrapper around `typst compile`.
+- `document-parse` skill — for the inverse direction (reading existing PDFs).
