@@ -1,32 +1,25 @@
 // letter.typ — DIN-5008 business letter template.
 //
 // Usage:
-//   typst compile --input data=letter.json letter.typ letter.pdf
-//
-// Expected letter.json:
-//   {
-//     "sender":     { "name": "...", "company": "...", "address": "...", "city": "...", "phone": "...", "email": "..." },
-//     "recipient":  { "name": "...", "company": "...", "address": "...", "city": "..." },
-//     "subject":    "Betreff der Korrespondenz",
-//     "salutation": "Sehr geehrte Frau ...",
-//     "body":       "Erster Absatz.\n\nZweiter Absatz.\n\nDritter Absatz.",
-//     "closing":    "Mit freundlichen Grüßen",
-//     "signature":  "Vor- und Zuname",
-//     "date":       "2026-05-25"
-//   }
+//   build-pdf letter --data letter.json [--theme indigo|...] letter.pdf
+
+#import "themes.typ": resolve-theme
 
 #let data = json(sys.inputs.at("data", default: "examples/letter-sample.json"))
+#let theme = resolve-theme()
+#let primary = theme.primary
+#let muted   = theme.muted
 
 #set page(
   paper: "a4",
   margin: (top: 4.5cm, bottom: 2.5cm, left: 2.5cm, right: 2cm),
 )
-#set text(font: "Inter", size: 11pt, lang: "de")
-#set par(justify: false, leading: 0.7em, first-line-indent: 0pt)
+#set text(font: "Inter", size: 11pt, fill: primary, lang: "de")
+#set par(justify: false, leading: 0.7em, first-line-indent: 0pt, spacing: 1em)
 
 // --- Sender address (small, top-right) -----------------------------------
 #place(top + right, dx: 0pt, dy: -2.5cm)[
-  #text(size: 8pt, fill: rgb("#64748B"))[
+  #text(size: 8pt, fill: muted)[
     #data.sender.name \
     #if data.sender.at("company", default: "") != "" [#data.sender.company \ ]
     #data.sender.address \

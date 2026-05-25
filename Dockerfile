@@ -94,7 +94,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
   && npm cache clean --force \
   # --- Python packages (used by messaging addons for config parsing) ---
-  && pip install --break-system-packages pyyaml html2text \
+  && pip install --break-system-packages pyyaml html2text factur-x lxml \
   # --- Claude Code CLI ---
   && npm install -g @anthropic-ai/claude-code \
   && claude --version \

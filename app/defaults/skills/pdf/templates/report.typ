@@ -1,25 +1,25 @@
 // report.typ — multi-page research / status / market report template.
 //
 // Usage:
-//   typst compile --input title="..." --input subtitle="..." --input author="..." report.typ output.pdf
-//
-// Replace the placeholder content below with your actual report body.
+//   build-pdf report --title "..." --subtitle "..." --author "..." [--theme indigo|forest|amber|crimson|mono] output.pdf
+
+#import "themes.typ": resolve-theme
 
 #let title = sys.inputs.at("title", default: "Report-Titel")
 #let subtitle = sys.inputs.at("subtitle", default: "Untertitel mit Kontext")
 #let author = sys.inputs.at("author", default: "Atlas")
 #let date = sys.inputs.at("date", default: datetime.today().display())
 
-// --- Brand tokens (override via your own .typ file) -----------------------
-#let primary = rgb("#1F2937")        // ink
-#let accent  = rgb("#2563EB")        // headline accent
-#let muted   = rgb("#6B7280")        // captions, footer
-#let rule    = rgb("#E5E7EB")        // table borders
+#let theme = resolve-theme()
+#let primary = theme.primary
+#let accent  = theme.accent
+#let muted   = theme.muted
+#let rule    = theme.rule
 
 // --- Page setup -----------------------------------------------------------
 #set page(
   paper: "a4",
-  margin: (top: 2.5cm, bottom: 2.5cm, x: 2.2cm),
+  margin: (top: 2.8cm, bottom: 2.8cm, x: 2.5cm),
   header: align(right)[
     #text(size: 9pt, fill: muted)[#title]
   ],
@@ -31,27 +31,32 @@
   ],
 )
 #set text(font: "Inter", size: 11pt, fill: primary, lang: "de")
-#set par(justify: true, leading: 0.65em)
+#set par(justify: true, leading: 0.7em, spacing: 1em)
 
 #show heading.where(level: 1): it => {
   pagebreak(weak: true)
   set text(font: "IBM Plex Serif", size: 22pt, weight: "semibold", fill: accent)
-  v(0.3em)
-  it
   v(0.5em)
+  it
+  v(0.8em)
 }
-#show heading.where(level: 2): set text(font: "Inter", size: 14pt, weight: "semibold")
+#show heading.where(level: 2): it => {
+  v(0.6em)
+  set text(font: "Inter", size: 14pt, weight: "semibold")
+  it
+  v(0.2em)
+}
 #show heading.where(level: 3): set text(font: "Inter", size: 12pt, weight: "medium")
 
 #show table.cell.where(y: 0): set text(weight: "semibold", fill: accent)
-#set table(stroke: 0.5pt + rule, inset: 8pt)
+#set table(stroke: 0.5pt + rule, inset: 9pt)
 
 // --- Cover ---------------------------------------------------------------
-#page(header: none, footer: none, margin: (top: 6cm, bottom: 4cm, x: 3cm))[
+#page(header: none, footer: none, margin: (top: 7cm, bottom: 4cm, x: 3.5cm))[
   #text(font: "IBM Plex Serif", size: 38pt, weight: "semibold", fill: accent)[#title]
-  #v(0.5em)
+  #v(0.8em)
   #text(font: "Inter", size: 16pt, fill: muted)[#subtitle]
-  #v(3em)
+  #v(3.5em)
   #text(font: "Inter", size: 11pt, fill: muted)[
     #author · #date
   ]
