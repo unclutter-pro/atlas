@@ -1,7 +1,6 @@
 ---
 name: pdf
-description: "Use this skill to CREATE / GENERATE / PRODUCE professional PDF documents from scratch — reports, invoices, business letters, memos, status updates, market analyses, proposals, anything where layout and visual quality matter. Triggers: 'erstelle PDF', 'baue Rechnung', 'mache einen Bericht als PDF', 'create a PDF', 'generate a report', 'render an invoice', 'business letter', 'Geschäftsbrief', 'Memo', plus any deliverable where the user expects a polished printable artifact. Primary engine: Typst (modern, fast, clean syntax). Charts via matplotlib (PNG) or Cetz (native Typst). Four ready-to-use templates bundled: report, invoice, letter, memo. Do NOT use for: (1) READING / EXTRACTING text from existing PDFs, OCR on scanned documents, parsing forms — use the `document-parse` skill (LiteParse). (2) Filling pre-existing fillable PDF forms — see `forms.md` reference. (3) Merging / splitting / rotating existing PDFs — see `reference.md` for qpdf / pypdf one-liners."
-license: Proprietary. LICENSE.txt has complete terms
+description: "Use this skill for any PDF authoring or post-processing task that doesn't require READING the content. CREATE / GENERATE / PRODUCE PDFs from scratch — reports, invoices, business letters, memos, status updates, market analyses, proposals (Typst engine, charts via Cetz, four bundled templates: report, invoice, letter, memo). FILL existing PDF forms — text fields, checkboxes, radio buttons (see references/forms.md). MERGE / SPLIT / ROTATE / WATERMARK / ENCRYPT existing PDFs via qpdf and pypdf (see references/existing-pdfs.md). Embed ZUGFeRD / Factur-X XML for EU e-invoices (see references/zugferd.md). Triggers: 'erstelle PDF', 'baue Rechnung', 'mache einen Bericht als PDF', 'create a PDF', 'generate a report', 'render an invoice', 'business letter', 'Geschäftsbrief', 'Memo', 'merge PDFs', 'split a PDF', 'rotate pages', 'watermark this PDF', 'encrypt PDF', 'PDF Formular ausfüllen', 'fill this form'. Do NOT use for READING / EXTRACTING text from existing PDFs or OCR on scanned documents — use the `document-parse` skill (LiteParse)."
 ---
 
 # PDF Generation Skill
@@ -10,18 +9,22 @@ Produces professional, brand-consistent PDFs with **Typst** as the primary engin
 
 ## When to use this skill
 
+**Create new PDFs from scratch:**
 - **Reports** — market research, status reports, deliverables (template: `report`)
 - **Invoices** — Rechnungen mit USt-konformer Struktur (template: `invoice`)
 - **Letters** — DIN-5008 Geschäftsbriefe (template: `letter`)
 - **Memos** — Single-page interne Notizen / Recaps (template: `memo`)
 - **Custom PDFs** — own `.typ` source with full Typst flexibility
 
+**Work with existing PDFs:**
+- **Fill PDF forms** — text fields, checkboxes, radio buttons → [references/forms.md](references/forms.md)
+- **Merge, split, rotate** — combine, extract page ranges, rotate pages → [references/existing-pdfs.md](references/existing-pdfs.md)
+- **Watermark, encrypt, repair** — qpdf and pypdf one-liners → [references/existing-pdfs.md](references/existing-pdfs.md)
+
 ## When NOT to use this skill
 
 - Reading or extracting text from existing PDFs → `document-parse` skill
 - OCR on scanned documents → `document-parse` skill
-- Filling existing PDF forms → see [forms.md](forms.md)
-- Merging / splitting / rotating existing PDFs → see [reference.md](reference.md) for qpdf
 
 ## Quick start
 
@@ -57,7 +60,7 @@ The `build-pdf` script lives in `scripts/build-pdf` of this skill.
 - Auto headers/footers + page numbers
 - H1 forces a page break, H2/H3 inline
 - Tables with brand-coloured headers and subtle row rules
-- Image embedding via `image("charts/chart1.png", width: 90%)` with `figure(...)` captions
+- Native Cetz vector charts (`cetz.canvas { chart.barchart(...) }`) inside `figure(...)` with captions
 - Footnote-style source citations: `text#footnote[Bitkom, 2024]`
 
 Inputs (all optional, sensible defaults):
@@ -101,16 +104,27 @@ Inputs: `--title`, `--to`, `--from`, `--date`.
 
 ## Charts and figures
 
-Embed pre-rendered PNGs from matplotlib, or compile vector charts inline with Cetz:
+Draw charts with **Cetz + cetz-plot** — native to Typst, vector all the way, inherits the document's theme:
 
 ```typst
+#import "@preview/cetz:0.4.2"
+#import "@preview/cetz-plot:0.1.3": chart
+
 #figure(
-  image("charts/marktgroessen.png", width: 90%),
-  caption: [Marktgrößen DACH 2024. Quelle: Bitkom.],
+  cetz.canvas({
+    chart.barchart(
+      mode: "basic",
+      size: (10, 4),
+      label-key: 0, value-key: 1,
+      bar-style: i => (fill: accent),
+      (("Tech", 225.9), ("Beratung", 48.7), ("Agenturen", 27.6)),
+    )
+  }),
+  caption: [Marktgrößen DACH 2024 (Mrd. €).],
 )
 ```
 
-Full pattern library — matplotlib defaults, recommended chart types per use case (horizontal bar, donut, stacked, diverging, heatmap), Cetz examples, anti-patterns — in [references/charts.md](references/charts.md).
+Patterns per chart type (horizontal bar, vertical bar, line, stacked, diverging), theme integration, anti-patterns in [references/charts.md](references/charts.md).
 
 ## Fonts and themes
 
@@ -134,7 +148,7 @@ Profile choices, recipient compatibility, current limitations (multiple VAT rate
 Before delivering a PDF:
 
 - [ ] `typst compile` succeeds with no warnings (variable-font warnings are red flags)
-- [ ] All `image(...)` paths resolve — open the PDF to confirm charts render
+- [ ] All charts render and external image paths resolve — open the PDF to confirm
 - [ ] Source citations consistent (URLs or footnotes, not mixed)
 - [ ] Footer with date/version if the user will share externally
 - [ ] PDF opens cleanly (`head -c 8 my.pdf` → `%PDF-1.7`)
@@ -144,7 +158,7 @@ Before delivering a PDF:
 
 1. **Variable fonts in Typst** — variable Inter/Plex builds throw `font fallback list must not be empty`. Use the static cuts installed in the container.
 2. **Curly quotes in template strings** — German `"…"` (U+201C/U+201D) terminate Typst strings since they're ASCII-identical to `"`. Use plain ASCII quotes inside strings.
-3. **`#image("...")` path resolution** — relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so chart PNGs in your CWD work.
+3. **`#image("...")` path resolution** — relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so external PNGs in your CWD work.
 4. **Table overflows** — narrow your column headers or wrap with `text(size: 9pt)` for the table body.
 
 ## Useful one-liners
@@ -156,13 +170,13 @@ build-pdf memo --title "Stand $(date +%V)" /tmp/memo.pdf && xdg-open /tmp/memo.p
 # Iterate on a custom template — auto-recompile on save:
 typst watch my-report.typ my-report.pdf
 
-# Combine multiple PDFs (see reference.md):
+# Combine multiple PDFs (see references/existing-pdfs.md):
 qpdf --empty --pages report.pdf invoice.pdf -- bundle.pdf
 ```
 
-## Authoring custom templates
+## Writing your own templates
 
-When the four bundled templates don't fit, write your own `.typ` from scratch. See [templates/AUTHORING.md](templates/AUTHORING.md) for a hands-on guide: the four Typst building blocks (`#set` / `#show` / `#let` / layout primitives), how to pull data via `--input` flags or JSON, theme reuse, plus a cookbook of recipes (two-column pages, right-aligned totals, repeating table headers, footnotes, auto-TOC, callouts, German money formatting). The "Common gotchas" section at the end (curly quotes, variable fonts, `context` for page-counter, image paths, ...) saves the first hour of frustration.
+When the four bundled templates don't fit, write your own `.typ` from scratch. See [templates/custom-templates.md](templates/custom-templates.md) for a hands-on guide: the four Typst building blocks (`#set` / `#show` / `#let` / layout primitives), how to pull data via `--input` flags or JSON, theme reuse, plus a cookbook of recipes (two-column pages, right-aligned totals, repeating table headers, footnotes, auto-TOC, callouts, German money formatting). The "Common gotchas" section at the end (curly quotes, variable fonts, `context` for page-counter, image paths, ...) saves the first hour of frustration.
 
 ## File layout
 
@@ -170,30 +184,30 @@ When the four bundled templates don't fit, write your own `.typ` from scratch. S
 pdf/
 ├── SKILL.md                          ← you are here
 ├── templates/
-│   ├── AUTHORING.md                  Custom Typst template cookbook
+│   ├── custom-templates.md           Guide for writing your own Typst templates
 │   ├── themes.typ                    Theme palette definitions
-│   ├── report.typ  invoice.typ  letter.typ  memo.typ
+│   └── report.typ  invoice.typ  letter.typ  memo.typ
 ├── examples/
 │   ├── invoice-sample.json
 │   └── letter-sample.json
 ├── scripts/
 │   ├── build-pdf                     One-command typst compile wrapper
 │   ├── invoice-zugferd               Embeds Factur-X XML into rendered invoice
-│   └── *.py                          PDF form-filling helpers (see forms.md)
+│   └── *.py                          PDF form-filling helpers (see references/forms.md)
 └── references/
-    ├── charts.md                     matplotlib + Cetz patterns and anti-patterns
+    ├── charts.md                     Cetz / cetz-plot chart patterns and anti-patterns
     ├── themes-and-fonts.md           6 built-in themes, font swap recipes, brand override
     ├── zugferd.md                    Factur-X profile choices, EN 16931 mapping, recipient compatibility
-    ├── existing-pdfs.md              Working WITH existing PDFs (merge, split, watermark, encrypt)
+    ├── existing-pdfs.md              Merge, split, rotate, watermark, encrypt existing PDFs
     └── forms.md                      Filling existing PDF forms (radio, checkbox, text fields)
 ```
 
 ## See also
 
-- [templates/AUTHORING.md](templates/AUTHORING.md) — write your own Typst templates from scratch.
-- [references/charts.md](references/charts.md) — chart cookbook (matplotlib + Cetz).
+- [templates/custom-templates.md](templates/custom-templates.md) — write your own Typst templates from scratch.
+- [references/charts.md](references/charts.md) — chart cookbook (Cetz / cetz-plot).
 - [references/themes-and-fonts.md](references/themes-and-fonts.md) — theming + typography.
 - [references/zugferd.md](references/zugferd.md) — Factur-X / EN 16931 e-invoices.
-- [references/existing-pdfs.md](references/existing-pdfs.md) — operating on PDFs you didn't create here.
+- [references/existing-pdfs.md](references/existing-pdfs.md) — merge / split / rotate / watermark / encrypt existing PDFs.
 - [references/forms.md](references/forms.md) — filling existing PDF forms.
 - `document-parse` skill — reading PDFs (OCR, text extraction).

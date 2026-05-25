@@ -4,6 +4,8 @@
 //   build-pdf report --title "..." --subtitle "..." --author "..." [--theme indigo|forest|amber|crimson|mono] output.pdf
 
 #import "themes.typ": resolve-theme
+#import "@preview/cetz:0.4.2"
+#import "@preview/cetz-plot:0.1.3": chart
 
 #let title = sys.inputs.at("title", default: "Report-Titel")
 #let subtitle = sys.inputs.at("subtitle", default: "Untertitel mit Kontext")
@@ -115,10 +117,25 @@ incididunt ut labore et dolore magna aliqua.
 
 = Wettbewerbslandschaft
 
-Hier kommen Charts. Verweise auf Chart-PNGs in `charts/`:
+Charts werden direkt mit Cetz / cetz-plot gerendert — Vektor, fontkonsistent, themefarbig:
 
 #figure(
-  image("charts/chart1.png", width: 90%),
+  cetz.canvas({
+    chart.barchart(
+      mode: "basic",
+      size: (10, 4),
+      label-key: 0,
+      value-key: 1,
+      bar-style: i => (fill: accent),
+      x-tick-step: 50,
+      (
+        ("Tech",          225.9),
+        ("Beratung",       48.7),
+        ("Werbeagenturen", 27.6),
+        ("WP + StB",       21.3),
+      ),
+    )
+  }),
   caption: [Marktgrößen-Vergleich DACH 2024 (Mrd. €). Quelle: Verbandsdaten.],
 )
 

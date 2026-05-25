@@ -108,4 +108,4 @@ Static font cuts are installed (`Inter-Regular.ttf`, `Inter-Bold.ttf`, etc.) —
 
 ## See also
 - `templates/themes.typ` — palette definitions
-- `templates/AUTHORING.md` § Themes — how to import in your own template
+- `templates/custom-templates.md` § Themes — how to import in your own template

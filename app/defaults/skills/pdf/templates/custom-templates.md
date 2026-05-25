@@ -1,6 +1,6 @@
-# Authoring Custom Typst Templates
+# Writing Your Own Typst Templates
 
-This is the practical guide for writing your own `.typ` files when the four bundled templates (report, invoice, letter, memo) don't fit. It assumes you've used `build-pdf` once and want to go beyond.
+The practical guide for writing custom `.typ` files when the four bundled templates (report, invoice, letter, memo) don't fit. Assumes you've used `build-pdf` once and want to go beyond.
 
 ## 30-second mental model
 
@@ -158,11 +158,31 @@ To know what's available: see `templates/themes.typ` (graphite default, indigo, 
 ITK wuchs 2024 um 4,7 %#footnote[Bitkom Marktdaten, Stand März 2025.].
 ```
 
-### Image with caption, scaled to body width
+### Chart with caption (Cetz vector — default for chart-like figures)
+```typst
+#import "@preview/cetz:0.4.2"
+#import "@preview/cetz-plot:0.1.3": chart
+
+#figure(
+  cetz.canvas({
+    chart.barchart(
+      mode: "basic",
+      size: (10, 4),
+      label-key: 0, value-key: 1,
+      bar-style: i => (fill: accent),
+      (("Tech", 225.9), ("Beratung", 48.7), ("Agenturen", 27.6)),
+    )
+  }),
+  caption: [Marktgrößen DACH 2024 (Mrd. €). Quelle: Bitkom.],
+)
+```
+Patterns per chart type in [references/charts.md](../references/charts.md).
+
+### External image with caption (when you already have a PNG)
 ```typst
 #figure(
-  image("charts/chart1.png", width: 90%),
-  caption: [Marktgrößen DACH 2024. Quelle: Bitkom.],
+  image("photos/team.png", width: 90%),
+  caption: [Teamfoto Q2 2026.],
 )
 ```
 Path is relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so PNGs in the current working directory resolve.
@@ -257,7 +277,7 @@ With dot-leaders and right-aligned page numbers:
 
 3. **`counter(page).final()` needs `context`**. Wrap the surrounding expression in `context { ... }` or `context align(...)[...]` — otherwise Typst evaluates it during the first pass before the page count exists.
 
-4. **Image paths are relative to the `.typ` file**, not the working directory. Use `image("charts/x.png")` and put your charts next to the template. The `build-pdf` script also sets `--root "$(pwd)"` so things in your CWD resolve.
+4. **Image paths are relative to the `.typ` file**, not the working directory. Use `image("photos/x.png")` and put external images next to the template. The `build-pdf` script also sets `--root "$(pwd)"` so things in your CWD resolve.
 
 5. **Tables with `columns: (1fr, auto)`**: 1fr stretches to fill, auto is content-width. Use this for two-column layouts where you want labels on the left squeezed against amounts on the right.
 
@@ -274,8 +294,8 @@ With dot-leaders and right-aligned page numbers:
 | Style every H1 / H2 / H3 | `show heading.where(level: N)` in any of our four templates |
 | Build a JSON-driven invoice | `templates/invoice.typ` |
 | Build a multi-page report with TOC | `templates/report.typ` |
-| Add a chart | `templates/report.typ` — the `figure(image(...))` block |
-| Match Unclutter / Adapt2Move / Fleet Insights brand | `templates/themes.typ` + `--theme` or `--colors` |
+| Add a chart | `references/charts.md` (Cetz patterns) + `templates/report.typ` Wettbewerbslandschaft block |
+| Brand the document with own colours | `templates/themes.typ` + `--theme` or `--colors` |
 | Add ZUGFeRD / Factur-X for invoices | `scripts/invoice-zugferd` |
 | Look up a Typst function | The Typst docs at <https://typst.app/docs/reference> are excellent and searchable |
 
@@ -284,7 +304,7 @@ With dot-leaders and right-aligned page numbers:
 If you're spending more than 30 minutes fighting Typst layout for a one-off document — that's a sign the document doesn't fit the Typst sweet spot. Alternatives:
 
 - Heavy multi-column magazine layout → use a dedicated DTP tool (Affinity Publisher, InDesign)
-- Highly interactive forms → use the `pdf` skill's `forms.md` reference
+- Filling existing PDF forms → see [../references/forms.md](../references/forms.md)
 - Single landing-page-style poster → use the `design` or `frontend-design` skill (HTML + Chromium → PDF)
 
 Otherwise stay in Typst — it pays back in iteration speed.
