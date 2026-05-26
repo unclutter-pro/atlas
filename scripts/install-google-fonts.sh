@@ -27,8 +27,14 @@ FONTS_ROOT="/usr/share/fonts/google"
 GOOGLE_FONTS_BASE="https://github.com/google/fonts/raw/main/ofl"
 
 # Curated set: serifs first (formal/editorial), then sans (modern/clean),
-# then mono. Roman + italic where both exist. Italic-less families have a
-# single entry.
+# then display, then mono. Roman + italic where both exist. Italic-less
+# families have a single entry. Some families are static-only (no variable
+# upstream) — those list multiple weights explicitly.
+#
+# A note on "Google Sans": Google does not publish that family to the
+# github.com/google/fonts repo (it's a proprietary product font shipped
+# only via the closed Google Fonts service). `Roboto Flex` below is the
+# closest open replacement and the family Google themselves point to.
 FONTS=(
   # --- Serifs ---
   "crimsonpro|crimson-pro|${GOOGLE_FONTS_BASE}/crimsonpro/CrimsonPro%5Bwght%5D.ttf"
@@ -44,13 +50,34 @@ FONTS=(
   "sourceserif4|source-serif-4|${GOOGLE_FONTS_BASE}/sourceserif4/SourceSerif4%5Bopsz,wght%5D.ttf"
   "sourceserif4|source-serif-4|${GOOGLE_FONTS_BASE}/sourceserif4/SourceSerif4-Italic%5Bopsz,wght%5D.ttf"
 
-  # --- Sans-serifs (Inter + IBM Plex Sans are already from apt) ---
+  # --- Sans-serifs (Inter, IBM Plex Sans, Noto Sans, Ubuntu are already from apt) ---
+  "roboto|roboto|${GOOGLE_FONTS_BASE}/roboto/Roboto%5Bwdth,wght%5D.ttf"
+  "roboto|roboto|${GOOGLE_FONTS_BASE}/roboto/Roboto-Italic%5Bwdth,wght%5D.ttf"
+  "robotoflex|roboto-flex|${GOOGLE_FONTS_BASE}/robotoflex/RobotoFlex%5BGRAD,XOPQ,XTRA,YOPQ,YTAS,YTDE,YTFI,YTLC,YTUC,opsz,slnt,wdth,wght%5D.ttf"
   "manrope|manrope|${GOOGLE_FONTS_BASE}/manrope/Manrope%5Bwght%5D.ttf"
   "worksans|work-sans|${GOOGLE_FONTS_BASE}/worksans/WorkSans%5Bwght%5D.ttf"
   "worksans|work-sans|${GOOGLE_FONTS_BASE}/worksans/WorkSans-Italic%5Bwght%5D.ttf"
+  "raleway|raleway|${GOOGLE_FONTS_BASE}/raleway/Raleway%5Bwght%5D.ttf"
+  "raleway|raleway|${GOOGLE_FONTS_BASE}/raleway/Raleway-Italic%5Bwght%5D.ttf"
+  "geist|geist|${GOOGLE_FONTS_BASE}/geist/Geist%5Bwght%5D.ttf"
+
+  # --- Fira Sans (static cuts — no variable axis upstream).
+  # Keeps Regular/Italic + Bold/BoldItalic + Medium for the most common weight calls. ---
+  "firasans|fira-sans|${GOOGLE_FONTS_BASE}/firasans/FiraSans-Regular.ttf"
+  "firasans|fira-sans|${GOOGLE_FONTS_BASE}/firasans/FiraSans-Italic.ttf"
+  "firasans|fira-sans|${GOOGLE_FONTS_BASE}/firasans/FiraSans-Medium.ttf"
+  "firasans|fira-sans|${GOOGLE_FONTS_BASE}/firasans/FiraSans-Bold.ttf"
+  "firasans|fira-sans|${GOOGLE_FONTS_BASE}/firasans/FiraSans-BoldItalic.ttf"
+
+  # --- Display / decorative (single weight each) ---
+  "anton|anton|${GOOGLE_FONTS_BASE}/anton/Anton-Regular.ttf"
+  "lobster|lobster|${GOOGLE_FONTS_BASE}/lobster/Lobster-Regular.ttf"
 
   # --- Monospace (JetBrains Mono + IBM Plex Mono are already from apt) ---
   "firacode|fira-code|${GOOGLE_FONTS_BASE}/firacode/FiraCode%5Bwght%5D.ttf"
+  "firamono|fira-mono|${GOOGLE_FONTS_BASE}/firamono/FiraMono-Regular.ttf"
+  "firamono|fira-mono|${GOOGLE_FONTS_BASE}/firamono/FiraMono-Medium.ttf"
+  "firamono|fira-mono|${GOOGLE_FONTS_BASE}/firamono/FiraMono-Bold.ttf"
 )
 
 echo "Installing ${#FONTS[@]} Google Font files into ${FONTS_ROOT}…"
@@ -104,7 +131,9 @@ fc-cache -f "${FONTS_ROOT}"
 # name. Mostly informational; doesn't fail the build because some users may
 # have removed entries from FONTS and that's fine.
 echo "Installed families known to fontconfig:"
-for family in "Crimson Pro" "Lora" "Merriweather" "EB Garamond" "Playfair Display" "Source Serif 4" "Manrope" "Work Sans" "Fira Code"; do
+for family in "Crimson Pro" "Lora" "Merriweather" "EB Garamond" "Playfair Display" "Source Serif 4" \
+              "Roboto" "Roboto Flex" "Manrope" "Work Sans" "Raleway" "Geist" "Fira Sans" \
+              "Anton" "Lobster" "Fira Code" "Fira Mono"; do
   if fc-list : family | grep -qi "^${family}\$\|^${family},"; then
     echo "  ✓ ${family}"
   else

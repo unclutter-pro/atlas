@@ -55,6 +55,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   fonts-liberation fonts-dejavu \
   fonts-inter fonts-ibm-plex fonts-jetbrains-mono \
   fonts-noto fonts-noto-cjk \
+  fonts-ubuntu \
   fontconfig \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
