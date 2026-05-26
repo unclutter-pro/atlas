@@ -864,7 +864,7 @@ def cmd_send(config, to, message, attachments=None):
     db = get_signal_db(config)
     try:
         if os.path.exists(DAEMON_SOCKET):
-            _send_via_socket(to, plain_message, attachments=attachments)
+            _send_via_socket(to, plain_message, styles=styles, attachments=attachments)
         else:
             _send_via_cli(number, to, plain_message, styles=styles, attachments=attachments)
 
