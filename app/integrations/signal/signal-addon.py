@@ -695,83 +695,114 @@ def _send_via_socket(to, message, attachments=None):
 
 
 def markdown_to_signal(text):
-    """Convert Markdown formatting to Signal's native markup.
+    """Parse Markdown formatting and prepare for Signal's position-based text styles.
 
-    Signal uses different markers than Markdown:
-      Markdown **bold**  → Signal *bold*
-      Markdown __bold__  → Signal *bold*
-      Markdown *italic*  → Signal _italic_
-      Markdown _italic_  → Signal _italic_ (keep)
-      Markdown ~~strike~~ → Signal ~strike~
-      Markdown `code`   → Signal `code` (unchanged)
+    Signal CLI uses --text-style "start:length:STYLE" where positions are in UTF-16
+    code units. This function:
+    1. Extracts styled ranges from Markdown markers
+    2. Strips the markers to produce plain text
+    3. Returns (plain_text, styles_list) where styles are (start, length, style_name)
 
-    Uses a character-by-character parser to handle edge cases correctly.
+    Supported styles: bold, italic, strikethrough, bold_italic
     """
-    result = []
+    import re
+
+    # Result building
+    plain_chars = []
+    styles = []  # List of (start_utf16, length_utf16, style_name)
+
     i = 0
     while i < len(text):
-        # Inline code: `code`
+        # Skip inline code - we don't style code blocks
         if text[i] == '`':
             end = text.find('`', i + 1)
             if end != -1:
-                result.append(text[i:end + 1])
+                # Skip the entire code block
+                for j in range(i, end + 1):
+                    plain_chars.append(text[j])
                 i = end + 1
                 continue
+
+        # Check for markdown patterns
+        matched = False
 
         # Strikethrough: ~~text~~
         if text[i:i+2] == '~~':
             end = text.find('~~', i + 2)
             if end != -1:
-                result.append('~' + text[i+2:end] + '~')
+                inner = text[i+2:end]
+                # Calculate UTF-16 position BEFORE adding chars
+                start_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in ''.join(plain_chars))
+                length_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in inner)
+                styles.append((start_utf16, length_utf16, "strikethrough"))
+                plain_chars.extend(list(inner))
                 i = end + 2
                 continue
 
-        # Bold: **text**
+        # Bold: **text** or __text__
         if text[i:i+2] == '**':
             end = text.find('**', i + 2)
             if end != -1:
-                result.append('*' + text[i+2:end] + '*')
+                inner = text[i+2:end]
+                start_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in ''.join(plain_chars))
+                length_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in inner)
+                styles.append((start_utf16, length_utf16, "bold"))
+                plain_chars.extend(list(inner))
                 i = end + 2
                 continue
 
-        # Bold: __text__
         if text[i:i+2] == '__':
             end = text.find('__', i + 2)
             if end != -1:
-                result.append('*' + text[i+2:end] + '*')
+                inner = text[i+2:end]
+                start_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in ''.join(plain_chars))
+                length_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in inner)
+                styles.append((start_utf16, length_utf16, "bold"))
+                plain_chars.extend(list(inner))
                 i = end + 2
                 continue
 
         # Italic: *text* (single asterisk, not adjacent to other asterisks)
-        if text[i] == '*' and (i == 0 or text[i-1] != '*') and (i + 1 < len(text) and text[i+1] != '*'):
+        if text[i] == '*' and (i == 0 or text[i-1] not in ('*', '_')) and (i + 1 < len(text) and text[i+1] != '*'):
             end = text.find('*', i + 1)
-            # Check it's not followed by another *
-            if end != -1 and (end + 1 >= len(text) or text[end + 1] != '*'):
-                result.append('_' + text[i+1:end] + '_')
+            if end != -1 and text[end-1] != '*':
+                inner = text[i+1:end]
+                start_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in ''.join(plain_chars))
+                length_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in inner)
+                styles.append((start_utf16, length_utf16, "italic"))
+                plain_chars.extend(list(inner))
                 i = end + 1
                 continue
 
-        # Underscore italic: _text_ (keep as-is, valid in both formats)
-        if text[i] == '_':
+        # Underscore italic: _text_ (preserve, valid in both)
+        if text[i] == '_' and (i == 0 or text[i-1] not in ('_', '*')):
             end = text.find('_', i + 1)
-            if end != -1:
-                result.append(text[i:end + 1])
+            if end != -1 and text[end-1] != '_':
+                inner = text[i+1:end]
+                start_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in ''.join(plain_chars))
+                length_utf16 = sum(2 if ord(c) > 0xFFFF else 2 for c in inner)
+                styles.append((start_utf16, length_utf16, "italic"))
+                plain_chars.extend(list(inner))
                 i = end + 1
                 continue
 
         # Normal character
-        result.append(text[i])
+        plain_chars.append(text[i])
         i += 1
 
-    return ''.join(result)
+    return ''.join(plain_chars), styles
 
 
-def _send_via_cli(number, to, message, attachments=None):
+def _send_via_cli(number, to, message, styles=None, attachments=None):
     """Send via direct signal-cli invocation (fallback when no daemon socket)."""
     bin_path = _find_signal_cli_bin()
     if not bin_path:
         raise FileNotFoundError("signal-cli binary not found")
     cmd = [bin_path, "-a", number, "send", "-m", message]
+    # Add text styles if present
+    if styles:
+        for start, length, style in styles:
+            cmd.extend(["--text-style", f"{start}:{length}:{style}"])
     for f in (attachments or []):
         cmd.extend(["--attachment", os.path.abspath(f)])
     cmd.append(to)
@@ -780,14 +811,41 @@ def _send_via_cli(number, to, message, attachments=None):
         raise RuntimeError(f"signal-cli send failed: {result.stderr.strip()}")
 
 
+def _send_via_socket(to, message, styles=None, attachments=None):
+    """Send via the running signal-cli daemon JSON-RPC socket."""
+    import socket as _socket
+    params = {"recipient": [to], "message": message}
+    # Note: JSON-RPC socket may not support text-style - fallback to plain text
+    if attachments:
+        params["attachments"] = [os.path.abspath(f) for f in attachments]
+    req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "send", "params": params})
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    s.settimeout(30)
+    try:
+        s.connect(DAEMON_SOCKET)
+        s.sendall(req.encode() + b"\n")
+        # Read until newline (single JSON-RPC response)
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        resp = json.loads(buf.split(b"\n")[0])
+        if "error" in resp:
+            raise RuntimeError(resp["error"].get("message", str(resp["error"])))
+    finally:
+        s.close()
+
+
 def cmd_send(config, to, message, attachments=None):
     """Send a Signal message — via daemon socket if running, otherwise via CLI."""
     # Decode common escape sequences that bash passes literally (e.g. \n → newline).
     # This handles cases where the caller used printf or escaped sequences in strings.
     message = message.encode().decode("unicode_escape")
 
-    # Convert Markdown formatting to Signal's native markup
-    message = markdown_to_signal(message)
+    # Parse Markdown formatting for Signal's position-based text styles
+    plain_message, styles = markdown_to_signal(message)
 
     number = config["number"]
     if not number:
@@ -804,13 +862,13 @@ def cmd_send(config, to, message, attachments=None):
     db = get_signal_db(config)
     try:
         if os.path.exists(DAEMON_SOCKET):
-            _send_via_socket(to, message, attachments)
+            _send_via_socket(to, plain_message, attachments=attachments)
         else:
-            _send_via_cli(number, to, message, attachments)
+            _send_via_cli(number, to, plain_message, styles=styles, attachments=attachments)
 
         update_contact(db, to)
-        # Include attachment info in stored message
-        stored_msg = message
+        # Store the plain message (styles are applied at send time)
+        stored_msg = plain_message
         if attachments:
             filenames = [os.path.basename(f) for f in attachments]
             stored_msg += f"\n[Attachments: {', '.join(filenames)}]"
