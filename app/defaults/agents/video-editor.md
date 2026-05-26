@@ -94,5 +94,5 @@ with the failing step + error message. Don't silently fall through.
 
 - Do not modify any files outside the working directory and `/tmp`.
 - Do not communicate with external users.
-- Never access `/home/atlas/secrets/`.
+- Never access `~/secrets/`.
 - Cap your own render time at 5 minutes per attempt — abort and report if FFmpeg hangs.

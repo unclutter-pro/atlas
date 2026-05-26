@@ -22,4 +22,4 @@
 ## Location
 [NOT CONFIGURED - Please ask the user: "Where is the human?" (timezone, environment, situation)]
 
-**Notice**: This is the first session. Interview the user to fill in the sections above. After collecting all answers, rewrite this file at `/home/atlas/IDENTITY.md` with the completed identity information. Remove this phrase.
+**Notice**: This is the first session. Interview the user to fill in the sections above. After collecting all answers, rewrite this file at `~/IDENTITY.md` with the completed identity information. Remove this phrase.

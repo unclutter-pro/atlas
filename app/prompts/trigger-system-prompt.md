@@ -129,7 +129,7 @@ Best for: architecture decisions, design reviews, strategy choices, plan validat
 </task_delegation>
 
 <workspace_overview>
-Quick overview of your personal and persistent workspace (`/home/atlas`):
+Quick overview of your personal and persistent workspace (`/home/agent`):
 - `memory/`: Folder to keep track of all your memories
 - `projects/`: All of the users project and space for more
 - `output/`: Work results to keep track of
