@@ -36,6 +36,7 @@ import {
   type StreamChunkState,
   type AggregatedUsage,
 } from "./trigger-runner.ts";
+import { migrateSchema } from "../lib/atlas-db.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,6 +56,7 @@ function createInMemoryDb(): Database {
       channel TEXT DEFAULT 'internal',
       prompt TEXT DEFAULT '',
       session_mode TEXT DEFAULT 'ephemeral',
+      model_key TEXT,
       enabled INTEGER DEFAULT 1
     );
 
@@ -368,6 +370,110 @@ describe("readTriggerConfig", () => {
     expect(config!.channel).toBe("internal");
     expect(config!.session_mode).toBe("ephemeral");
     expect(config!.enabled).toBe(1);
+  });
+
+  test("model_key defaults to null when unset", () => {
+    const db = createInMemoryDb();
+    db.prepare(`
+      INSERT INTO triggers (name, type) VALUES ('no-model-override', 'cron')
+    `).run();
+
+    const config = readTriggerConfig(db, "no-model-override");
+    expect(config).not.toBeNull();
+    // Null is the sentinel for "fall back to ATLAS_CRON-based default" in
+    // trigger-runner's resolveModel call — distinguishable from "" so an
+    // accidental empty string never silently shadows the default.
+    expect(config!.model_key).toBeNull();
+  });
+
+  test("returns explicit model_key when set", () => {
+    const db = createInMemoryDb();
+    db.prepare(`
+      INSERT INTO triggers (name, type, model_key) VALUES ('cheap-digest', 'cron', 'haiku')
+    `).run();
+
+    const config = readTriggerConfig(db, "cheap-digest");
+    expect(config).not.toBeNull();
+    expect(config!.model_key).toBe("haiku");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateSchema — model_key upgrade path
+// ---------------------------------------------------------------------------
+
+describe("migrateSchema: model_key", () => {
+  /**
+   * Build a pre-model_key triggers table mirroring the schema shipped before
+   * this PR. createInMemoryDb() already includes model_key, so we need a raw
+   * Database here. CHECK + datetime() defaults from production are dropped
+   * because bun:sqlite rejects non-constant defaults at CREATE TABLE time —
+   * the migration only inspects the column list, so this is faithful enough.
+   */
+  function makeLegacyDb(): Database {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE triggers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        type TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        channel TEXT DEFAULT 'internal',
+        schedule TEXT,
+        webhook_secret TEXT,
+        webhook_channel TEXT,
+        prompt TEXT DEFAULT '',
+        session_mode TEXT DEFAULT 'ephemeral',
+        enabled INTEGER DEFAULT 1,
+        last_run TEXT,
+        run_count INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT ''
+      );
+    `);
+    return db;
+  }
+
+  test("adds model_key column to legacy triggers table", () => {
+    const db = makeLegacyDb();
+    db.prepare("INSERT INTO triggers (name, type) VALUES ('legacy-cron', 'cron')").run();
+
+    migrateSchema(db);
+
+    const cols = db.prepare("PRAGMA table_info(triggers)").all() as { name: string }[];
+    expect(cols.map(c => c.name)).toContain("model_key");
+  });
+
+  test("legacy rows get NULL model_key, distinguishable from empty string", () => {
+    const db = makeLegacyDb();
+    db.prepare("INSERT INTO triggers (name, type) VALUES ('legacy-cron', 'cron')").run();
+
+    migrateSchema(db);
+
+    const row = db
+      .prepare("SELECT model_key FROM triggers WHERE name = ?")
+      .get("legacy-cron") as { model_key: string | null };
+    // NULL is the sentinel for "fall through to ATLAS_CRON-based default".
+    // Don't let the migration accidentally seed an empty string here.
+    expect(row.model_key).toBeNull();
+  });
+
+  test("re-running migration is idempotent", () => {
+    const db = makeLegacyDb();
+    // Insert via legacy schema (no model_key yet), then run the migration
+    // once to add the column, write a non-default value, and run it again.
+    // A non-idempotent migration would either error on the second ALTER or
+    // stomp the value we wrote between runs.
+    db.prepare("INSERT INTO triggers (name, type) VALUES ('legacy-cron', 'cron')").run();
+
+    migrateSchema(db);
+    db.prepare("UPDATE triggers SET model_key = 'haiku' WHERE name = ?")
+      .run("legacy-cron");
+    migrateSchema(db);
+
+    const row = db
+      .prepare("SELECT model_key FROM triggers WHERE name = ?")
+      .get("legacy-cron") as { model_key: string };
+    expect(row.model_key).toBe("haiku");
   });
 });
 
