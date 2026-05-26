@@ -95,6 +95,40 @@ export function sqliteToIso(s: string): string {
   return s.replace(" ", "T") + "Z";
 }
 
+// --- Multi-session web-chat helpers ---
+
+/** Reads session key from query param. Defaults to '_default' for backward compatibility. */
+export function resolveWebSessionKey(c: any): string {
+  const fromQuery = c.req.query("sessionKey");
+  if (fromQuery && typeof fromQuery === "string") {
+    const trimmed = fromQuery.trim();
+    if (trimmed.length > 0 && trimmed.length <= 128 && /^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
+      return trimmed;
+    }
+  }
+  return "_default";
+}
+
+/** Ensures a chat_sessions row exists. Idempotent. Updates updated_at and,
+ *  via COALESCE, backfills the title only when it is still NULL — manual
+ *  titles from PATCH /chat/sessions/:key are never overwritten. */
+function touchChatSession(sessionKey: string, opts?: { title?: string }): void {
+  db.prepare(
+    `INSERT INTO chat_sessions (session_key, channel, title)
+     VALUES (?, 'web', ?)
+     ON CONFLICT(session_key) DO UPDATE SET
+       updated_at = datetime('now'),
+       title = COALESCE(chat_sessions.title, excluded.title)`
+  ).run(sessionKey, opts?.title ?? null);
+}
+
+/** Generates a placeholder title from first user message content. */
+export function deriveSessionTitle(content: string): string {
+  const clean = content.replace(/\s+/g, ' ').trim();
+  if (clean.length <= 60) return clean;
+  return clean.slice(0, 57).trimEnd() + '…';
+}
+
 // --- Layout ---
 function layout(
   title: string,
@@ -969,17 +1003,18 @@ app.get("/chat", (c) => {
 });
 
 app.get("/chat/conversation", (c) => {
+  const sessionKey = resolveWebSessionKey(c);
   const TYPING = '<div class="typing-dots"><span></span><span></span><span></span></div><div class="chat-time">&nbsp;</div>';
 
   // User messages: always from DB (ground truth — JSONL entries are just trigger boilerplate)
   const dbMessages = db
-    .prepare("SELECT content, created_at FROM messages WHERE channel='web' ORDER BY created_at ASC, id ASC")
-    .all() as { content: string; created_at: string }[];
+    .prepare("SELECT content, created_at FROM messages WHERE channel = ? AND session_key = ? ORDER BY created_at ASC, id ASC")
+    .all('web', sessionKey) as { content: string; created_at: string }[];
 
   // Assistant messages: from JSONL session file
   const session = db
-    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default' LIMIT 1")
-    .get() as any;
+    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1")
+    .get('web-chat', sessionKey) as any;
 
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
@@ -1033,15 +1068,20 @@ app.get("/chat/conversation", (c) => {
 });
 
 app.post("/chat", async (c) => {
+  const sessionKey = resolveWebSessionKey(c);
   const body = await c.req.parseBody();
   const content = ((body.content as string) || "").trim();
   if (!content) return c.html("");
 
+  // Touch/create session row. Pass derived title on every call — touchChatSession
+  // uses COALESCE so an existing non-null title (manual or earlier derived) wins.
+  touchChatSession(sessionKey, { title: deriveSessionTitle(content) });
+
   const msg = db
     .prepare(
-      "INSERT INTO messages (channel, sender, content) VALUES ('web', 'web-ui', ?) RETURNING *",
+      "INSERT INTO messages (channel, sender, content, session_key) VALUES ('web', 'web-ui', ?, ?) RETURNING *",
     )
-    .get(content) as any;
+    .get(content, sessionKey) as any;
 
   // Touch wake file
   try {
@@ -1057,7 +1097,7 @@ app.post("/chat", async (c) => {
     timestamp: sqliteToIso(msg.created_at),
   });
   Bun.spawn(
-    ["/atlas/app/triggers/trigger.sh", "web-chat", payload, "_default"],
+    ["/atlas/app/triggers/trigger.sh", "web-chat", payload, sessionKey],
     {
       stdout: "ignore",
       stderr: "ignore",
@@ -1067,12 +1107,12 @@ app.post("/chat", async (c) => {
   // Return all DB messages (includes the just-inserted one) + any prior assistant responses + typing indicator
   const TYPING = '<div class="typing-dots"><span></span><span></span><span></span></div><div class="chat-time">&nbsp;</div>';
   const dbMessages = db
-    .prepare("SELECT content, created_at FROM messages WHERE channel='web' ORDER BY created_at ASC, id ASC")
-    .all() as { content: string; created_at: string }[];
+    .prepare("SELECT content, created_at FROM messages WHERE channel = ? AND session_key = ? ORDER BY created_at ASC, id ASC")
+    .all('web', sessionKey) as { content: string; created_at: string }[];
 
   const session = db
-    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default' LIMIT 1")
-    .get() as any;
+    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1")
+    .get('web-chat', sessionKey) as any;
 
   let assistantMsgs: ParsedMessage[] = [];
   if (session) {
@@ -2233,6 +2273,7 @@ api.post("/chat/messages", async (c) => {
   // 500 with a stable shape — Hono's default 500 message hid the real cause
   // when STT or formData parsing surfaced an exception in production.
   try {
+  const sessionKey = resolveWebSessionKey(c);
   const contentType = c.req.header("content-type") ?? "";
   let content: string;
   let attachmentSpecs: Array<{ file: File; transcription?: string | null }> = [];
@@ -2299,11 +2340,15 @@ api.post("/chat/messages", async (c) => {
     return c.json({ error: "Missing 'message' field" }, 400);
   }
 
+  // Touch/create session row. Pass derived title on every call — touchChatSession
+  // uses COALESCE so an existing non-null title (manual or earlier derived) wins.
+  touchChatSession(sessionKey, { title: deriveSessionTitle(content) });
+
   const msg = db
     .prepare(
-      "INSERT INTO messages (channel, sender, content) VALUES ('web', 'web-ui', ?) RETURNING *",
+      "INSERT INTO messages (channel, sender, content, session_key) VALUES ('web', 'web-ui', ?, ?) RETURNING *",
     )
-    .get(content) as any;
+    .get(content, sessionKey) as any;
 
   // Persist attachments (if any) and capture metadata for the trigger payload + response.
   const savedAttachments: Attachment[] = [];
@@ -2348,7 +2393,7 @@ api.post("/chat/messages", async (c) => {
     })),
   });
   Bun.spawn(
-    ["/atlas/app/triggers/trigger.sh", "web-chat", payload, "_default"],
+    ["/atlas/app/triggers/trigger.sh", "web-chat", payload, sessionKey],
     { stdout: "ignore", stderr: "ignore" },
   );
 
@@ -2401,11 +2446,12 @@ api.get("/attachments/:id", async (c) => {
 });
 
 api.delete("/chat/messages", async (c) => {
+  const sessionKey = resolveWebSessionKey(c);
   // Reset web-chat session (like Signal /new):
   // 1. Find existing session
   const session = db
-    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default' LIMIT 1")
-    .get() as { session_id: string } | null;
+    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1")
+    .get('web-chat', sessionKey) as { session_id: string } | null;
 
   let farewellSent = false;
   if (session) {
@@ -2453,7 +2499,7 @@ api.delete("/chat/messages", async (c) => {
     } else {
       // Session not running — resume it with farewell
       try {
-        const env = { ...process.env, ATLAS_TRIGGER: "web-chat", ATLAS_TRIGGER_CHANNEL: "web", ATLAS_TRIGGER_SESSION_KEY: "_default" };
+        const env = { ...process.env, ATLAS_TRIGGER: "web-chat", ATLAS_TRIGGER_CHANNEL: "web", ATLAS_TRIGGER_SESSION_KEY: sessionKey };
         delete env.CLAUDECODE;
         const proc = Bun.spawn(
           ["/atlas/app/triggers/trigger-runner", "--direct", farewell, "--channel", "web", "--resume", session.session_id],
@@ -2469,28 +2515,31 @@ api.delete("/chat/messages", async (c) => {
   }
 
   // 2. Delete session entry so next message creates a fresh session (immediately — don't wait for farewell to finish)
-  db.prepare("DELETE FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default'").run();
-  // 3. Clear web channel user messages
-  db.prepare("DELETE FROM messages WHERE channel='web'").run();
+  db.prepare("DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?").run('web-chat', sessionKey);
+  // 3. Clear web channel user messages for this session
+  db.prepare("DELETE FROM messages WHERE channel = ? AND session_key = ?").run('web', sessionKey);
   // 4. Drop any persisted stream chunks for the retired session so they
   //    don't haunt the next conversation if SQLite recycles the row ids.
   if (session) {
     db.prepare("DELETE FROM web_chat_stream_chunks WHERE session_id = ?").run(session.session_id);
   }
+  // 5. Reset updated_at on the chat_sessions row (session was cleared)
+  db.prepare("UPDATE chat_sessions SET updated_at = datetime('now'), title = NULL WHERE session_key = ?").run(sessionKey);
 
   return c.json({ ok: true, farewellSent });
 });
 
 api.get("/chat/messages", (c) => {
+  const sessionKey = resolveWebSessionKey(c);
   // User messages from DB
   const dbMessages = db
-    .prepare("SELECT id, content, created_at FROM messages WHERE channel='web' ORDER BY created_at ASC, id ASC")
-    .all() as { id: number; content: string; created_at: string }[];
+    .prepare("SELECT id, content, created_at FROM messages WHERE channel = ? AND session_key = ? ORDER BY created_at ASC, id ASC")
+    .all('web', sessionKey) as { id: number; content: string; created_at: string }[];
 
   // Assistant messages from JSONL session file
   const session = db
-    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default' LIMIT 1")
-    .get() as any;
+    .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1")
+    .get('web-chat', sessionKey) as any;
 
   let assistantMsgs: ParsedMessage[] = [];
   let isRunning = false;
@@ -2576,6 +2625,7 @@ api.get("/chat/messages", (c) => {
 });
 
 api.get("/chat/stream", (c) => {
+  const sessionKey = resolveWebSessionKey(c);
   // Per-request opt-out of incremental text chunks. Default ON — the new
   // streaming behaviour is what we want for new clients. Callers that want
   // the old "wait for the whole message" UX can pass `?stream=false`.
@@ -2612,13 +2662,13 @@ api.get("/chat/stream", (c) => {
 
             // User messages from DB
             const dbMessages = db
-              .prepare("SELECT id, content, created_at FROM messages WHERE channel='web' ORDER BY created_at ASC, id ASC")
-              .all() as { id: number; content: string; created_at: string }[];
+              .prepare("SELECT id, content, created_at FROM messages WHERE channel = ? AND session_key = ? ORDER BY created_at ASC, id ASC")
+              .all('web', sessionKey) as { id: number; content: string; created_at: string }[];
 
             // Assistant messages from JSONL session file
             const session = db
-              .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name='web-chat' AND session_key='_default' LIMIT 1")
-              .get() as any;
+              .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1")
+              .get('web-chat', sessionKey) as any;
 
             let assistantMsgs: ParsedMessage[] = [];
             let isRunning = false;
@@ -2803,6 +2853,137 @@ api.get("/chat/stream", (c) => {
       },
     }
   );
+});
+
+// ============ CHAT SESSION MANAGEMENT ============
+
+api.get("/chat/sessions", (c) => {
+  const includeArchived = c.req.query("includeArchived") === "true";
+  const archivedClause = includeArchived ? "" : "AND cs.archived_at IS NULL";
+  const rows = db.prepare(`
+    SELECT
+      cs.session_key,
+      cs.title,
+      cs.created_at,
+      cs.updated_at,
+      cs.archived_at,
+      COUNT(m.id) AS message_count,
+      MAX(m.created_at) AS last_message_at
+    FROM chat_sessions cs
+    LEFT JOIN messages m ON m.channel = 'web' AND m.session_key = cs.session_key
+    WHERE cs.channel = 'web' ${archivedClause}
+    GROUP BY cs.session_key
+    ORDER BY cs.updated_at DESC
+  `).all() as {
+    session_key: string;
+    title: string | null;
+    created_at: string;
+    updated_at: string;
+    archived_at: string | null;
+    message_count: number;
+    last_message_at: string | null;
+  }[];
+
+  return c.json({
+    sessions: rows.map(r => ({
+      session_key: r.session_key,
+      title: r.title,
+      created_at: sqliteToIso(r.created_at),
+      updated_at: sqliteToIso(r.updated_at),
+      archived_at: r.archived_at ? sqliteToIso(r.archived_at) : null,
+      message_count: r.message_count,
+      last_message_at: r.last_message_at ? sqliteToIso(r.last_message_at) : null,
+    })),
+  });
+});
+
+api.post("/chat/sessions", async (c) => {
+  let title: string | null = null;
+  try {
+    const body = await c.req.json();
+    title = (body.title ?? null);
+    if (typeof title !== "string" || title.trim() === "") title = null;
+    else title = title.trim();
+  } catch {
+    // Accept empty body
+  }
+
+  const sessionKey = crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', ?)`
+  ).run(sessionKey, title);
+
+  const row = db.prepare("SELECT session_key, title, created_at, updated_at FROM chat_sessions WHERE session_key = ?")
+    .get(sessionKey) as { session_key: string; title: string | null; created_at: string; updated_at: string };
+
+  return c.json({
+    session_key: row.session_key,
+    title: row.title,
+    created_at: sqliteToIso(row.created_at),
+    updated_at: sqliteToIso(row.updated_at),
+  }, 201);
+});
+
+api.patch("/chat/sessions/:key", async (c) => {
+  const key = c.req.param("key");
+  const existing = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ?").get(key);
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  let body: any = {};
+  try { body = await c.req.json(); } catch {}
+
+  const updates: string[] = ["updated_at = datetime('now')"];
+  const params: any[] = [];
+
+  if ("title" in body) {
+    const t = body.title;
+    updates.push("title = ?");
+    params.push(typeof t === "string" && t.trim().length > 0 ? t.trim() : null);
+  }
+
+  if ("archived" in body) {
+    if (body.archived === true) {
+      updates.push("archived_at = datetime('now')");
+    } else if (body.archived === false) {
+      updates.push("archived_at = NULL");
+    }
+  }
+
+  params.push(key);
+  db.prepare(`UPDATE chat_sessions SET ${updates.join(", ")} WHERE session_key = ?`).run(...params);
+
+  const row = db.prepare("SELECT session_key, title, created_at, updated_at, archived_at FROM chat_sessions WHERE session_key = ?")
+    .get(key) as { session_key: string; title: string | null; created_at: string; updated_at: string; archived_at: string | null };
+
+  return c.json({
+    session_key: row.session_key,
+    title: row.title,
+    created_at: sqliteToIso(row.created_at),
+    updated_at: sqliteToIso(row.updated_at),
+    archived_at: row.archived_at ? sqliteToIso(row.archived_at) : null,
+  });
+});
+
+api.delete("/chat/sessions/:key", (c) => {
+  const key = c.req.param("key");
+  if (key === "_default") {
+    return c.json({ error: "Cannot delete the default session; use DELETE /chat/messages to reset it" }, 400);
+  }
+  const existing = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ?").get(key);
+  if (!existing) return c.json({ error: "not found" }, 404);
+
+  // Find session_id for stream chunk cleanup
+  const trigSession = db.prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = 'web-chat' AND session_key = ?")
+    .get(key) as { session_id: string } | null;
+
+  db.prepare("DELETE FROM trigger_sessions WHERE trigger_name = 'web-chat' AND session_key = ?").run(key);
+  db.prepare("DELETE FROM messages WHERE channel = 'web' AND session_key = ?").run(key);
+  if (trigSession) {
+    db.prepare("DELETE FROM web_chat_stream_chunks WHERE session_id = ?").run(trigSession.session_id);
+  }
+  db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+
+  return c.json({ ok: true });
 });
 
 // Mount API under /api/v1

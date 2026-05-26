@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso } from "./index";
+import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso, resolveWebSessionKey, deriveSessionTitle } from "./index";
 
 describe("sqliteToIso", () => {
   test("converts SQLite UTC timestamp to ISO with Z", () => {
@@ -370,5 +370,96 @@ describe("/analytics endpoint", () => {
     const res = await app.fetch(req);
     const text = await res.text();
     expect(text.startsWith("session_type,session_id,trigger_name")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveWebSessionKey
+// ---------------------------------------------------------------------------
+
+describe("resolveWebSessionKey", () => {
+  function makeCtx(sessionKey?: string) {
+    const url = sessionKey
+      ? `http://localhost/chat/messages?sessionKey=${encodeURIComponent(sessionKey)}`
+      : "http://localhost/chat/messages";
+    return { req: { query: (k: string) => k === "sessionKey" ? (sessionKey ?? undefined) : undefined } };
+  }
+
+  test("returns _default when no sessionKey param is present", () => {
+    expect(resolveWebSessionKey(makeCtx())).toBe("_default");
+  });
+
+  test("returns the provided valid sessionKey", () => {
+    expect(resolveWebSessionKey(makeCtx("my-session-1"))).toBe("my-session-1");
+  });
+
+  test("returns _default for an empty sessionKey string", () => {
+    expect(resolveWebSessionKey(makeCtx(""))).toBe("_default");
+  });
+
+  test("returns _default for a sessionKey that is only whitespace", () => {
+    expect(resolveWebSessionKey(makeCtx("   "))).toBe("_default");
+  });
+
+  test("returns _default for a sessionKey with invalid characters", () => {
+    expect(resolveWebSessionKey(makeCtx("bad key!"))).toBe("_default");
+  });
+
+  test("returns _default for a sessionKey that is too long (>128 chars)", () => {
+    const longKey = "a".repeat(129);
+    expect(resolveWebSessionKey(makeCtx(longKey))).toBe("_default");
+  });
+
+  test("accepts a sessionKey exactly 128 chars long", () => {
+    const maxKey = "a".repeat(128);
+    expect(resolveWebSessionKey(makeCtx(maxKey))).toBe(maxKey);
+  });
+
+  test("accepts alphanumeric, hyphens, and underscores", () => {
+    expect(resolveWebSessionKey(makeCtx("Session_Key-123"))).toBe("Session_Key-123");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveSessionTitle
+// ---------------------------------------------------------------------------
+
+describe("deriveSessionTitle", () => {
+  test("returns short content unchanged", () => {
+    expect(deriveSessionTitle("Hello world")).toBe("Hello world");
+  });
+
+  test("returns content that is exactly 60 chars unchanged", () => {
+    const s = "a".repeat(60);
+    expect(deriveSessionTitle(s)).toBe(s);
+  });
+
+  test("truncates content longer than 60 chars with ellipsis", () => {
+    const s = "a".repeat(80);
+    const result = deriveSessionTitle(s);
+    expect(result.endsWith("…")).toBe(true);
+    // The result should be 58 chars of content + 1 char ellipsis = 59 display units
+    // (slice(0,57) + trimEnd() + '…')
+    expect(result.length).toBeLessThanOrEqual(58);
+  });
+
+  test("collapses multiline/whitespace-heavy content into a single line", () => {
+    const s = "First line\nSecond line\n  with extra spaces  ";
+    const result = deriveSessionTitle(s);
+    expect(result).not.toContain("\n");
+    expect(result).toBe("First line Second line with extra spaces");
+  });
+
+  test("trims leading and trailing whitespace", () => {
+    expect(deriveSessionTitle("  hello  ")).toBe("hello");
+  });
+
+  test("ellipsis result does not end with trailing space before ellipsis", () => {
+    // Build a 70-char string where position 57 would be a space
+    const s = "a".repeat(56) + " " + "b".repeat(20);
+    const result = deriveSessionTitle(s);
+    expect(result.endsWith("…")).toBe(true);
+    // trimEnd before '…' means no trailing space before ellipsis
+    expect(result).not.toMatch(/ …$/);
   });
 });

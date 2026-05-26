@@ -175,6 +175,23 @@ function createTables(database: Database): void {
       ON webhook_queue(next_retry_at) WHERE attempts <= 5;
   `);
 
+  // Chat sessions: metadata + sortable list for multi-session web-chat support
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      session_key TEXT PRIMARY KEY,
+      channel TEXT NOT NULL DEFAULT 'web',
+      title TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      archived_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_channel_updated
+      ON chat_sessions(channel, archived_at, updated_at);
+  `);
+
+  // Bootstrap legacy default session so existing data keeps working
+  database.exec(`INSERT OR IGNORE INTO chat_sessions(session_key, channel, title) VALUES ('_default', 'web', NULL)`);
+
   // Migration: drop pending_trigger_messages if it exists (replaced by socket-based injection)
   database.exec(`DROP TABLE IF EXISTS pending_trigger_messages`);
   database.exec(`DROP INDEX IF EXISTS idx_pending_trigger_messages`);
@@ -445,6 +462,15 @@ function migrateSchema(database: Database): void {
   // --- v4 migration: ensure task-management tables exist ---
   // Goals, tasks, task_deps, goal_validations are created by createTables() via
   // CREATE TABLE IF NOT EXISTS. No destructive migration needed on new columns.
+
+  // --- v6 migration: add session_key column to messages (multi-session web-chat) ---
+  const msgInfoV6 = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'"
+  ).get() as { sql: string } | undefined;
+  if (msgInfoV6?.sql && !msgInfoV6.sql.includes("session_key")) {
+    database.exec(`ALTER TABLE messages ADD COLUMN session_key TEXT NOT NULL DEFAULT '_default'`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_messages_channel_session_created ON messages(channel, session_key, created_at)`);
+  }
 
   // --- v5 migration: drop subagent rows and clean up subagent-specific schema ---
   // Subagent cost is now aggregated into the parent trigger row via JSONL scanning.
