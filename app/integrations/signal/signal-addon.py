@@ -710,6 +710,10 @@ def _send_via_cli(number, to, message, attachments=None):
 
 def cmd_send(config, to, message, attachments=None):
     """Send a Signal message — via daemon socket if running, otherwise via CLI."""
+    # Decode common escape sequences that bash passes literally (e.g. \n → newline).
+    # This handles cases where the caller used printf or escaped sequences in strings.
+    message = message.encode().decode("unicode_escape")
+
     number = config["number"]
     if not number:
         print("ERROR: No Signal number configured", file=sys.stderr)
