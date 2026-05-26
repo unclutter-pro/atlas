@@ -4,8 +4,8 @@
  * Usage: bun /atlas/app/triggers/manage.ts <command> [flags]
  *
  * Commands:
- *   create  --name=<slug> --type=<cron|webhook|manual> [--schedule=...] [--secret=...] [--channel=internal] [--description=...] [--session-mode=ephemeral|persistent]
- *   update  --name=<slug> [--schedule=...] [--description=...] [--channel=...] [--secret=...] [--session-mode=...]
+ *   create  --name=<slug> --type=<cron|webhook|manual> [--schedule=...] [--secret=...] [--channel=internal] [--description=...] [--session-mode=ephemeral|persistent] [--model-key=<key>]
+ *   update  --name=<slug> [--schedule=...] [--description=...] [--channel=...] [--secret=...] [--session-mode=...] [--model-key=<key|empty-to-clear>]
  *   delete  --name=<slug>
  *   enable  --name=<slug>
  *   disable --name=<slug>
@@ -101,12 +101,17 @@ if (!command || command === "--help" || command === "-h") {
   console.log(`Usage: bun /atlas/app/triggers/manage.ts <command> [flags]
 
 Commands:
-  create  --name=<slug> --type=<cron|webhook|manual> [--schedule=...] [--secret=...] [--channel=internal] [--description=...] [--session-mode=ephemeral|persistent]
-  update  --name=<slug> [--schedule=...] [--description=...] [--channel=...] [--secret=...] [--session-mode=...]
+  create  --name=<slug> --type=<cron|webhook|manual> [--schedule=...] [--secret=...] [--channel=internal] [--description=...] [--session-mode=ephemeral|persistent] [--model-key=<key>]
+  update  --name=<slug> [--schedule=...] [--description=...] [--channel=...] [--secret=...] [--session-mode=...] [--model-key=<key>]
   delete  --name=<slug>
   enable  --name=<slug>
   disable --name=<slug>
-  list    [--type=cron|webhook|manual]`);
+  list    [--type=cron|webhook|manual]
+
+--model-key overrides the default model lookup for this trigger. Set to a key
+that exists under \`models.<key>\` in ~/config.yml (e.g. \"haiku\", \"sonnet\",
+\"cron\"). Pass --model-key= (empty) on update to clear the override and fall
+back to the env-driven default (cron / trigger).`);
   process.exit(0);
 }
 
@@ -122,6 +127,13 @@ switch (command) {
     const channel = flags["channel"] || "internal";
     const description = flags["description"] || "";
     const sessionMode = flags["session-mode"] || "ephemeral";
+    // model_key: empty string and absent both mean "no override". Trim so a
+    // stray "--model-key= " doesn't sneak whitespace into the DB.
+    const modelKeyRaw = flags["model-key"];
+    const modelKey =
+      modelKeyRaw !== undefined && modelKeyRaw.trim() !== ""
+        ? modelKeyRaw.trim()
+        : null;
 
     if (!name) die("--name is required");
     if (!/^[a-z0-9_-]+$/.test(name))
@@ -133,15 +145,17 @@ switch (command) {
     if (schedule && !/^[\d\s*/,-]+$/.test(schedule)) die("Invalid cron schedule format");
     if (!["ephemeral", "persistent"].includes(sessionMode))
       die("--session-mode must be ephemeral or persistent");
+    if (modelKey && !/^[a-zA-Z0-9_.-]+$/.test(modelKey))
+      die("--model-key must be a config.yml model lookup key (alphanumeric, dot, dash, underscore)");
 
     // Generate webhook channel ID for webhook type
     const webhookChannel = type === "webhook" ? generateWebhookChannelId(name) : null;
 
     try {
       db.prepare(
-        `INSERT INTO triggers (name, type, description, channel, schedule, webhook_secret, webhook_channel, prompt, session_mode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?)`
-      ).run(name, type, description, channel, schedule, secret, webhookChannel, sessionMode);
+        `INSERT INTO triggers (name, type, description, channel, schedule, webhook_secret, webhook_channel, prompt, session_mode, model_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)`
+      ).run(name, type, description, channel, schedule, secret, webhookChannel, sessionMode, modelKey);
     } catch (e: any) {
       die(e.message);
     }
@@ -200,8 +214,16 @@ switch (command) {
       updates.push("session_mode = ?");
       params.push(flags["session-mode"]);
     }
+    if (flags["model-key"] !== undefined) {
+      // Empty string explicitly clears the override and falls back to default.
+      const trimmed = flags["model-key"].trim();
+      if (trimmed && !/^[a-zA-Z0-9_.-]+$/.test(trimmed))
+        die("--model-key must be a config.yml model lookup key (alphanumeric, dot, dash, underscore)");
+      updates.push("model_key = ?");
+      params.push(trimmed || null);
+    }
 
-    if (updates.length === 0) die("No fields to update. Use --description, --channel, --schedule, --secret, --session-mode");
+    if (updates.length === 0) die("No fields to update. Use --description, --channel, --schedule, --secret, --session-mode, --model-key");
 
     params.push(name);
     db.prepare(`UPDATE triggers SET ${updates.join(", ")} WHERE name = ?`).run(...params);

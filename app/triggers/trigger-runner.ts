@@ -51,6 +51,12 @@ export type TriggerConfig = {
   channel: string;
   prompt: string;
   session_mode: "ephemeral" | "persistent";
+  /**
+   * Optional per-trigger model override. When non-empty, takes precedence
+   * over the ATLAS_CRON-based default ("cron" | "trigger") in resolveModel.
+   * Maps to a `models.<key>` entry in config.yml. NULL ⇒ use the default.
+   */
+  model_key: string | null;
   enabled: number;
 };
 
@@ -572,7 +578,7 @@ export function readTriggerConfig(
 ): TriggerConfig | null {
   const row = db
     .prepare(
-      "SELECT id, name, type, channel, prompt, session_mode, enabled FROM triggers WHERE name = ? LIMIT 1",
+      "SELECT id, name, type, channel, prompt, session_mode, model_key, enabled FROM triggers WHERE name = ? LIMIT 1",
     )
     .get(name) as TriggerConfig | undefined;
   return row ?? null;
@@ -1993,7 +1999,11 @@ export async function main(): Promise<void> {
   const systemPrompt = buildSystemPrompt(channel);
 
   // --- Resolve model ---
-  const modelKey = process.env.ATLAS_CRON === "1" ? "cron" : "trigger";
+  // Per-trigger model_key (from DB) overrides the env-driven default so a
+  // single cron can opt out of the global `models.cron` setting — e.g. a
+  // lightweight daily digest running cheaper than security-scan.
+  const defaultModelKey = process.env.ATLAS_CRON === "1" ? "cron" : "trigger";
+  const modelKey = (config.model_key && config.model_key.trim()) || defaultModelKey;
   const model = resolveModel(`${HOME}/config.yml`, modelKey);
 
   // --- MCP servers ---

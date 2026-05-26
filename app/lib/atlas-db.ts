@@ -46,6 +46,12 @@ function createTables(database: Database): void {
   `);
 
   // Triggers: plugin system for cron, webhook, manual triggers
+  //
+  // model_key (nullable) overrides the default cron/trigger model lookup
+  // in trigger-runner. Set per-trigger via `trigger update --model-key=haiku`
+  // when a specific cron should run cheaper than `models.cron` globally —
+  // e.g. lightweight digests that don't need Sonnet/Opus reasoning quality.
+  // NULL ⇒ fall back to the env-driven default (ATLAS_CRON ? cron : trigger).
   database.exec(`
     CREATE TABLE IF NOT EXISTS triggers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +64,7 @@ function createTables(database: Database): void {
       webhook_channel TEXT,
       prompt TEXT DEFAULT '',
       session_mode TEXT DEFAULT 'ephemeral' CHECK(session_mode IN ('ephemeral','persistent')),
+      model_key TEXT,
       enabled INTEGER DEFAULT 1,
       last_run TEXT,
       run_count INTEGER DEFAULT 0,
@@ -255,7 +262,7 @@ function createTables(database: Database): void {
   `);
 }
 
-function migrateSchema(database: Database): void {
+export function migrateSchema(database: Database): void {
   // Migrate old messages table (had CHECK constraint on channel)
   let msgInfo = database.prepare(
     "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'"
@@ -359,6 +366,14 @@ function migrateSchema(database: Database): void {
     database.exec(`ALTER TABLE triggers ADD COLUMN webhook_channel TEXT`);
   }
 
+  // Add model_key column if missing (upgrade from pre-per-trigger-model triggers)
+  const trigInfoForModelKey = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='triggers'"
+  ).get() as { sql: string } | undefined;
+  if (trigInfoForModelKey?.sql?.includes("name TEXT") && !trigInfoForModelKey.sql.includes("model_key")) {
+    database.exec(`ALTER TABLE triggers ADD COLUMN model_key TEXT`);
+  }
+
   // Drop session_id from triggers if present (moved to trigger_sessions table)
   if (trigInfo?.sql?.includes("session_id")) {
     // SQLite doesn't support DROP COLUMN before 3.35.0, so recreate the table
@@ -376,13 +391,14 @@ function migrateSchema(database: Database): void {
           webhook_channel TEXT,
           prompt TEXT DEFAULT '',
           session_mode TEXT DEFAULT 'ephemeral' CHECK(session_mode IN ('ephemeral','persistent')),
+          model_key TEXT,
           enabled INTEGER DEFAULT 1,
           last_run TEXT,
           run_count INTEGER DEFAULT 0,
           created_at TEXT DEFAULT (datetime('now'))
         );
-        INSERT OR IGNORE INTO _triggers_new (id, name, type, description, channel, schedule, webhook_secret, webhook_channel, prompt, session_mode, enabled, last_run, run_count, created_at)
-          SELECT id, name, type, description, channel, schedule, webhook_secret, NULL, prompt, COALESCE(session_mode, 'ephemeral'), enabled, last_run, run_count, created_at FROM triggers;
+        INSERT OR IGNORE INTO _triggers_new (id, name, type, description, channel, schedule, webhook_secret, webhook_channel, prompt, session_mode, model_key, enabled, last_run, run_count, created_at)
+          SELECT id, name, type, description, channel, schedule, webhook_secret, NULL, prompt, COALESCE(session_mode, 'ephemeral'), NULL, enabled, last_run, run_count, created_at FROM triggers;
         DROP TABLE triggers;
         ALTER TABLE _triggers_new RENAME TO triggers;
       `);
