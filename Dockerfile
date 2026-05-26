@@ -112,20 +112,19 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_ARCH}.tar.gz" \
   | tar -xz -C /usr/local/bin rtk \
   && chmod +x /usr/local/bin/rtk \
-  # --- Crimson Pro — pulled from Google Fonts repo (no Ubuntu package exists).
-  #     Variable font; Typst 0.14+ reads it correctly. Used by the pdf skill's
-  #     `amber` theme and any custom theme that asks for "Crimson Pro". ---
-  && mkdir -p /usr/share/fonts/truetype/crimson-pro \
-  && curl -fsSL -o /usr/share/fonts/truetype/crimson-pro/CrimsonPro.ttf \
-       'https://github.com/google/fonts/raw/main/ofl/crimsonpro/CrimsonPro%5Bwght%5D.ttf' \
-  && curl -fsSL -o /usr/share/fonts/truetype/crimson-pro/CrimsonPro-Italic.ttf \
-       'https://github.com/google/fonts/raw/main/ofl/crimsonpro/CrimsonPro-Italic%5Bwght%5D.ttf' \
-  && fc-cache -f \
   # --- Homebrew — installed directly into agent home dir for persistence ---
   && mkdir -p /home/agent/.homebrew \
   && curl -fsSL https://github.com/Homebrew/brew/tarball/master \
   | tar xz --strip-components 1 -C /home/agent/.homebrew \
   && /home/agent/.homebrew/bin/brew --version
+
+# --- Google Fonts — curated set for the pdf skill / Typst pipeline.
+# Variable .ttf cuts of families that aren't packaged in Ubuntu noble
+# (Crimson Pro, Lora, Merriweather, EB Garamond, Playfair Display,
+# Source Serif 4, Manrope, Work Sans, Fira Code). Owns its own layer so
+# adding/removing fonts doesn't bust the apt-install cache. ---
+COPY scripts/install-google-fonts.sh /tmp/install-google-fonts.sh
+RUN bash /tmp/install-google-fonts.sh && rm /tmp/install-google-fonts.sh
 
 ENV PATH="/home/agent/.homebrew/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
