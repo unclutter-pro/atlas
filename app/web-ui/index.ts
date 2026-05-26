@@ -129,6 +129,83 @@ export function deriveSessionTitle(content: string): string {
   return clean.slice(0, 57).trimEnd() + '…';
 }
 
+/** Row shape returned by the sidebar listing query. Exported for tests. */
+export interface ChatSidebarRow {
+  session_key: string;
+  title: string | null;
+  updated_at: string;
+  message_count: number;
+}
+
+/** Loads all non-archived web chat sessions for the sidebar.
+ *  _default is always included (even if no chat_sessions row exists yet)
+ *  so the page is never empty on a fresh install. */
+export function listSidebarSessions(): ChatSidebarRow[] {
+  const rows = db.prepare(`
+    SELECT
+      cs.session_key,
+      cs.title,
+      cs.updated_at,
+      COUNT(m.id) AS message_count
+    FROM chat_sessions cs
+    LEFT JOIN messages m ON m.channel = 'web' AND m.session_key = cs.session_key
+    WHERE cs.channel = 'web' AND cs.archived_at IS NULL
+    GROUP BY cs.session_key
+    ORDER BY (cs.session_key = '_default') DESC, cs.updated_at DESC
+  `).all() as ChatSidebarRow[];
+  if (!rows.some(r => r.session_key === '_default')) {
+    rows.unshift({ session_key: '_default', title: null, updated_at: '', message_count: 0 });
+  }
+  return rows;
+}
+
+/** Renders the sidebar HTML fragment, highlighting `activeKey` and showing
+ *  a rename form for `editKey` if provided. */
+export function renderChatSidebar(activeKey: string, editKey: string | null = null): string {
+  const rows = listSidebarSessions();
+  const items = rows.map(r => {
+    const isActive = r.session_key === activeKey;
+    const isEditing = r.session_key === editKey;
+    const displayTitle = r.title?.trim() || (r.session_key === '_default' ? 'Default' : 'Untitled chat');
+    const cls = isActive ? 'chat-session active' : 'chat-session';
+    const sk = safe(r.session_key);
+    const meta = r.message_count > 0 ? `${r.message_count} msg` : 'empty';
+
+    if (isEditing) {
+      return `<div class="chat-session ${isActive ? 'active' : ''} chat-session-rename">
+        <form hx-patch="/chat/sessions/${sk}" hx-target="#chat-sidebar" hx-swap="outerHTML">
+          <input type="text" name="title" value="${safe(r.title ?? '')}" placeholder="Title…" autofocus required>
+          <div class="row">
+            <button type="submit">Save</button>
+            <button type="button" class="btn-outline btn-sm" hx-get="/chat/sidebar?session=${sk}" hx-target="#chat-sidebar" hx-swap="outerHTML">Cancel</button>
+          </div>
+        </form>
+      </div>`;
+    }
+
+    const editBtn = `<button type="button" title="Rename" hx-get="/chat/sidebar?session=${safe(activeKey)}&edit=${sk}" hx-target="#chat-sidebar" hx-swap="outerHTML">✎</button>`;
+    const archiveBtn = `<button type="button" title="Archive" hx-post="/chat/sessions/${sk}/archive" hx-target="#chat-sidebar" hx-swap="outerHTML">📥</button>`;
+    const deleteBtn = r.session_key === '_default'
+      ? ''
+      : `<button type="button" title="Delete" hx-delete="/chat/sessions/${sk}" hx-target="#chat-sidebar" hx-swap="outerHTML" hx-confirm="Delete this chat? This cannot be undone.">🗑</button>`;
+
+    return `<a class="${cls}" href="/chat?session=${sk}">
+      <span class="chat-session-title">${safe(displayTitle)}</span>
+      <span class="chat-session-meta">${meta}</span>
+      <span class="chat-session-actions">${editBtn}${archiveBtn}${deleteBtn}</span>
+    </a>`;
+  }).join("");
+
+  const list = items.length > 0 ? items : '<div class="chat-session-empty">No chats yet.</div>';
+
+  return `<aside class="chat-sidebar" id="chat-sidebar">
+    <div class="chat-sidebar-head">
+      <button type="button" hx-post="/chat/sessions/new" hx-swap="none">+ New chat</button>
+    </div>
+    <div class="chat-sidebar-list">${list}</div>
+  </aside>`;
+}
+
 // --- Layout ---
 function layout(
   title: string,
@@ -201,7 +278,28 @@ pre{background:#1a1b2e;border:1px solid #3a3b55;border-radius:4px;padding:12px;o
 .mt-8{margin-top:8px}.mb-8{margin-bottom:8px}.mb-16{margin-bottom:16px}
 .flex{display:flex;align-items:center;gap:8px}
 .text-muted{color:#999;font-size:12px}
-.chat-container{display:flex;flex-direction:column;height:calc(100vh - 48px)}
+.chat-layout{display:flex;flex-direction:row;height:calc(100vh - 48px)}
+.chat-sidebar{width:240px;background:#1e1f35;border-right:1px solid #3a3b55;display:flex;flex-direction:column;flex-shrink:0}
+.chat-sidebar-head{padding:12px;border-bottom:1px solid #3a3b55}
+.chat-sidebar-head button{width:100%;font-size:13px;padding:8px}
+.chat-sidebar-list{flex:1;overflow-y:auto;padding:6px 0}
+.chat-session{display:block;padding:10px 12px;border-left:2px solid transparent;color:#ccc;text-decoration:none;font-size:13px;cursor:pointer;position:relative}
+.chat-session:hover{background:#252640;color:#e0e0e0}
+.chat-session.active{background:#252640;border-left-color:#7c6ef0;color:#e0e0e0}
+.chat-session-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:28px}
+.chat-session-meta{display:block;color:#666;font-size:11px;margin-top:2px}
+.chat-session-actions{position:absolute;right:6px;top:8px;display:none;gap:2px}
+.chat-session:hover .chat-session-actions,.chat-session.active .chat-session-actions{display:flex}
+.chat-session-actions button{padding:2px 6px;font-size:11px;background:transparent;color:#999;border:1px solid #3a3b55;border-radius:3px}
+.chat-session-actions button:hover{color:#7c6ef0;border-color:#7c6ef0;background:#1a1b2e}
+.chat-session-actions form{display:inline}
+.chat-session-rename{padding:8px 12px}
+.chat-session-rename input{font-size:12px;padding:6px 8px;width:100%}
+.chat-session-rename .row{display:flex;gap:4px;margin-top:4px}
+.chat-session-rename button{padding:4px 10px;font-size:11px}
+.chat-session-empty{padding:14px 12px;color:#666;font-size:12px;font-style:italic}
+.chat-main{flex:1;display:flex;flex-direction:column;min-width:0}
+.chat-container{display:flex;flex-direction:column;flex:1;min-height:0}
 .chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column}
 .chat-bubble{max-width:75%;border-radius:12px;padding:10px 14px;margin-bottom:4px;word-break:break-word;white-space:pre-wrap}
 .chat-bubble.user{align-self:flex-end;background:#7c6ef0;color:#fff}
@@ -976,13 +1074,31 @@ app.get("/journal/content", (c) => {
 
 // ============ CHAT ============
 app.get("/chat", (c) => {
+  // Page URL accepts ?session=<key> (human-facing) or ?sessionKey=<key> (API-style).
+  // Falls back to _default on missing/invalid input.
+  const fromSession = c.req.query("session");
+  let sessionKey: string;
+  if (fromSession && typeof fromSession === "string"
+      && /^[a-zA-Z0-9_\-]+$/.test(fromSession) && fromSession.trim().length > 0
+      && fromSession.length <= 128) {
+    sessionKey = fromSession;
+  } else {
+    sessionKey = resolveWebSessionKey(c);
+  }
+  const skQuery = `sessionKey=${encodeURIComponent(sessionKey)}`;
+  const sidebar = renderChatSidebar(sessionKey);
   const html = `
-    <div class="chat-container">
-      <div class="chat-messages" id="chat-messages" hx-get="/chat/conversation" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
-      <form class="chat-input" hx-post="/chat" hx-target="#chat-messages" hx-swap="innerHTML" hx-on::after-request="this.reset()">
-        <input type="text" name="content" placeholder="Type a message..." autocomplete="off" required>
-        <button type="submit">Send</button>
-      </form>
+    <div class="chat-layout">
+      ${sidebar}
+      <div class="chat-main">
+        <div class="chat-container">
+          <div class="chat-messages" id="chat-messages" hx-get="/chat/conversation?${skQuery}" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
+          <form class="chat-input" hx-post="/chat?${skQuery}" hx-target="#chat-messages" hx-swap="innerHTML" hx-on::after-request="this.reset()">
+            <input type="text" name="content" placeholder="Type a message..." autocomplete="off" required>
+            <button type="submit">Send</button>
+          </form>
+        </div>
+      </div>
     </div>
     <script>
     document.body.addEventListener('htmx:afterSwap', function(e) {
@@ -997,6 +1113,8 @@ app.get("/chat", (c) => {
         }
       }
     });
+    // Bridge: when sidebar's "+ New" returns HX-Redirect via the JSON-API,
+    // HTMX handles it automatically. No extra wiring required here.
     </script>`;
 
   return c.html(layout("Chat", html, "chat", "padding:0;max-width:none"));
@@ -1134,6 +1252,113 @@ app.post("/chat", async (c) => {
   });
 
   return c.html(renderConversation(combined) + TYPING);
+});
+
+// --- Chat sidebar actions (HTMX-flavoured wrappers around /api/v1/chat/sessions).
+//     These return either the freshly rendered sidebar HTML or an HX-Redirect
+//     header so the browser switches to the new active session. The underlying
+//     JSON API at /api/v1/chat/sessions is untouched. ---
+
+/** Reads activeKey from query first (?session=…), then HX-Current-URL header
+ *  (set by HTMX on every request) so sidebar refreshes preserve highlighting
+ *  even when triggered from action buttons. */
+function sidebarActiveKey(c: any): string {
+  const fromQuery = c.req.query("session");
+  if (fromQuery && typeof fromQuery === "string" && /^[a-zA-Z0-9_\-]+$/.test(fromQuery) && fromQuery.length <= 128) {
+    return fromQuery;
+  }
+  const cur = c.req.header("hx-current-url") ?? "";
+  try {
+    const u = new URL(cur);
+    const fromUrl = u.searchParams.get("session");
+    if (fromUrl && /^[a-zA-Z0-9_\-]+$/.test(fromUrl) && fromUrl.length <= 128) return fromUrl;
+  } catch {}
+  return "_default";
+}
+
+app.get("/chat/sidebar", (c) => {
+  const active = sidebarActiveKey(c);
+  const edit = c.req.query("edit");
+  const editKey = edit && /^[a-zA-Z0-9_\-]+$/.test(edit) && edit.length <= 128 ? edit : null;
+  return c.html(renderChatSidebar(active, editKey));
+});
+
+app.post("/chat/sessions/new", (c) => {
+  const sessionKey = crypto.randomUUID();
+  db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', NULL)`).run(sessionKey);
+  c.header("HX-Redirect", `/chat?session=${encodeURIComponent(sessionKey)}`);
+  return c.body(null, 204);
+});
+
+app.patch("/chat/sessions/:key", async (c) => {
+  const key = c.req.param("key");
+  if (!/^[a-zA-Z0-9_\-]+$/.test(key) || key.length > 128) {
+    return c.html('<div class="flash flash-err">Invalid session key</div>', 400);
+  }
+  const existing = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ? AND channel = 'web'").get(key);
+  if (!existing) return c.html('<div class="flash flash-err">Not found</div>', 404);
+
+  const body = await c.req.parseBody();
+  const rawTitle = ((body.title as string) ?? "").trim();
+  const newTitle = rawTitle.length > 0 ? rawTitle.slice(0, 200) : null;
+
+  db.prepare(`UPDATE chat_sessions SET title = ?, updated_at = datetime('now') WHERE session_key = ?`)
+    .run(newTitle, key);
+
+  return c.html(renderChatSidebar(sidebarActiveKey(c)));
+});
+
+app.post("/chat/sessions/:key/archive", (c) => {
+  const key = c.req.param("key");
+  if (!/^[a-zA-Z0-9_\-]+$/.test(key) || key.length > 128) {
+    return c.html('<div class="flash flash-err">Invalid session key</div>', 400);
+  }
+  if (key === "_default") {
+    return c.html('<div class="flash flash-err">Default chat cannot be archived</div>', 400);
+  }
+  const existing = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ? AND channel = 'web'").get(key);
+  if (!existing) return c.html('<div class="flash flash-err">Not found</div>', 404);
+
+  db.prepare(`UPDATE chat_sessions SET archived_at = datetime('now'), updated_at = datetime('now') WHERE session_key = ?`)
+    .run(key);
+
+  const active = sidebarActiveKey(c);
+  // If we just archived the active chat, send the user back to _default so the
+  // right pane doesn't keep rendering an archived session.
+  if (active === key) {
+    c.header("HX-Redirect", "/chat");
+    return c.body(null, 204);
+  }
+  return c.html(renderChatSidebar(active));
+});
+
+app.delete("/chat/sessions/:key", (c) => {
+  const key = c.req.param("key");
+  if (!/^[a-zA-Z0-9_\-]+$/.test(key) || key.length > 128) {
+    return c.html('<div class="flash flash-err">Invalid session key</div>', 400);
+  }
+  if (key === "_default") {
+    return c.html('<div class="flash flash-err">Default chat cannot be deleted</div>', 400);
+  }
+  const existing = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ? AND channel = 'web'").get(key);
+  if (!existing) return c.html('<div class="flash flash-err">Not found</div>', 404);
+
+  // Mirror DELETE /api/v1/chat/sessions/:key semantics — clean up trigger + messages first.
+  const trigSession = db.prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = 'web-chat' AND session_key = ?")
+    .get(key) as { session_id: string } | null;
+  db.prepare("DELETE FROM trigger_sessions WHERE trigger_name = 'web-chat' AND session_key = ?").run(key);
+  db.prepare("DELETE FROM messages WHERE channel = 'web' AND session_key = ?").run(key);
+  if (trigSession) {
+    db.prepare("DELETE FROM web_chat_stream_chunks WHERE session_id = ?").run(trigSession.session_id);
+  }
+  db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+
+  const active = sidebarActiveKey(c);
+  if (active === key) {
+    c.header("HX-Redirect", "/chat");
+    return c.body(null, 204);
+  }
+  return c.html(renderChatSidebar(active));
 });
 
 // ============ SETTINGS ============

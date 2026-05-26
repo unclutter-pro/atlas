@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso, resolveWebSessionKey, deriveSessionTitle } from "./index";
+import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso, resolveWebSessionKey, deriveSessionTitle, renderChatSidebar, listSidebarSessions } from "./index";
+import { getDb } from "../lib/atlas-db";
 
 describe("sqliteToIso", () => {
   test("converts SQLite UTC timestamp to ISO with Z", () => {
@@ -461,5 +462,290 @@ describe("deriveSessionTitle", () => {
     expect(result.endsWith("…")).toBe(true);
     // trimEnd before '…' means no trailing space before ellipsis
     expect(result).not.toMatch(/ …$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chat sidebar: renderChatSidebar + listSidebarSessions + HTTP routes
+// ---------------------------------------------------------------------------
+// The web-ui shares the live atlas DB (no test isolation layer), so these
+// tests create disposable sessions with unique keys and tear them down in
+// afterAll. Read-only assertions about _default work regardless of DB state.
+
+describe("renderChatSidebar (pure render)", () => {
+  test("contains the wrapper with id=chat-sidebar and the + New button", () => {
+    const html = renderChatSidebar("_default");
+    expect(html).toContain('id="chat-sidebar"');
+    expect(html).toContain("+ New chat");
+    expect(html).toContain('hx-post="/chat/sessions/new"');
+  });
+
+  test("renders _default even when no chat_sessions row exists yet", () => {
+    const html = renderChatSidebar("_default");
+    expect(html).toContain("?session=_default");
+  });
+
+  test("marks the active session with the 'active' class", () => {
+    const html = renderChatSidebar("_default");
+    // The default link should have the active class on this run
+    expect(html).toMatch(/class="chat-session active"[^>]*href="\/chat\?session=_default"/);
+  });
+
+  test("default session never shows a delete button (cannot be deleted)", () => {
+    const html = renderChatSidebar("_default");
+    // No delete action targeting _default
+    expect(html).not.toContain('hx-delete="/chat/sessions/_default"');
+  });
+
+  test("escapes HTML in session titles to prevent XSS", () => {
+    const db = getDb();
+    const key = `xsstest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', ?)`)
+      .run(key, "<script>alert('x')</script>");
+    try {
+      const html = renderChatSidebar(key);
+      expect(html).not.toContain("<script>alert");
+      expect(html).toContain("&lt;script&gt;");
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+
+  test("renders rename form when editKey matches a row", () => {
+    const db = getDb();
+    const key = `editview-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'Hello')`).run(key);
+    try {
+      const html = renderChatSidebar(key, key);
+      expect(html).toContain(`hx-patch="/chat/sessions/${key}"`);
+      expect(html).toContain('name="title"');
+      expect(html).toContain('value="Hello"');
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+});
+
+describe("listSidebarSessions", () => {
+  test("always includes _default at the top, even on a clean install", () => {
+    const rows = listSidebarSessions();
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0].session_key).toBe("_default");
+  });
+
+  test("excludes archived sessions", () => {
+    const db = getDb();
+    const archivedKey = `archived-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title, archived_at)
+                VALUES (?, 'web', 'archived chat', datetime('now'))`).run(archivedKey);
+    try {
+      const rows = listSidebarSessions();
+      expect(rows.find(r => r.session_key === archivedKey)).toBeUndefined();
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(archivedKey);
+    }
+  });
+});
+
+describe("GET /chat (full page)", () => {
+  test("includes the sidebar wrapper and a chat-container in the body", async () => {
+    const req = new Request("http://localhost/chat");
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="chat-sidebar"');
+    expect(html).toContain('class="chat-layout"');
+    expect(html).toContain('class="chat-container"');
+    // HTMX URLs must carry sessionKey so backend routes resolve correctly
+    expect(html).toContain('hx-get="/chat/conversation?sessionKey=_default"');
+    expect(html).toContain('hx-post="/chat?sessionKey=_default"');
+  });
+
+  test("propagates explicit ?session=<key> into HTMX URLs", async () => {
+    const db = getDb();
+    const key = `pagetest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', NULL)`).run(key);
+    try {
+      const req = new Request(`http://localhost/chat?session=${key}`);
+      const res = await app.fetch(req);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain(`hx-get="/chat/conversation?sessionKey=${key}"`);
+      expect(html).toContain(`hx-post="/chat?sessionKey=${key}"`);
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+});
+
+describe("GET /chat/sidebar", () => {
+  test("returns the sidebar fragment", async () => {
+    const res = await app.fetch(new Request("http://localhost/chat/sidebar"));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html.trim().startsWith("<aside")).toBe(true);
+    expect(html).toContain('id="chat-sidebar"');
+  });
+
+  test("highlights ?session= when provided", async () => {
+    const db = getDb();
+    const key = `sidebartest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'My chat')`).run(key);
+    try {
+      const res = await app.fetch(new Request(`http://localhost/chat/sidebar?session=${key}`));
+      const html = await res.text();
+      expect(html).toMatch(new RegExp(`class="chat-session active"[^>]*href="/chat\\?session=${key}"`));
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+
+  test("renders rename form when ?edit=<key>", async () => {
+    const db = getDb();
+    const key = `edittest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'Old name')`).run(key);
+    try {
+      const res = await app.fetch(new Request(`http://localhost/chat/sidebar?session=${key}&edit=${key}`));
+      const html = await res.text();
+      expect(html).toContain(`hx-patch="/chat/sessions/${key}"`);
+      expect(html).toContain('value="Old name"');
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+});
+
+describe("POST /chat/sessions/new", () => {
+  test("creates a new chat_sessions row and returns HX-Redirect to it", async () => {
+    const db = getDb();
+    const before = (db.prepare("SELECT COUNT(*) as c FROM chat_sessions WHERE channel = 'web'").get() as any).c;
+    const res = await app.fetch(new Request("http://localhost/chat/sessions/new", { method: "POST" }));
+    expect(res.status).toBe(204);
+    const redirect = res.headers.get("HX-Redirect") ?? "";
+    expect(redirect.startsWith("/chat?session=")).toBe(true);
+    const newKey = redirect.split("=")[1];
+    try {
+      const after = (db.prepare("SELECT COUNT(*) as c FROM chat_sessions WHERE channel = 'web'").get() as any).c;
+      expect(after).toBe(before + 1);
+      const row = db.prepare("SELECT session_key, title FROM chat_sessions WHERE session_key = ?").get(newKey) as any;
+      expect(row.session_key).toBe(newKey);
+      expect(row.title).toBeNull();
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(newKey);
+    }
+  });
+});
+
+describe("PATCH /chat/sessions/:key (rename via HTMX)", () => {
+  test("updates the title and returns the updated sidebar", async () => {
+    const db = getDb();
+    const key = `renametest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'Old')`).run(key);
+    try {
+      const form = new URLSearchParams();
+      form.set("title", "Renamed");
+      const res = await app.fetch(new Request(`http://localhost/chat/sessions/${key}?session=${key}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: form.toString(),
+      }));
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('id="chat-sidebar"');
+      expect(html).toContain("Renamed");
+      const row = db.prepare("SELECT title FROM chat_sessions WHERE session_key = ?").get(key) as any;
+      expect(row.title).toBe("Renamed");
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+
+  test("returns 404 for unknown session key", async () => {
+    const form = new URLSearchParams();
+    form.set("title", "x");
+    const res = await app.fetch(new Request(`http://localhost/chat/sessions/does-not-exist-12345`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    }));
+    expect(res.status).toBe(404);
+  });
+
+  test("rejects invalid session keys (path-injection guard)", async () => {
+    const form = new URLSearchParams();
+    form.set("title", "x");
+    const res = await app.fetch(new Request(`http://localhost/chat/sessions/bad%20key`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+    }));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /chat/sessions/:key/archive", () => {
+  test("archives the session and returns updated sidebar when not active", async () => {
+    const db = getDb();
+    const key = `archtest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'foo')`).run(key);
+    try {
+      const res = await app.fetch(new Request(`http://localhost/chat/sessions/${key}/archive?session=_default`, { method: "POST" }));
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('id="chat-sidebar"');
+      const row = db.prepare("SELECT archived_at FROM chat_sessions WHERE session_key = ?").get(key) as any;
+      expect(row.archived_at).not.toBeNull();
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+
+  test("redirects to /chat when archiving the currently active session", async () => {
+    const db = getDb();
+    const key = `archactive-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'foo')`).run(key);
+    try {
+      const res = await app.fetch(new Request(`http://localhost/chat/sessions/${key}/archive?session=${key}`, { method: "POST" }));
+      expect(res.status).toBe(204);
+      expect(res.headers.get("HX-Redirect")).toBe("/chat");
+    } finally {
+      db.prepare(`DELETE FROM chat_sessions WHERE session_key = ?`).run(key);
+    }
+  });
+
+  test("refuses to archive the _default session", async () => {
+    const res = await app.fetch(new Request(`http://localhost/chat/sessions/_default/archive`, { method: "POST" }));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("DELETE /chat/sessions/:key (sidebar action)", () => {
+  test("deletes the session and returns updated sidebar when not active", async () => {
+    const db = getDb();
+    const key = `deltest-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'foo')`).run(key);
+    const res = await app.fetch(new Request(`http://localhost/chat/sessions/${key}?session=_default`, { method: "DELETE" }));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="chat-sidebar"');
+    const row = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ?").get(key);
+    expect(row).toBeNull();
+  });
+
+  test("redirects to /chat when deleting the active session", async () => {
+    const db = getDb();
+    const key = `delactive-${Date.now()}`;
+    db.prepare(`INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'foo')`).run(key);
+    const res = await app.fetch(new Request(`http://localhost/chat/sessions/${key}?session=${key}`, { method: "DELETE" }));
+    expect(res.status).toBe(204);
+    expect(res.headers.get("HX-Redirect")).toBe("/chat");
+    // Ensure cleanup ran
+    const row = db.prepare("SELECT session_key FROM chat_sessions WHERE session_key = ?").get(key);
+    expect(row).toBeNull();
+  });
+
+  test("refuses to delete the _default session", async () => {
+    const res = await app.fetch(new Request(`http://localhost/chat/sessions/_default`, { method: "DELETE" }));
+    expect(res.status).toBe(400);
   });
 });
