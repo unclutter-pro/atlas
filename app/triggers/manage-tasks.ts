@@ -141,6 +141,18 @@ function die(msg: string): never {
   process.exit(1);
 }
 
+/**
+ * Parse a task/goal ID from CLI input. Accepts both `146` and `#146` because
+ * the CLI itself prints IDs prefixed with `#` (e.g. `Created task #146: …`),
+ * so users naturally copy-paste that form back in.
+ *
+ * Returns `NaN` for invalid input — callers should `isNaN`-check.
+ */
+export function parseId(s: string | undefined | null): number {
+  if (s === undefined || s === null) return NaN;
+  return parseInt(String(s).trim().replace(/^#/, ""), 10);
+}
+
 // ---------------------------------------------------------------------------
 // DB helpers
 // ---------------------------------------------------------------------------
@@ -685,7 +697,7 @@ async function main(): Promise<void> {
     }
 
     if (subCmd === "show") {
-      const id = parseInt(positional[2] ?? flag(flags, "id") ?? "");
+      const id = parseId(positional[2] ?? flag(flags, "id"));
       if (!id || isNaN(id)) die("Goal ID required");
       const goal = goalGet(db, id);
       if (!goal) die(`Goal #${id} not found`);
@@ -694,7 +706,7 @@ async function main(): Promise<void> {
     }
 
     if (subCmd === "close") {
-      const id = parseInt(positional[2] ?? flag(flags, "id") ?? "");
+      const id = parseId(positional[2] ?? flag(flags, "id"));
       if (!id || isNaN(id)) die("Goal ID required");
       const reason = flag(flags, "reason");
       if (!reason) die("--reason is required");
@@ -769,13 +781,13 @@ async function main(): Promise<void> {
     }
 
     const goalId = flags.goal !== undefined
-      ? parseInt(String(flags.goal), 10)
+      ? parseId(String(flags.goal))
       : undefined;
 
     const dependsOnStr = flag(flags, "depends-on");
     const dependsOn = dependsOnStr
       ? dependsOnStr.split(",").map((s) => {
-          const n = parseInt(s.trim(), 10);
+          const n = parseId(s);
           if (isNaN(n)) die(`Invalid dependency ID: ${s.trim()}`);
           return n;
         })
@@ -831,7 +843,7 @@ async function main(): Promise<void> {
   }
 
   if (firstArg === "show") {
-    const id = parseInt(positional[1] ?? flag(flags, "id") ?? "");
+    const id = parseId(positional[1] ?? flag(flags, "id"));
     if (!id || isNaN(id)) die("Task ID required");
     const task = taskGet(db, id);
     if (!task) die(`Task #${id} not found`);
@@ -840,7 +852,7 @@ async function main(): Promise<void> {
   }
 
   if (firstArg === "close") {
-    const id = parseInt(positional[1] ?? flag(flags, "id") ?? "");
+    const id = parseId(positional[1] ?? flag(flags, "id"));
     if (!id || isNaN(id)) die("Task ID required");
     const task = taskClose(db, { taskId: id, reason: flag(flags, "reason") });
     console.log(`Task #${task.id} closed.`);
@@ -848,7 +860,7 @@ async function main(): Promise<void> {
   }
 
   if (firstArg === "cancel") {
-    const id = parseInt(positional[1] ?? flag(flags, "id") ?? "");
+    const id = parseId(positional[1] ?? flag(flags, "id"));
     if (!id || isNaN(id)) die("Task ID required");
     const task = taskCancel(db, { taskId: id, reason: flag(flags, "reason") });
     console.log(`Task #${task.id} cancelled.`);

@@ -18,6 +18,7 @@ import {
   taskClose,
   taskCancel,
   parseArgs,
+  parseId,
   getSessionScope,
   parseValidatorOutput,
   type Goal,
@@ -170,6 +171,27 @@ describe("CLI parsing", () => {
     expect(() =>
       taskAdd(db, { title: "x", priority: 5, ...scope })
     ).toThrow();
+  });
+
+  test("parseId accepts bare numeric ID", () => {
+    expect(parseId("146")).toBe(146);
+  });
+
+  test("parseId accepts ID with leading '#' (round-trip from CLI output)", () => {
+    // The CLI prints `Created task #146`, so users naturally copy `#146` back in.
+    expect(parseId("#146")).toBe(146);
+  });
+
+  test("parseId trims whitespace before parsing", () => {
+    expect(parseId(" 42 ")).toBe(42);
+    expect(parseId(" #42 ")).toBe(42);
+  });
+
+  test("parseId returns NaN for empty/undefined/garbage", () => {
+    expect(parseId(undefined)).toBeNaN();
+    expect(parseId(null)).toBeNaN();
+    expect(parseId("")).toBeNaN();
+    expect(parseId("abc")).toBeNaN();
   });
 
   test("rejects negative priority", () => {
