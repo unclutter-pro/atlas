@@ -49,10 +49,14 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   libxcomposite1 libxdamage1 libxkbcommon0 \
   libnss3 libdrm2 libgbm1 libasound2t64 libcups2t64 \
   libpango-1.0-0 libcairo2 \
-  # --- Fonts for PDF generation (pdf skill / Typst pipeline) ---
+  # --- Fonts for PDF generation (pdf skill / Typst pipeline).
+  # fonts-crimson-pro intentionally NOT here — package doesn't exist in noble;
+  # Crimson Pro is fetched directly from Google Fonts a few lines below. ---
   fonts-liberation fonts-dejavu \
   fonts-inter fonts-ibm-plex fonts-jetbrains-mono \
-  fonts-crimson-pro fonts-noto fonts-noto-cjk \
+  fonts-noto fonts-noto-cjk \
+  fonts-ubuntu \
+  fontconfig \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
   && useradd -m -s /bin/bash -G sudo agent \
@@ -114,6 +118,14 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && curl -fsSL https://github.com/Homebrew/brew/tarball/master \
   | tar xz --strip-components 1 -C /home/agent/.homebrew \
   && /home/agent/.homebrew/bin/brew --version
+
+# --- Google Fonts — curated set for the pdf skill / Typst pipeline.
+# Variable .ttf cuts of families that aren't packaged in Ubuntu noble
+# (Crimson Pro, Lora, Merriweather, EB Garamond, Playfair Display,
+# Source Serif 4, Manrope, Work Sans, Fira Code). Owns its own layer so
+# adding/removing fonts doesn't bust the apt-install cache. ---
+COPY scripts/install-google-fonts.sh /tmp/install-google-fonts.sh
+RUN bash /tmp/install-google-fonts.sh && rm /tmp/install-google-fonts.sh
 
 ENV PATH="/home/agent/.homebrew/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
