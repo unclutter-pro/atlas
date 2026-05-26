@@ -183,11 +183,27 @@ function createTables(database: Database): void {
       title TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      archived_at TEXT
+      archived_at TEXT,
+      user_id TEXT,
+      user_email TEXT,
+      user_name TEXT,
+      user_role TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_channel_updated
       ON chat_sessions(channel, archived_at, updated_at);
   `);
+
+  // Migration: add user identity columns to chat_sessions (idempotent — safe on existing DBs).
+  // Use PRAGMA table_info to check existence because bun:sqlite's bundled SQLite does not yet
+  // support `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` syntax.
+  {
+    const chatCols = (database.prepare("PRAGMA table_info(chat_sessions)").all() as { name: string }[])
+      .map(r => r.name);
+    if (!chatCols.includes("user_id"))    database.exec("ALTER TABLE chat_sessions ADD COLUMN user_id TEXT");
+    if (!chatCols.includes("user_email")) database.exec("ALTER TABLE chat_sessions ADD COLUMN user_email TEXT");
+    if (!chatCols.includes("user_name"))  database.exec("ALTER TABLE chat_sessions ADD COLUMN user_name TEXT");
+    if (!chatCols.includes("user_role"))  database.exec("ALTER TABLE chat_sessions ADD COLUMN user_role TEXT");
+  }
 
   // Bootstrap legacy default session so existing data keeps working
   database.exec(`INSERT OR IGNORE INTO chat_sessions(session_key, channel, title) VALUES ('_default', 'web', NULL)`);

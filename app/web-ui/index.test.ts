@@ -749,3 +749,230 @@ describe("DELETE /chat/sessions/:key (sidebar action)", () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-user session context: user_id / user_email / user_name / user_role
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/chat/sessions — user identity fields", () => {
+  const API_KEY = process.env.ATLAS_API_KEY || "test-key";
+
+  function apiHeaders(extra?: Record<string, string>) {
+    return { "Content-Type": "application/json", "X-API-Key": API_KEY, ...extra };
+  }
+
+  test("creates a session with user fields stored", async () => {
+    const db = getDb();
+    const res = await app.fetch(new Request("http://localhost/api/v1/chat/sessions", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        title: "Test chat",
+        user_id: "u_123",
+        user_email: "alice@example.com",
+        user_name: "Alice",
+        user_role: "admin",
+      }),
+    }));
+    expect(res.status).toBe(201);
+    const json = await res.json() as any;
+    expect(json.session_key).toBeTruthy();
+    expect(json.user_id).toBe("u_123");
+    expect(json.user_email).toBe("alice@example.com");
+    expect(json.user_name).toBe("Alice");
+    expect(json.user_role).toBe("admin");
+
+    // Verify DB row
+    const row = db.prepare(
+      "SELECT user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+    ).get(json.session_key) as any;
+    expect(row.user_id).toBe("u_123");
+    expect(row.user_email).toBe("alice@example.com");
+    expect(row.user_name).toBe("Alice");
+    expect(row.user_role).toBe("admin");
+
+    // Cleanup
+    db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(json.session_key);
+  });
+
+  test("creates a session without user fields (all null)", async () => {
+    const db = getDb();
+    const res = await app.fetch(new Request("http://localhost/api/v1/chat/sessions", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ title: "No user" }),
+    }));
+    expect(res.status).toBe(201);
+    const json = await res.json() as any;
+    expect(json.user_id).toBeUndefined();
+    expect(json.user_name).toBeUndefined();
+
+    const row = db.prepare(
+      "SELECT user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+    ).get(json.session_key) as any;
+    expect(row.user_id).toBeNull();
+    expect(row.user_name).toBeNull();
+
+    db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(json.session_key);
+  });
+});
+
+describe("PATCH /api/v1/chat/sessions/:key — user identity fields", () => {
+  const API_KEY = process.env.ATLAS_API_KEY || "test-key";
+
+  function apiHeaders() {
+    return { "Content-Type": "application/json", "X-API-Key": API_KEY };
+  }
+
+  test("updates user fields on an existing session", async () => {
+    const db = getDb();
+    const key = `patch-user-${Date.now()}`;
+    db.prepare(
+      `INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', NULL)`
+    ).run(key);
+    try {
+      const res = await app.fetch(new Request(`http://localhost/api/v1/chat/sessions/${key}`, {
+        method: "PATCH",
+        headers: apiHeaders(),
+        body: JSON.stringify({ user_id: "u_456", user_email: "bob@example.com", user_name: "Bob", user_role: "member" }),
+      }));
+      expect(res.status).toBe(200);
+      const json = await res.json() as any;
+      expect(json.user_id).toBe("u_456");
+      expect(json.user_email).toBe("bob@example.com");
+      expect(json.user_name).toBe("Bob");
+      expect(json.user_role).toBe("member");
+
+      const row = db.prepare(
+        "SELECT user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+      ).get(key) as any;
+      expect(row.user_id).toBe("u_456");
+      expect(row.user_name).toBe("Bob");
+    } finally {
+      db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+    }
+  });
+
+  test("clears user fields by passing null or empty string", async () => {
+    const db = getDb();
+    const key = `patch-clear-${Date.now()}`;
+    db.prepare(
+      `INSERT INTO chat_sessions (session_key, channel, title, user_id, user_name) VALUES (?, 'web', NULL, 'u_old', 'Old Name')`
+    ).run(key);
+    try {
+      const res = await app.fetch(new Request(`http://localhost/api/v1/chat/sessions/${key}`, {
+        method: "PATCH",
+        headers: apiHeaders(),
+        body: JSON.stringify({ user_id: null, user_name: "" }),
+      }));
+      expect(res.status).toBe(200);
+
+      const row = db.prepare(
+        "SELECT user_id, user_name FROM chat_sessions WHERE session_key = ?"
+      ).get(key) as any;
+      expect(row.user_id).toBeNull();
+      expect(row.user_name).toBeNull();
+    } finally {
+      db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+    }
+  });
+
+  test("returns 404 for non-existent session key", async () => {
+    const res = await app.fetch(new Request(`http://localhost/api/v1/chat/sessions/does-not-exist-user-test`, {
+      method: "PATCH",
+      headers: apiHeaders(),
+      body: JSON.stringify({ user_id: "x" }),
+    }));
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("touchChatSession — COALESCE first-write-wins for user fields", () => {
+  test("does not overwrite existing user fields on subsequent touches", () => {
+    const db = getDb();
+    const key = `touch-coalesce-${Date.now()}`;
+    db.prepare(
+      `INSERT INTO chat_sessions (session_key, channel, title, user_id, user_name) VALUES (?, 'web', NULL, 'original-id', 'OriginalName')`
+    ).run(key);
+    try {
+      // Import touchChatSession via the app routes by posting a message (indirect test)
+      // We exercise the COALESCE logic directly at the DB layer to keep test fast/isolated.
+      db.prepare(
+        `INSERT INTO chat_sessions (session_key, channel, title, user_id, user_email, user_name, user_role)
+         VALUES (?, 'web', ?, ?, ?, ?, ?)
+         ON CONFLICT(session_key) DO UPDATE SET
+           updated_at = datetime('now'),
+           title = COALESCE(chat_sessions.title, excluded.title),
+           user_id = COALESCE(chat_sessions.user_id, excluded.user_id),
+           user_email = COALESCE(chat_sessions.user_email, excluded.user_email),
+           user_name = COALESCE(chat_sessions.user_name, excluded.user_name),
+           user_role = COALESCE(chat_sessions.user_role, excluded.user_role)`
+      ).run(key, "derived title", "new-id-should-not-win", "new@example.com", "NewName", "admin");
+
+      const row = db.prepare(
+        "SELECT user_id, user_email, user_name, user_role, title FROM chat_sessions WHERE session_key = ?"
+      ).get(key) as any;
+
+      // user_id and user_name were already set — COALESCE must preserve originals
+      expect(row.user_id).toBe("original-id");
+      expect(row.user_name).toBe("OriginalName");
+      // user_email and user_role were null — they get backfilled
+      expect(row.user_email).toBe("new@example.com");
+      expect(row.user_role).toBe("admin");
+      // title was null — it gets backfilled
+      expect(row.title).toBe("derived title");
+    } finally {
+      db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+    }
+  });
+});
+
+describe("GET /api/v1/chat/sessions — user_id in list response", () => {
+  const API_KEY = process.env.ATLAS_API_KEY || "test-key";
+
+  test("sessions list includes user_id field (null when not set)", async () => {
+    const db = getDb();
+    const key = `list-user-${Date.now()}`;
+    db.prepare(
+      `INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', 'listed')`
+    ).run(key);
+    try {
+      const res = await app.fetch(new Request("http://localhost/api/v1/chat/sessions", {
+        headers: { "X-API-Key": API_KEY },
+      }));
+      expect(res.status).toBe(200);
+      const json = await res.json() as any;
+      expect(Array.isArray(json.sessions)).toBe(true);
+      // Every row must have a user_id key (null or string)
+      for (const s of json.sessions) {
+        expect("user_id" in s).toBe(true);
+      }
+      // The row we inserted has no user set — must be null
+      const found = json.sessions.find((s: any) => s.session_key === key);
+      expect(found).toBeDefined();
+      expect(found.user_id).toBeNull();
+    } finally {
+      db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+    }
+  });
+
+  test("sessions list includes user_id value when set", async () => {
+    const db = getDb();
+    const key = `list-user-set-${Date.now()}`;
+    db.prepare(
+      `INSERT INTO chat_sessions (session_key, channel, title, user_id, user_name) VALUES (?, 'web', 'listed-with-user', 'u_789', 'Charlie')`
+    ).run(key);
+    try {
+      const res = await app.fetch(new Request("http://localhost/api/v1/chat/sessions", {
+        headers: { "X-API-Key": API_KEY },
+      }));
+      expect(res.status).toBe(200);
+      const json = await res.json() as any;
+      const found = json.sessions.find((s: any) => s.session_key === key);
+      expect(found).toBeDefined();
+      expect(found.user_id).toBe("u_789");
+    } finally {
+      db.prepare("DELETE FROM chat_sessions WHERE session_key = ?").run(key);
+    }
+  });
+});

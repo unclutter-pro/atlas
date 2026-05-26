@@ -110,16 +110,33 @@ export function resolveWebSessionKey(c: any): string {
 }
 
 /** Ensures a chat_sessions row exists. Idempotent. Updates updated_at and,
- *  via COALESCE, backfills the title only when it is still NULL — manual
- *  titles from PATCH /chat/sessions/:key are never overwritten. */
-function touchChatSession(sessionKey: string, opts?: { title?: string }): void {
+ *  via COALESCE, backfills nullable columns only when they are still NULL —
+ *  explicit values set via PATCH /chat/sessions/:key are never overwritten. */
+function touchChatSession(sessionKey: string, opts?: {
+  title?: string;
+  user_id?: string | null;
+  user_email?: string | null;
+  user_name?: string | null;
+  user_role?: string | null;
+}): void {
   db.prepare(
-    `INSERT INTO chat_sessions (session_key, channel, title)
-     VALUES (?, 'web', ?)
+    `INSERT INTO chat_sessions (session_key, channel, title, user_id, user_email, user_name, user_role)
+     VALUES (?, 'web', ?, ?, ?, ?, ?)
      ON CONFLICT(session_key) DO UPDATE SET
        updated_at = datetime('now'),
-       title = COALESCE(chat_sessions.title, excluded.title)`
-  ).run(sessionKey, opts?.title ?? null);
+       title = COALESCE(chat_sessions.title, excluded.title),
+       user_id = COALESCE(chat_sessions.user_id, excluded.user_id),
+       user_email = COALESCE(chat_sessions.user_email, excluded.user_email),
+       user_name = COALESCE(chat_sessions.user_name, excluded.user_name),
+       user_role = COALESCE(chat_sessions.user_role, excluded.user_role)`
+  ).run(
+    sessionKey,
+    opts?.title ?? null,
+    opts?.user_id ?? null,
+    opts?.user_email ?? null,
+    opts?.user_name ?? null,
+    opts?.user_role ?? null,
+  );
 }
 
 /** Generates a placeholder title from first user message content. */
@@ -135,6 +152,7 @@ export interface ChatSidebarRow {
   title: string | null;
   updated_at: string;
   message_count: number;
+  user_id: string | null;
 }
 
 /** Loads all non-archived web chat sessions for the sidebar.
@@ -146,6 +164,7 @@ export function listSidebarSessions(): ChatSidebarRow[] {
       cs.session_key,
       cs.title,
       cs.updated_at,
+      cs.user_id,
       COUNT(m.id) AS message_count
     FROM chat_sessions cs
     LEFT JOIN messages m ON m.channel = 'web' AND m.session_key = cs.session_key
@@ -154,7 +173,7 @@ export function listSidebarSessions(): ChatSidebarRow[] {
     ORDER BY (cs.session_key = '_default') DESC, cs.updated_at DESC
   `).all() as ChatSidebarRow[];
   if (!rows.some(r => r.session_key === '_default')) {
-    rows.unshift({ session_key: '_default', title: null, updated_at: '', message_count: 0 });
+    rows.unshift({ session_key: '_default', title: null, updated_at: '', message_count: 0, user_id: null });
   }
   return rows;
 }
@@ -1207,13 +1226,24 @@ app.post("/chat", async (c) => {
     closeSync(openSync(WAKE, "w"));
   } catch {}
 
+  // Look up user identity from the chat_sessions row for the trigger payload.
+  const chatSessionRow = db.prepare(
+    "SELECT user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+  ).get(sessionKey) as { user_id: string | null; user_email: string | null; user_name: string | null; user_role: string | null } | null;
+
   // Fire trigger (like signal/email addons do)
-  const payload = JSON.stringify({
+  const chatPayloadObj: Record<string, any> = {
     inbox_message_id: msg.id,
     sender: "web-ui",
     message: content.slice(0, 20000),
     timestamp: sqliteToIso(msg.created_at),
-  });
+  };
+  if (chatSessionRow?.user_id    != null) chatPayloadObj.user_id    = chatSessionRow.user_id;
+  if (chatSessionRow?.user_email != null) chatPayloadObj.user_email = chatSessionRow.user_email;
+  if (chatSessionRow?.user_name  != null) chatPayloadObj.user_name  = chatSessionRow.user_name;
+  if (chatSessionRow?.user_role  != null) chatPayloadObj.user_role  = chatSessionRow.user_role;
+
+  const payload = JSON.stringify(chatPayloadObj);
   Bun.spawn(
     ["/atlas/app/triggers/trigger.sh", "web-chat", payload, sessionKey],
     {
@@ -2600,9 +2630,17 @@ api.post("/chat/messages", async (c) => {
     closeSync(openSync(WAKE, "w"));
   } catch {}
 
+  // Look up user identity from the chat_sessions row so we can pass it in
+  // the trigger payload (first-write-wins via touchChatSession COALESCE above,
+  // so this read reflects the authoritative values already stored).
+  const sessionRow = db.prepare(
+    "SELECT user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+  ).get(sessionKey) as { user_id: string | null; user_email: string | null; user_name: string | null; user_role: string | null } | null;
+
   // Trigger payload — include attachment metadata so the AI is aware of voice
   // notes / files and can fetch the original via /api/v1/attachments/<id>.
-  const payload = JSON.stringify({
+  // Include user identity fields when present so the agent can personalise its responses.
+  const payloadObj: Record<string, any> = {
     inbox_message_id: msg.id,
     sender: "web-ui",
     message: content.slice(0, 20000),
@@ -2616,7 +2654,13 @@ api.post("/chat/messages", async (c) => {
       transcription: a.transcription,
       url: attachmentUrl(a.id),
     })),
-  });
+  };
+  if (sessionRow?.user_id    != null) payloadObj.user_id    = sessionRow.user_id;
+  if (sessionRow?.user_email != null) payloadObj.user_email = sessionRow.user_email;
+  if (sessionRow?.user_name  != null) payloadObj.user_name  = sessionRow.user_name;
+  if (sessionRow?.user_role  != null) payloadObj.user_role  = sessionRow.user_role;
+
+  const payload = JSON.stringify(payloadObj);
   Bun.spawn(
     ["/atlas/app/triggers/trigger.sh", "web-chat", payload, sessionKey],
     { stdout: "ignore", stderr: "ignore" },
@@ -3092,6 +3136,10 @@ api.get("/chat/sessions", (c) => {
       cs.created_at,
       cs.updated_at,
       cs.archived_at,
+      cs.user_id,
+      cs.user_email,
+      cs.user_name,
+      cs.user_role,
       COUNT(m.id) AS message_count,
       MAX(m.created_at) AS last_message_at
     FROM chat_sessions cs
@@ -3105,6 +3153,10 @@ api.get("/chat/sessions", (c) => {
     created_at: string;
     updated_at: string;
     archived_at: string | null;
+    user_id: string | null;
+    user_email: string | null;
+    user_name: string | null;
+    user_role: string | null;
     message_count: number;
     last_message_at: string | null;
   }[];
@@ -3116,6 +3168,7 @@ api.get("/chat/sessions", (c) => {
       created_at: sqliteToIso(r.created_at),
       updated_at: sqliteToIso(r.updated_at),
       archived_at: r.archived_at ? sqliteToIso(r.archived_at) : null,
+      user_id: r.user_id ?? null,
       message_count: r.message_count,
       last_message_at: r.last_message_at ? sqliteToIso(r.last_message_at) : null,
     })),
@@ -3124,28 +3177,45 @@ api.get("/chat/sessions", (c) => {
 
 api.post("/chat/sessions", async (c) => {
   let title: string | null = null;
+  let user_id: string | null = null;
+  let user_email: string | null = null;
+  let user_name: string | null = null;
+  let user_role: string | null = null;
   try {
     const body = await c.req.json();
     title = (body.title ?? null);
     if (typeof title !== "string" || title.trim() === "") title = null;
     else title = title.trim();
+    user_id    = typeof body.user_id    === "string" && body.user_id.trim()    ? body.user_id.trim()    : null;
+    user_email = typeof body.user_email === "string" && body.user_email.trim() ? body.user_email.trim() : null;
+    user_name  = typeof body.user_name  === "string" && body.user_name.trim()  ? body.user_name.trim()  : null;
+    user_role  = typeof body.user_role  === "string" && body.user_role.trim()  ? body.user_role.trim()  : null;
   } catch {
     // Accept empty body
   }
 
   const sessionKey = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO chat_sessions (session_key, channel, title) VALUES (?, 'web', ?)`
-  ).run(sessionKey, title);
+    `INSERT INTO chat_sessions (session_key, channel, title, user_id, user_email, user_name, user_role)
+     VALUES (?, 'web', ?, ?, ?, ?, ?)`
+  ).run(sessionKey, title, user_id, user_email, user_name, user_role);
 
-  const row = db.prepare("SELECT session_key, title, created_at, updated_at FROM chat_sessions WHERE session_key = ?")
-    .get(sessionKey) as { session_key: string; title: string | null; created_at: string; updated_at: string };
+  const row = db.prepare(
+    "SELECT session_key, title, created_at, updated_at, user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+  ).get(sessionKey) as {
+    session_key: string; title: string | null; created_at: string; updated_at: string;
+    user_id: string | null; user_email: string | null; user_name: string | null; user_role: string | null;
+  };
 
   return c.json({
     session_key: row.session_key,
     title: row.title,
     created_at: sqliteToIso(row.created_at),
     updated_at: sqliteToIso(row.updated_at),
+    ...(row.user_id    != null ? { user_id:    row.user_id    } : {}),
+    ...(row.user_email != null ? { user_email: row.user_email } : {}),
+    ...(row.user_name  != null ? { user_name:  row.user_name  } : {}),
+    ...(row.user_role  != null ? { user_role:  row.user_role  } : {}),
   }, 201);
 });
 
@@ -3174,11 +3244,25 @@ api.patch("/chat/sessions/:key", async (c) => {
     }
   }
 
+  // User identity fields — nullable; passing null explicitly clears the value
+  for (const field of ["user_id", "user_email", "user_name", "user_role"] as const) {
+    if (field in body) {
+      const v = body[field];
+      updates.push(`${field} = ?`);
+      params.push(typeof v === "string" && v.trim().length > 0 ? v.trim() : null);
+    }
+  }
+
   params.push(key);
   db.prepare(`UPDATE chat_sessions SET ${updates.join(", ")} WHERE session_key = ?`).run(...params);
 
-  const row = db.prepare("SELECT session_key, title, created_at, updated_at, archived_at FROM chat_sessions WHERE session_key = ?")
-    .get(key) as { session_key: string; title: string | null; created_at: string; updated_at: string; archived_at: string | null };
+  const row = db.prepare(
+    "SELECT session_key, title, created_at, updated_at, archived_at, user_id, user_email, user_name, user_role FROM chat_sessions WHERE session_key = ?"
+  ).get(key) as {
+    session_key: string; title: string | null; created_at: string; updated_at: string;
+    archived_at: string | null; user_id: string | null; user_email: string | null;
+    user_name: string | null; user_role: string | null;
+  };
 
   return c.json({
     session_key: row.session_key,
@@ -3186,6 +3270,10 @@ api.patch("/chat/sessions/:key", async (c) => {
     created_at: sqliteToIso(row.created_at),
     updated_at: sqliteToIso(row.updated_at),
     archived_at: row.archived_at ? sqliteToIso(row.archived_at) : null,
+    ...(row.user_id    != null ? { user_id:    row.user_id    } : {}),
+    ...(row.user_email != null ? { user_email: row.user_email } : {}),
+    ...(row.user_name  != null ? { user_name:  row.user_name  } : {}),
+    ...(row.user_role  != null ? { user_role:  row.user_role  } : {}),
   });
 });
 
