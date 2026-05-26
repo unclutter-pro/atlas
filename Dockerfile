@@ -135,8 +135,7 @@ RUN mkdir -p /atlas/app /atlas/logs \
   /home/agent/secrets \
   /home/agent/helpers \
   && chown -R agent:agent /home/agent \
-  && chown -R root:agent /atlas/logs && chmod -R 775 /atlas/logs \
-  && ln -s /home/agent /home/atlas
+  && chown -R root:agent /atlas/logs && chmod -R 775 /atlas/logs
 
 # Copy application code (root-owned — agent should not modify system code)
 COPY app/ /atlas/app/

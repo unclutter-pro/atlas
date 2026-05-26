@@ -39,7 +39,7 @@ import pino from "pino";
 // Constants
 // ---------------------------------------------------------------------------
 
-const HOME = process.env.HOME ?? "/home/atlas";
+const HOME = process.env.HOME ?? "/home/agent";
 const AUTH_DIR = join(HOME, ".local/share/whatsapp/auth");
 const ATTACHMENTS_DIR = join(HOME, ".local/share/whatsapp/attachments");
 const SOCKET_PATH = "/tmp/whatsapp.sock";

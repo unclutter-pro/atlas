@@ -243,52 +243,6 @@ if [ -f "$MCP_SYS" ] && grep -q "inbox-mcp" "$MCP_SYS" 2>/dev/null; then
   echo "  Removed stale MCP system.json (inbox-mcp reference)"
 fi
 
-# Self-heal: scan workspace for stale /home/atlas references
-# Only runs if /home/agent is the actual home (i.e. migration has happened)
-SELF_HEAL_MARKER="$WORKSPACE/.index/.self-heal-done"
-if [ "$HOME" = "/home/agent" ] && [ ! -f "$SELF_HEAL_MARKER" ]; then
-  STALE_FILES=$(grep -rql "/home/atlas" \
-    "$WORKSPACE/config.yml" \
-    "$WORKSPACE/.claude/" \
-    "$WORKSPACE/scripts/" \
-    "$WORKSPACE/triggers/" \
-    "$WORKSPACE/crontab" \
-    "$WORKSPACE/user-extensions.sh" \
-    2>/dev/null || true)
-  if [ -n "$STALE_FILES" ]; then
-    echo "  [WARN] Found /home/atlas references in workspace files:"
-    echo "$STALE_FILES" | sed 's/^/    /'
-    echo "  Will start self-heal session after services are up"
-    export SELF_HEAL_NEEDED=true
-  else
-    echo "  No stale /home/atlas references found"
-    touch "$SELF_HEAL_MARKER"
-  fi
-fi
-
-# Migrate Claude Code project directories: /home/atlas → /home/agent
-# Claude Code stores sessions under .claude/projects/<cwd-slugified>/
-# After the home dir rename, old sessions live under -home-atlas but Claude
-# now looks under -home-agent. Merge old → new so session resume works.
-CLAUDE_PROJECTS="$HOME/.claude/projects"
-OLD_PROJECT_DIR="$CLAUDE_PROJECTS/-home-atlas"
-NEW_PROJECT_DIR="$CLAUDE_PROJECTS/-home-agent"
-if [ -d "$OLD_PROJECT_DIR" ] && [ "$HOME" = "/home/agent" ]; then
-  mkdir -p "$NEW_PROJECT_DIR"
-  # Move all session files/dirs, skip conflicts (new wins)
-  for item in "$OLD_PROJECT_DIR"/*; do
-    [ -e "$item" ] || continue
-    base=$(basename "$item")
-    if [ ! -e "$NEW_PROJECT_DIR/$base" ]; then
-      mv "$item" "$NEW_PROJECT_DIR/$base"
-    fi
-  done
-  # Remove old dir if empty
-  rmdir "$OLD_PROJECT_DIR" 2>/dev/null && echo "  Migrated Claude projects: -home-atlas → -home-agent" || \
-    echo "  Partially migrated Claude projects (some files remain in -home-atlas)"
-fi
-
-
 # ── Phase 6: Initialize SQLite DB ──
 echo "[$(date)] Phase 6: Database init"
 DB="$WORKSPACE/.index/atlas.db"
@@ -542,24 +496,6 @@ for row in rows:
     else:
         print(f'  Skipping unrecoverable run #{rid}: {name} (no session_id or payload)')
 " 2>/dev/null || echo "  ⚠ Trigger resume failed (non-fatal)"
-fi
-
-# ── Phase 12: Self-heal stale path references ──
-if [ "${SELF_HEAL_NEEDED:-}" = "true" ]; then
-  echo "[$(date)] Phase 12: Starting self-heal session for /home/atlas → /home/agent migration"
-  SELF_HEAL_PROMPT="Scan the workspace at $HOME for files that contain hardcoded /home/atlas paths and replace them with /home/agent.
-
-Rules:
-- Only touch: config files (.yml, .yaml, .json), shell scripts (.sh), markdown (.md), crontab, .claude/ project configs
-- NEVER touch: .git/, node_modules/, databases (.db), secrets/, binary files
-- Skip files under .index/
-- For each file changed, report what was updated
-- After all changes, create the marker file: touch $HOME/.index/.self-heal-done
-
-This is an automated migration task. Be thorough but conservative."
-
-  /atlas/app/triggers/trigger.sh "self-heal" "$SELF_HEAL_PROMPT" "self-heal" &
-  echo "  Self-heal session started in background"
 fi
 
 echo "[$(date)] $AGENT_NAME init complete. First run: $FIRST_RUN"
