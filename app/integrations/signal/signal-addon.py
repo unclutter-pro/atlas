@@ -694,6 +694,78 @@ def _send_via_socket(to, message, attachments=None):
             raise RuntimeError(resp["error"].get("message", str(resp["error"])))
 
 
+def markdown_to_signal(text):
+    """Convert Markdown formatting to Signal's native markup.
+
+    Signal uses different markers than Markdown:
+      Markdown **bold**  → Signal *bold*
+      Markdown __bold__  → Signal *bold*
+      Markdown *italic*  → Signal _italic_
+      Markdown _italic_  → Signal _italic_ (keep)
+      Markdown ~~strike~~ → Signal ~strike~
+      Markdown `code`   → Signal `code` (unchanged)
+
+    Uses a character-by-character parser to handle edge cases correctly.
+    """
+    result = []
+    i = 0
+    while i < len(text):
+        # Inline code: `code`
+        if text[i] == '`':
+            end = text.find('`', i + 1)
+            if end != -1:
+                result.append(text[i:end + 1])
+                i = end + 1
+                continue
+
+        # Strikethrough: ~~text~~
+        if text[i:i+2] == '~~':
+            end = text.find('~~', i + 2)
+            if end != -1:
+                result.append('~' + text[i+2:end] + '~')
+                i = end + 2
+                continue
+
+        # Bold: **text**
+        if text[i:i+2] == '**':
+            end = text.find('**', i + 2)
+            if end != -1:
+                result.append('*' + text[i+2:end] + '*')
+                i = end + 2
+                continue
+
+        # Bold: __text__
+        if text[i:i+2] == '__':
+            end = text.find('__', i + 2)
+            if end != -1:
+                result.append('*' + text[i+2:end] + '*')
+                i = end + 2
+                continue
+
+        # Italic: *text* (single asterisk, not adjacent to other asterisks)
+        if text[i] == '*' and (i == 0 or text[i-1] != '*') and (i + 1 < len(text) and text[i+1] != '*'):
+            end = text.find('*', i + 1)
+            # Check it's not followed by another *
+            if end != -1 and (end + 1 >= len(text) or text[end + 1] != '*'):
+                result.append('_' + text[i+1:end] + '_')
+                i = end + 1
+                continue
+
+        # Underscore italic: _text_ (keep as-is, valid in both formats)
+        if text[i] == '_':
+            end = text.find('_', i + 1)
+            if end != -1:
+                result.append(text[i:end + 1])
+                i = end + 1
+                continue
+
+        # Normal character
+        result.append(text[i])
+        i += 1
+
+    return ''.join(result)
+
+
 def _send_via_cli(number, to, message, attachments=None):
     """Send via direct signal-cli invocation (fallback when no daemon socket)."""
     bin_path = _find_signal_cli_bin()
@@ -713,6 +785,9 @@ def cmd_send(config, to, message, attachments=None):
     # Decode common escape sequences that bash passes literally (e.g. \n → newline).
     # This handles cases where the caller used printf or escaped sequences in strings.
     message = message.encode().decode("unicode_escape")
+
+    # Convert Markdown formatting to Signal's native markup
+    message = markdown_to_signal(message)
 
     number = config["number"]
     if not number:
