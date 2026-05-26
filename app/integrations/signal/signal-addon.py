@@ -708,11 +708,43 @@ def _send_via_cli(number, to, message, attachments=None):
         raise RuntimeError(f"signal-cli send failed: {result.stderr.strip()}")
 
 
+_MD_PATTERNS = [
+    (re.compile(r"\*\*\*(.+?)\*\*\*", re.DOTALL), r"\1"),  # ***bold-italic***
+    (re.compile(r"___(.+?)___",       re.DOTALL), r"\1"),  # ___bold-italic___
+    (re.compile(r"\*\*(.+?)\*\*",     re.DOTALL), r"\1"),  # **bold**
+    (re.compile(r"__(.+?)__",         re.DOTALL), r"\1"),  # __bold__
+    (re.compile(r"~~(.+?)~~",         re.DOTALL), r"\1"),  # ~~strike~~
+    (re.compile(r"(?<![*_])\*(?!\s)(.+?)(?<!\s)\*(?![*_])", re.DOTALL), r"\1"),  # *italic*
+    (re.compile(r"(?<![*_\w])_(?!\s)(.+?)(?<!\s)_(?![*_\w])", re.DOTALL), r"\1"),  # _italic_
+]
+
+
+def strip_markdown(text):
+    """Remove common Markdown markers so plain text is sent to Signal.
+
+    Signal CLI does not support inline Markdown — markers leak as raw characters
+    in the conversation. The pragmatic approach is stripping (per ADR around
+    PR #170/#171). Position-based --text-style is a future enhancement.
+
+    Stripped: **bold**, __bold__, *italic*, _italic_, ~~strike~~, ***bold-italic***.
+    Preserved as-is: `inline code`, ```fenced blocks```, > quotes, # headings,
+    [links](url), and bullets — these read fine as plain text.
+    """
+    if not text:
+        return text
+    for pattern, replacement in _MD_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def cmd_send(config, to, message, attachments=None):
     """Send a Signal message — via daemon socket if running, otherwise via CLI."""
     # Decode common escape sequences that bash passes literally (e.g. \n → newline).
     # This handles cases where the caller used printf or escaped sequences in strings.
     message = message.encode().decode("unicode_escape")
+
+    # Strip Markdown formatting markers — Signal CLI does not render them.
+    message = strip_markdown(message)
 
     number = config["number"]
     if not number:
