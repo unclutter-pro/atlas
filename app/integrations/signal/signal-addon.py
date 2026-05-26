@@ -815,7 +815,9 @@ def _send_via_socket(to, message, styles=None, attachments=None):
     """Send via the running signal-cli daemon JSON-RPC socket."""
     import socket as _socket
     params = {"recipient": [to], "message": message}
-    # Note: JSON-RPC socket may not support text-style - fallback to plain text
+    # Add text styles if present (uppercase style names)
+    if styles:
+        params["textStyle"] = [f"{start}:{length}:{style.upper()}" for start, length, style in styles]
     if attachments:
         params["attachments"] = [os.path.abspath(f) for f in attachments]
     req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "send", "params": params})
