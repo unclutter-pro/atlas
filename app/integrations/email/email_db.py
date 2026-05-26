@@ -25,7 +25,30 @@ from datetime import datetime
 from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 
-__all__ = ["EmailDb", "Thread", "Email", "EmailTarget", "Attachment"]
+__all__ = [
+    "EmailDb",
+    "EmailDbSchemaError",
+    "Thread",
+    "Email",
+    "EmailTarget",
+    "Attachment",
+]
+
+
+class EmailDbSchemaError(RuntimeError):
+    """Raised when the per-account DB is missing required tables or columns.
+
+    The schema bootstrap is normally self-healing (idempotent ``CREATE
+    TABLE IF NOT EXISTS`` + targeted ``ALTER TABLE``) so this should never
+    fire in steady state. When it does, it means migrations failed
+    mid-run, the DB file is corrupted, or an older binary is talking to a
+    newer schema (or vice versa).
+
+    Failing loud here is intentional — see the 2026-05-26 post-mortem:
+    a session continued for hours against a DB missing the ``messages``
+    table and ``from_addr`` column, every query erroring out into
+    graceful-degradation paths nobody noticed.
+    """
 
 
 # ── Entity types ────────────────────────────────────────────────────────────
@@ -210,6 +233,7 @@ class EmailDb:
         conn.execute("PRAGMA busy_timeout=5000")
         instance = cls(conn)
         instance._bootstrap_schema()
+        instance._validate_schema(db_path)
         return instance
 
     def __enter__(self) -> "EmailDb":
@@ -315,14 +339,47 @@ class EmailDb:
         # include it here for forward-safety — any sufficiently-old DB
         # without it would otherwise break the post-migration message_id
         # index creation, and adding a defaulted column is harmless.
+        #
+        # Every column listed in _THREAD_COLS / _EMAIL_COLS must have a
+        # backfill entry here so _validate_schema() never trips on a
+        # sparse pre-existing DB. ``CREATE TABLE IF NOT EXISTS`` above
+        # is a no-op on pre-existing tables, so columns added in a later
+        # release of the schema only land via this loop.
+        #
+        # SQLite ALTER TABLE ADD COLUMN restriction: NOT NULL columns
+        # need a *constant literal* DEFAULT — CURRENT_TIMESTAMP and
+        # ``datetime('now')`` are both rejected. Timestamp backfills
+        # therefore default to ''; see the per-entry comment below.
         for table, column, ddl in (
-            ("emails",  "message_id", "ALTER TABLE emails  ADD COLUMN message_id TEXT NOT NULL DEFAULT ''"),
-            ("emails",  "body_html",  "ALTER TABLE emails  ADD COLUMN body_html  TEXT NOT NULL DEFAULT ''"),
-            ("emails",  "cc",         "ALTER TABLE emails  ADD COLUMN cc         TEXT NOT NULL DEFAULT ''"),
-            ("threads", "last_cc",    "ALTER TABLE threads ADD COLUMN last_cc    TEXT NOT NULL DEFAULT ''"),
-            ("emails",  "imap_uid",   "ALTER TABLE emails  ADD COLUMN imap_uid   INTEGER"),
-            ("emails",  "is_read",    "ALTER TABLE emails  ADD COLUMN is_read    INTEGER NOT NULL DEFAULT 0"),
-            ("emails",  "folder",     "ALTER TABLE emails  ADD COLUMN folder     TEXT NOT NULL DEFAULT 'INBOX'"),
+            ("emails",  "message_id",   "ALTER TABLE emails  ADD COLUMN message_id   TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "sender",       "ALTER TABLE emails  ADD COLUMN sender       TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "recipient",    "ALTER TABLE emails  ADD COLUMN recipient    TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "subject",      "ALTER TABLE emails  ADD COLUMN subject      TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "body",         "ALTER TABLE emails  ADD COLUMN body         TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "body_html",    "ALTER TABLE emails  ADD COLUMN body_html    TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "cc",           "ALTER TABLE emails  ADD COLUMN cc           TEXT NOT NULL DEFAULT ''"),
+            ("emails",  "headers_json", "ALTER TABLE emails  ADD COLUMN headers_json TEXT NOT NULL DEFAULT '{}'"),
+            ("emails",  "inbox_msg_id", "ALTER TABLE emails  ADD COLUMN inbox_msg_id INTEGER"),
+            ("emails",  "imap_uid",     "ALTER TABLE emails  ADD COLUMN imap_uid     INTEGER"),
+            ("emails",  "is_read",      "ALTER TABLE emails  ADD COLUMN is_read      INTEGER NOT NULL DEFAULT 0"),
+            ("emails",  "folder",       "ALTER TABLE emails  ADD COLUMN folder       TEXT NOT NULL DEFAULT 'INBOX'"),
+            # SQLite forbids CURRENT_TIMESTAMP / non-constant defaults
+            # in ALTER … ADD COLUMN, so backfilled created_at rows get an
+            # empty string. Fresh rows still get datetime('now') via the
+            # CREATE TABLE default; this only affects legacy DBs that
+            # somehow predate the original schema's created_at column.
+            ("emails",  "created_at",   "ALTER TABLE emails  ADD COLUMN created_at   TEXT NOT NULL DEFAULT ''"),
+            ("threads", "subject",          "ALTER TABLE threads ADD COLUMN subject          TEXT NOT NULL DEFAULT ''"),
+            ("threads", "last_message_id",  "ALTER TABLE threads ADD COLUMN last_message_id  TEXT NOT NULL DEFAULT ''"),
+            ("threads", "references_chain", "ALTER TABLE threads ADD COLUMN references_chain TEXT NOT NULL DEFAULT '[]'"),
+            ("threads", "last_sender",      "ALTER TABLE threads ADD COLUMN last_sender      TEXT NOT NULL DEFAULT ''"),
+            ("threads", "last_sender_full", "ALTER TABLE threads ADD COLUMN last_sender_full TEXT NOT NULL DEFAULT ''"),
+            ("threads", "last_cc",          "ALTER TABLE threads ADD COLUMN last_cc          TEXT NOT NULL DEFAULT ''"),
+            ("threads", "participants",     "ALTER TABLE threads ADD COLUMN participants     TEXT NOT NULL DEFAULT '[]'"),
+            ("threads", "message_count",    "ALTER TABLE threads ADD COLUMN message_count    INTEGER NOT NULL DEFAULT 0"),
+            # Backfill timestamps as '' (see emails.created_at comment).
+            ("threads", "created_at",       "ALTER TABLE threads ADD COLUMN created_at       TEXT NOT NULL DEFAULT ''"),
+            ("threads", "updated_at",       "ALTER TABLE threads ADD COLUMN updated_at       TEXT NOT NULL DEFAULT ''"),
         ):
             try:
                 self._conn.execute(f"SELECT {column} FROM {table} LIMIT 0")
@@ -373,6 +430,47 @@ class EmailDb:
         # opens on the same DB file (multi-process / IDLE poller + CLI
         # invocation) don't deadlock on the schema-lock.
         self._conn.commit()
+
+    # Source of truth for the schema probe below — reuses the same
+    # column tuples that _row_to_thread / _row_to_email / _row_to_attachment
+    # rely on, so they cannot drift independently.
+    _REQUIRED_SCHEMA: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+        ("threads",     _THREAD_COLS),
+        ("emails",      _EMAIL_COLS),
+        ("attachments", _ATTACHMENT_COLS),
+        ("state",       ("key", "value")),
+    )
+
+    def _validate_schema(self, db_path: str) -> None:
+        """Assert that every required table + column exists post-bootstrap.
+
+        Runs after ``_bootstrap_schema`` has created tables, applied
+        migrations, and committed. Normally a no-op; raises
+        :class:`EmailDbSchemaError` with the offending DB path on any
+        mismatch so the caller sees a single loud failure instead of N
+        downstream ``OperationalError`` surprises.
+        """
+        for table, expected_cols in self._REQUIRED_SCHEMA:
+            try:
+                cursor = self._conn.execute(f"PRAGMA table_info({table})")
+            except sqlite3.OperationalError as exc:  # pragma: no cover — defensive
+                raise EmailDbSchemaError(
+                    f"email DB {db_path!r}: cannot inspect table {table!r} "
+                    f"({exc})"
+                ) from exc
+            present_cols = {row[1] for row in cursor}
+            if not present_cols:
+                raise EmailDbSchemaError(
+                    f"email DB {db_path!r}: required table {table!r} "
+                    f"is missing after bootstrap"
+                )
+            missing = [c for c in expected_cols if c not in present_cols]
+            if missing:
+                raise EmailDbSchemaError(
+                    f"email DB {db_path!r}: table {table!r} is missing "
+                    f"required column(s) {missing!r} after bootstrap — "
+                    f"migrations may have failed mid-run"
+                )
 
     # --- Threads ----------------------------------------------------------
 

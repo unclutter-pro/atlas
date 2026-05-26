@@ -12,7 +12,14 @@ import sqlite3
 
 import pytest
 
-from email_db import Attachment, Email, EmailDb, EmailTarget, Thread
+from email_db import (
+    Attachment,
+    Email,
+    EmailDb,
+    EmailDbSchemaError,
+    EmailTarget,
+    Thread,
+)
 
 
 CONFIG = {"username": "agent@test.local"}
@@ -111,6 +118,100 @@ class TestSchema:
             "idx_emails_message_id",
         ):
             assert required in idx, f"missing index: {required}"
+
+
+class TestSchemaProbe:
+    """Validate that the post-bootstrap schema probe fails loud on drift.
+
+    A regression here would let an email-handler session run for hours
+    against a half-migrated DB, surfacing only as ``OperationalError``
+    inside the graceful-degradation paths (see 2026-05-26 post-mortem).
+    """
+
+    def _db_path_for(self, tmp_path) -> str:
+        from re import sub
+        account = sub(r"[^a-zA-Z0-9@._-]", "_", CONFIG["username"])
+        return str(tmp_path / f"{account}.db")
+
+    def test_healthy_db_passes_probe(self, db):
+        # Probe already ran inside the fixture's EmailDb.open — if it
+        # had raised, the fixture would never have yielded.
+        present = {
+            r[1]
+            for r in db.conn.execute("PRAGMA table_info(emails)").fetchall()
+        }
+        # Spot-check the columns the postmortem explicitly cited as missing
+        # in the broken session — ``sender`` is the modern equivalent of
+        # the legacy ``from_addr``.
+        assert {"sender", "recipient", "folder", "is_read"}.issubset(present)
+
+    def test_missing_table_raises_loudly(self, tmp_path, monkeypatch):
+        """Dropping a required table after bootstrap must surface on next open."""
+        path = self._db_path_for(tmp_path)
+        EmailDb.open(CONFIG, db_dir=str(tmp_path)).close()
+
+        # Simulate a corrupted DB: drop ``state`` between opens.
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TABLE state")
+        conn.commit()
+        conn.close()
+
+        # The probe runs after _bootstrap_schema, which itself uses
+        # ``CREATE TABLE IF NOT EXISTS``. Re-creation would mask the
+        # original problem, so simulate a regression by neutering
+        # _bootstrap_schema for one call — equivalent to a future
+        # migration forgetting to add a new required table.
+        original = EmailDb._bootstrap_schema
+        monkeypatch.setattr(EmailDb, "_bootstrap_schema", lambda self: None)
+        try:
+            with pytest.raises(EmailDbSchemaError) as exc:
+                EmailDb.open(CONFIG, db_dir=str(tmp_path))
+            assert "state" in str(exc.value)
+            assert path in str(exc.value)
+        finally:
+            monkeypatch.setattr(EmailDb, "_bootstrap_schema", original)
+
+    def test_missing_column_raises_loudly(self, tmp_path, monkeypatch):
+        """A required column missing from a present table must fail loud."""
+        path = self._db_path_for(tmp_path)
+        EmailDb.open(CONFIG, db_dir=str(tmp_path)).close()
+
+        # Rebuild ``emails`` without ``sender`` — sqlite has no DROP COLUMN
+        # before 3.35, so swap the table out wholesale.
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            ALTER TABLE emails RENAME TO emails_old;
+            CREATE TABLE emails (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id    TEXT NOT NULL,
+                message_id   TEXT NOT NULL DEFAULT '',
+                direction    TEXT NOT NULL DEFAULT 'in',
+                recipient    TEXT NOT NULL DEFAULT '',
+                cc           TEXT NOT NULL DEFAULT '',
+                subject      TEXT NOT NULL DEFAULT '',
+                body         TEXT NOT NULL DEFAULT '',
+                body_html    TEXT NOT NULL DEFAULT '',
+                headers_json TEXT NOT NULL DEFAULT '{}',
+                inbox_msg_id INTEGER,
+                imap_uid     INTEGER,
+                is_read      INTEGER NOT NULL DEFAULT 0,
+                folder       TEXT NOT NULL DEFAULT 'INBOX',
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            DROP TABLE emails_old;
+        """)
+        conn.commit()
+        conn.close()
+
+        # Skip bootstrap so the missing column survives long enough
+        # for the probe to catch it (the live migration loop would
+        # otherwise ALTER the column back in).
+        monkeypatch.setattr(EmailDb, "_bootstrap_schema", lambda self: None)
+        with pytest.raises(EmailDbSchemaError) as exc:
+            EmailDb.open(CONFIG, db_dir=str(tmp_path))
+        msg = str(exc.value)
+        assert "emails" in msg
+        assert "sender" in msg
 
 
 class TestLegacyMigration:
