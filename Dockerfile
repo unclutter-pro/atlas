@@ -49,10 +49,13 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   libxcomposite1 libxdamage1 libxkbcommon0 \
   libnss3 libdrm2 libgbm1 libasound2t64 libcups2t64 \
   libpango-1.0-0 libcairo2 \
-  # --- Fonts for PDF generation (pdf skill / Typst pipeline) ---
+  # --- Fonts for PDF generation (pdf skill / Typst pipeline).
+  # fonts-crimson-pro intentionally NOT here — package doesn't exist in noble;
+  # Crimson Pro is fetched directly from Google Fonts a few lines below. ---
   fonts-liberation fonts-dejavu \
   fonts-inter fonts-ibm-plex fonts-jetbrains-mono \
-  fonts-crimson-pro fonts-noto fonts-noto-cjk \
+  fonts-noto fonts-noto-cjk \
+  fontconfig \
   && rm -rf /var/lib/apt/lists/* \
   # --- Create non-root user ---
   && useradd -m -s /bin/bash -G sudo agent \
@@ -109,6 +112,15 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_ARCH}.tar.gz" \
   | tar -xz -C /usr/local/bin rtk \
   && chmod +x /usr/local/bin/rtk \
+  # --- Crimson Pro — pulled from Google Fonts repo (no Ubuntu package exists).
+  #     Variable font; Typst 0.14+ reads it correctly. Used by the pdf skill's
+  #     `amber` theme and any custom theme that asks for "Crimson Pro". ---
+  && mkdir -p /usr/share/fonts/truetype/crimson-pro \
+  && curl -fsSL -o /usr/share/fonts/truetype/crimson-pro/CrimsonPro.ttf \
+       'https://github.com/google/fonts/raw/main/ofl/crimsonpro/CrimsonPro%5Bwght%5D.ttf' \
+  && curl -fsSL -o /usr/share/fonts/truetype/crimson-pro/CrimsonPro-Italic.ttf \
+       'https://github.com/google/fonts/raw/main/ofl/crimsonpro/CrimsonPro-Italic%5Bwght%5D.ttf' \
+  && fc-cache -f \
   # --- Homebrew — installed directly into agent home dir for persistence ---
   && mkdir -p /home/agent/.homebrew \
   && curl -fsSL https://github.com/Homebrew/brew/tarball/master \
