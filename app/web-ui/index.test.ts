@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso, resolveWebSessionKey, deriveSessionTitle, renderChatSidebar, listSidebarSessions } from "./index";
+import { sqliteToIso, isAgentTurnActive, isClaudeProcessRunning, parseSessionMessages, app, analyticsWhere, daysAgo, todayIso, resolveWebSessionKey, deriveSessionTitle, renderChatSidebar, listSidebarSessions, wrapWebMessage } from "./index";
 import { getDb } from "../lib/atlas-db";
 
 describe("sqliteToIso", () => {
@@ -747,5 +747,110 @@ describe("DELETE /chat/sessions/:key (sidebar action)", () => {
   test("refuses to delete the _default session", async () => {
     const res = await app.fetch(new Request(`http://localhost/chat/sessions/_default`, { method: "DELETE" }));
     expect(res.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapWebMessage — unit tests
+// ---------------------------------------------------------------------------
+
+describe("wrapWebMessage", () => {
+  test("no attrs produces bare <webmsg> wrapper", () => {
+    expect(wrapWebMessage("hi")).toBe("<webmsg>\nhi\n</webmsg>");
+  });
+
+  test("only userMail produces user-mail attribute", () => {
+    expect(wrapWebMessage("hi", { userMail: "alice@example.com" }))
+      .toBe('<webmsg user-mail="alice@example.com">\nhi\n</webmsg>');
+  });
+
+  test("only userName produces user-name attribute", () => {
+    expect(wrapWebMessage("hi", { userName: "Alice" }))
+      .toBe('<webmsg user-name="Alice">\nhi\n</webmsg>');
+  });
+
+  test("both attrs produces user-mail then user-name in order", () => {
+    expect(wrapWebMessage("hi", { userMail: "alice@example.com", userName: "Alice" }))
+      .toBe('<webmsg user-mail="alice@example.com" user-name="Alice">\nhi\n</webmsg>');
+  });
+
+  test("escapes & in attribute values", () => {
+    expect(wrapWebMessage("hi", { userName: "A & B" }))
+      .toBe('<webmsg user-name="A &amp; B">\nhi\n</webmsg>');
+  });
+
+  test("escapes < in attribute values", () => {
+    expect(wrapWebMessage("hi", { userName: "A<B" }))
+      .toBe('<webmsg user-name="A&lt;B">\nhi\n</webmsg>');
+  });
+
+  test("escapes > in attribute values", () => {
+    expect(wrapWebMessage("hi", { userName: "A>B" }))
+      .toBe('<webmsg user-name="A&gt;B">\nhi\n</webmsg>');
+  });
+
+  test('escapes " in attribute values', () => {
+    expect(wrapWebMessage("hi", { userName: 'Say "hello"' }))
+      .toBe('<webmsg user-name="Say &quot;hello&quot;">\nhi\n</webmsg>');
+  });
+
+  test("empty string attr is treated as absent — no attribute rendered", () => {
+    expect(wrapWebMessage("hi", { userMail: "", userName: "" }))
+      .toBe("<webmsg>\nhi\n</webmsg>");
+  });
+
+  test("whitespace-only attr is treated as absent — no attribute rendered", () => {
+    expect(wrapWebMessage("hi", { userMail: "   ", userName: "  " }))
+      .toBe("<webmsg>\nhi\n</webmsg>");
+  });
+
+  test("null attrs are treated as absent", () => {
+    expect(wrapWebMessage("hi", { userMail: null, userName: null }))
+      .toBe("<webmsg>\nhi\n</webmsg>");
+  });
+
+  test("preserves multi-line content verbatim inside the tag", () => {
+    const content = "line one\nline two\nline three";
+    const result = wrapWebMessage(content);
+    expect(result).toBe("<webmsg>\nline one\nline two\nline three\n</webmsg>");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/chat/messages — smoke test for user_mail / user_name fields
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/chat/messages — webmsg envelope smoke test", () => {
+  const API_KEY = process.env.ATLAS_API_KEY || "test-key";
+
+  test("accepts JSON with user_mail and user_name and returns ok", async () => {
+    const res = await app.fetch(new Request("http://localhost/api/v1/chat/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY,
+      },
+      body: JSON.stringify({ message: "Hi", user_mail: "alice@example.com", user_name: "Alice" }),
+    }));
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.ok).toBe(true);
+    // The DB row stores the user's literal input text (no envelope).
+    expect(json.message.content).toBe("Hi");
+  });
+
+  test("accepts JSON without user_mail / user_name (backward compat)", async () => {
+    const res = await app.fetch(new Request("http://localhost/api/v1/chat/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": API_KEY,
+      },
+      body: JSON.stringify({ message: "Hello" }),
+    }));
+    expect(res.status).toBe(200);
+    const json = await res.json() as any;
+    expect(json.ok).toBe(true);
+    expect(json.message.content).toBe("Hello");
   });
 });
