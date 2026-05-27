@@ -879,11 +879,32 @@ def _send_via_cli(number, to, message, attachments=None, text_styles=None):
         raise RuntimeError(f"signal-cli send failed: {result.stderr.strip()}")
 
 
+_ESCAPE_TARGETS = {
+    "n": "\n", "r": "\r", "t": "\t",
+    "\\": "\\", "\"": "\"", "'": "'", "0": "\x00",
+}
+
+
+def _decode_shell_escapes(message: str) -> str:
+    """Decode the handful of escape sequences a shell caller may have passed
+    literally (e.g. \\n for newline). Avoids Python's `unicode_escape` codec
+    because that one round-trips the string through Latin-1 and mojibakes
+    every non-ASCII byte (UTF-8 ö → "Ã¶", em-dash → "â€"). We only touch
+    known escapes and leave the rest of the string untouched."""
+    return re.sub(
+        r"\\(.)",
+        lambda m: _ESCAPE_TARGETS.get(m.group(1), m.group(0)),
+        message,
+    )
+
+
 def cmd_send(config, to, message, attachments=None):
     """Send a Signal message — via daemon socket if running, otherwise via CLI."""
     # Decode common escape sequences that bash passes literally (e.g. \n → newline).
-    # This handles cases where the caller used printf or escaped sequences in strings.
-    message = message.encode().decode("unicode_escape")
+    # NOTE: we deliberately do NOT use `.encode().decode("unicode_escape")` — that
+    # codec is Latin-1-based and corrupts every non-ASCII UTF-8 byte. See
+    # _decode_shell_escapes above.
+    message = _decode_shell_escapes(message)
 
     # Convert Markdown markers to signal-cli's position-based --text-style format.
     # Plain text + style ranges arrive in Signal as actual bold/italic/etc.
