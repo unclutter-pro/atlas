@@ -23,6 +23,7 @@ _spec.loader.exec_module(signal_addon)
 
 md2signal = signal_addon.markdown_to_signal_styles
 utf16_len = signal_addon._utf16_len
+decode_escapes = signal_addon._decode_shell_escapes
 
 
 # ---------------------------------------------------------------------------
@@ -243,3 +244,60 @@ def test_quotes_lists_links_left_verbatim():
     assert plain == "> Quote\n- bullet one\n[link](https://x)"
     assert any("ITALIC" in s for s in styles)
     assert len(styles) == 1
+
+
+# ---------------------------------------------------------------------------
+# Shell escape decoding — must preserve UTF-8 multi-byte chars
+# ---------------------------------------------------------------------------
+#
+# Regression: Python's `unicode_escape` codec is Latin-1 based. Round-tripping
+# UTF-8 bytes through it mojibakes every non-ASCII char ("ö" → "Ã¶", "—" → "â").
+# The fix swaps the codec for a regex-driven escape map. These tests pin that
+# down so the bug can't come back.
+
+
+def test_decode_escapes_passes_utf8_through_unchanged():
+    assert decode_escapes("Schöne Grüße — Test") == "Schöne Grüße — Test"
+    assert decode_escapes("äöüÄÖÜß") == "äöüÄÖÜß"
+    assert decode_escapes("emoji 😀 ok") == "emoji 😀 ok"
+
+
+def test_decode_escapes_newline():
+    assert decode_escapes("Hallo\\nWelt") == "Hallo\nWelt"
+
+
+def test_decode_escapes_tab_and_carriage_return():
+    assert decode_escapes("a\\tb\\rc") == "a\tb\rc"
+
+
+def test_decode_escapes_backslash():
+    assert decode_escapes("a\\\\b") == "a\\b"
+
+
+def test_decode_escapes_quotes():
+    assert decode_escapes("say \\\"hi\\\"") == 'say "hi"'
+    assert decode_escapes("it\\'s") == "it's"
+
+
+def test_decode_escapes_mixed_utf8_and_escape():
+    assert decode_escapes("Größe\\nTab\\there") == "Größe\nTab\there"
+    assert decode_escapes("ö\\nü") == "ö\nü"
+
+
+def test_decode_escapes_unknown_left_verbatim():
+    # \x and \q are not standard shell escapes — leave them as-is so we don't
+    # corrupt content the user actually typed.
+    assert decode_escapes("\\x literal") == "\\x literal"
+    assert decode_escapes("path\\qfoo") == "path\\qfoo"
+
+
+def test_decode_escapes_null_byte():
+    assert decode_escapes("a\\0b") == "a\x00b"
+
+
+def test_decode_escapes_empty():
+    assert decode_escapes("") == ""
+
+
+def test_decode_escapes_no_escapes():
+    assert decode_escapes("plain ascii") == "plain ascii"
