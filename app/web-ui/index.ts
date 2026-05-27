@@ -129,6 +129,44 @@ export function deriveSessionTitle(content: string): string {
   return clean.slice(0, 57).trimEnd() + '…';
 }
 
+/**
+ * Wraps web-channel message content in a `<webmsg>` envelope.
+ *
+ * Every message arriving via the web channel is wrapped so that the agent
+ * can identify the source and any caller-supplied metadata without Atlas
+ * needing to embed multi-tenant semantics in its own schema.
+ *
+ * Attribute values are XML-escaped. Empty / whitespace-only attrs are omitted.
+ * Supported attrs: userMail → user-mail, userName → user-name.
+ *
+ * @example
+ * wrapWebMessage("hi")
+ * // "<webmsg>\nhi\n</webmsg>"
+ *
+ * wrapWebMessage("hi", { userMail: "alice@example.com", userName: "Alice" })
+ * // '<webmsg user-mail="alice@example.com" user-name="Alice">\nhi\n</webmsg>'
+ */
+export function wrapWebMessage(
+  content: string,
+  attrs: { userMail?: string | null; userName?: string | null } = {},
+): string {
+  const xmlEscape = (s: string): string =>
+    s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+
+  const parts: string[] = [];
+  const mail = (attrs.userMail ?? "").trim();
+  const name = (attrs.userName ?? "").trim();
+  if (mail) parts.push(`user-mail="${xmlEscape(mail)}"`);
+  if (name) parts.push(`user-name="${xmlEscape(name)}"`);
+
+  const attrStr = parts.length > 0 ? " " + parts.join(" ") : "";
+  return `<webmsg${attrStr}>\n${content}\n</webmsg>`;
+}
+
 /** Row shape returned by the sidebar listing query. Exported for tests. */
 export interface ChatSidebarRow {
   session_key: string;
@@ -1207,11 +1245,15 @@ app.post("/chat", async (c) => {
     closeSync(openSync(WAKE, "w"));
   } catch {}
 
+  // Wrap the user text in the <webmsg> envelope before it lands as the
+  // agent's user-turn. No per-message attrs on the HTMX path.
+  const chatWrappedContent = wrapWebMessage(content.trim().slice(0, 20000));
+
   // Fire trigger (like signal/email addons do)
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
-    message: content.slice(0, 20000),
+    message: chatWrappedContent,
     timestamp: sqliteToIso(msg.created_at),
   });
   Bun.spawn(
@@ -2504,12 +2546,17 @@ api.post("/chat/messages", async (c) => {
   let attachmentSpecs: Array<{ file: File; transcription?: string | null }> = [];
   // Track whether the caller supplied content; if not we may synthesise from STT.
   let contentExplicitlySet = false;
+  // Optional per-message caller metadata — mirrored as <webmsg> attributes.
+  let callerUserMail: string | null = null;
+  let callerUserName: string | null = null;
 
   if (contentType.includes("multipart/form-data")) {
     const form = await c.req.formData();
     content = ((form.get("message") as string) ?? "").trim();
     contentExplicitlySet = content.length > 0;
     const callerTranscription = ((form.get("transcription") as string) ?? "").trim() || null;
+    callerUserMail = ((form.get("user_mail") as string) ?? "").trim() || null;
+    callerUserName = ((form.get("user_name") as string) ?? "").trim() || null;
     const files = form.getAll("file").filter((f): f is File => f instanceof File);
 
     // Diagnostic: log incoming shape so we can correlate failures with the
@@ -2559,6 +2606,8 @@ api.post("/chat/messages", async (c) => {
     const body = await c.req.json();
     content = (body.message || "").trim();
     contentExplicitlySet = content.length > 0;
+    callerUserMail = ((body.user_mail as string | null | undefined) ?? "").toString().trim() || null;
+    callerUserName = ((body.user_name as string | null | undefined) ?? "").toString().trim() || null;
   }
 
   if (!content || typeof content !== "string") {
@@ -2600,12 +2649,19 @@ api.post("/chat/messages", async (c) => {
     closeSync(openSync(WAKE, "w"));
   } catch {}
 
+  // Wrap the resolved content in the <webmsg> envelope before it lands as the
+  // agent's user-turn. Caller-supplied user_mail / user_name become XML attrs.
+  const wrappedContent = wrapWebMessage(content.trim().slice(0, 20000), {
+    userMail: callerUserMail,
+    userName: callerUserName,
+  });
+
   // Trigger payload — include attachment metadata so the AI is aware of voice
   // notes / files and can fetch the original via /api/v1/attachments/<id>.
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
-    message: content.slice(0, 20000),
+    message: wrappedContent,
     timestamp: sqliteToIso(msg.created_at),
     attachments: savedAttachments.map((a) => ({
       id: a.id,
