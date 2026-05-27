@@ -1247,13 +1247,13 @@ app.post("/chat", async (c) => {
 
   // Wrap the user text in the <webmsg> envelope before it lands as the
   // agent's user-turn. No per-message attrs on the HTMX path.
-  const chatWrappedContent = wrapWebMessage(content);
+  const chatWrappedContent = wrapWebMessage(content.trim().slice(0, 20000));
 
   // Fire trigger (like signal/email addons do)
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
-    message: chatWrappedContent.slice(0, 20000),
+    message: chatWrappedContent,
     timestamp: sqliteToIso(msg.created_at),
   });
   Bun.spawn(
