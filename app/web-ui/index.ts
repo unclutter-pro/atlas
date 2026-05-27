@@ -2651,7 +2651,7 @@ api.post("/chat/messages", async (c) => {
 
   // Wrap the resolved content in the <webmsg> envelope before it lands as the
   // agent's user-turn. Caller-supplied user_mail / user_name become XML attrs.
-  const wrappedContent = wrapWebMessage(content, {
+  const wrappedContent = wrapWebMessage(content.trim().slice(0, 20000), {
     userMail: callerUserMail,
     userName: callerUserName,
   });
@@ -2661,7 +2661,7 @@ api.post("/chat/messages", async (c) => {
   const payload = JSON.stringify({
     inbox_message_id: msg.id,
     sender: "web-ui",
-    message: wrappedContent.slice(0, 20000),
+    message: wrappedContent,
     timestamp: sqliteToIso(msg.created_at),
     attachments: savedAttachments.map((a) => ({
       id: a.id,
