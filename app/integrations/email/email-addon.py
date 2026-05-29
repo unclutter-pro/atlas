@@ -42,6 +42,14 @@ from pathlib import Path
 
 import html2text
 
+# --- Optional Pillow import (image preview shrink) ---
+try:
+    from PIL import Image as _PILImage
+    _PILLOW_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _PILImage = None  # type: ignore[assignment]
+    _PILLOW_AVAILABLE = False
+
 # --- Paths ---
 CONFIG_PATH = os.environ["HOME"] + "/config.yml"
 RUNTIME_CONFIG_PATH = os.environ["HOME"] + "/.atlas-runtime-config.json"
@@ -348,6 +356,77 @@ def get_body(msg):
     return "", ""
 
 
+_IMAGE_PREVIEW_SIZE_THRESHOLD = 800 * 1024   # 800 KB
+_IMAGE_PREVIEW_MAX_EDGE      = 1280          # px (longest edge)
+_IMAGE_PREVIEW_QUALITY       = 82            # JPEG quality
+
+
+def _maybe_shrink_image(attachment: dict) -> dict:
+    """Attempt to create a downscaled JPEG preview for large images.
+
+    Rules:
+    - Only acts on images (content_type starts with ``image/``) except SVGs.
+    - Only acts when the file is larger than _IMAGE_PREVIEW_SIZE_THRESHOLD.
+    - Resizes so the longest edge is ≤ _IMAGE_PREVIEW_MAX_EDGE (LANCZOS).
+    - Saves as JPEG quality=82 to ``<original_stem>-preview.jpg`` alongside
+      the original.
+    - Updates the attachment dict in-place:
+      - ``path`` → preview path
+      - ``original_path`` → original path (for transparency)
+      - ``size`` → preview file size
+    - Returns the (possibly modified) dict.
+
+    On *any* failure (Pillow unavailable, corrupt image, unsupported format)
+    the original dict is returned unchanged and a warning is printed to stderr.
+    """
+    if not _PILLOW_AVAILABLE:
+        return attachment
+
+    ct = attachment.get("content_type", "")
+    if not ct.startswith("image/"):
+        return attachment
+    if "svg" in ct.lower():
+        return attachment
+
+    orig_path = attachment["path"]
+    size = attachment.get("size", 0)
+
+    if size <= _IMAGE_PREVIEW_SIZE_THRESHOLD:
+        return attachment
+
+    # Derive preview path: strip extension, append -preview.jpg
+    base, _ = os.path.splitext(orig_path)
+    preview_path = base + "-preview.jpg"
+
+    try:
+        img = _PILImage.open(orig_path)
+        # Convert palette/transparency modes to RGB for JPEG
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        # Resize preserving aspect ratio
+        orig_w, orig_h = img.size
+        max_edge = max(orig_w, orig_h)
+        if max_edge > _IMAGE_PREVIEW_MAX_EDGE:
+            scale = _IMAGE_PREVIEW_MAX_EDGE / max_edge
+            new_w = max(1, int(orig_w * scale))
+            new_h = max(1, int(orig_h * scale))
+            img = img.resize((new_w, new_h), _PILImage.Resampling.LANCZOS)
+        img.save(preview_path, "JPEG", quality=_IMAGE_PREVIEW_QUALITY)
+        preview_size = os.path.getsize(preview_path)
+        attachment["original_path"] = orig_path
+        attachment["path"] = preview_path
+        attachment["size"] = preview_size
+        attachment["is_preview"] = True
+    except Exception as exc:
+        print(
+            f"[_maybe_shrink_image] WARNING: could not create preview for "
+            f"{orig_path} — {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+    return attachment
+
+
 def extract_attachments(msg, thread_id):
     """Extract and save attachments from an email. Returns list of attachment metadata."""
     if not msg.is_multipart():
@@ -389,12 +468,14 @@ def extract_attachments(msg, thread_id):
         with open(filepath, "wb") as f:
             f.write(payload)
 
-        attachments.append({
+        att = {
             "filename": filename,
             "content_type": part.get_content_type(),
             "size": len(payload),
             "path": filepath,
-        })
+        }
+        att = _maybe_shrink_image(att)
+        attachments.append(att)
 
     return attachments
 
@@ -584,8 +665,33 @@ def _fetch_new_emails(imap, db, config):
             inbox_content += f"Cc: {cc_header}\n"
         inbox_content += f"Subject: {subject}\n\n{body[:20000]}"
         if attachments:
-            att_summary = "\n".join(f"  - {a['filename']} ({a['content_type']}, {a['size']} bytes): {a['path']}" for a in attachments)
-            inbox_content += f"\n\nAttachments:\n{att_summary}"
+            att_lines = []
+            for a in attachments:
+                size_kb = a['size'] / 1024
+                size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+                if a.get("is_preview"):
+                    orig_size_kb = os.path.getsize(a["original_path"]) / 1024
+                    orig_size_str = (f"{orig_size_kb:.0f} KB" if orig_size_kb < 1024
+                                    else f"{orig_size_kb / 1024:.1f} MB")
+                    att_lines.append(
+                        f"  - {a['filename']} ({a['content_type']}, {size_str} preview): {a['path']}\n"
+                        f"    Original: {a['original_path']} ({orig_size_str})"
+                    )
+                else:
+                    att_lines.append(
+                        f"  - {a['filename']} ({a['content_type']}, {size_str}): {a['path']}"
+                    )
+                    ct = a['content_type']
+                    if ct.startswith("video/"):
+                        att_lines.append(
+                            f"    For video: use `stt <path>` to transcribe audio, "
+                            f"`unclutter-video-analyze <path>` for visual scenes"
+                        )
+            att_summary = "\n".join(att_lines)
+            inbox_content += (
+                f"\n\nAttachments (paths are downscaled previews when marked "
+                f"— DO NOT Read videos or files >2 MB directly):\n{att_summary}"
+            )
         inbox_msg_id = write_to_atlas_inbox(sender, inbox_content, thread_id)
 
         # Link the freshly-inserted email row back to the inbox row
@@ -610,10 +716,18 @@ def _fetch_new_emails(imap, db, config):
             "date": msg.get("Date", ""),
         }
         if attachments:
-            payload_data["attachments"] = [
-                {"filename": a["filename"], "content_type": a["content_type"],
-                 "size": a["size"], "path": a["path"]} for a in attachments
-            ]
+            att_payload = []
+            for a in attachments:
+                entry = {
+                    "filename": a["filename"],
+                    "content_type": a["content_type"],
+                    "size": a["size"],
+                    "path": a["path"],
+                }
+                if a.get("original_path"):
+                    entry["original_path"] = a["original_path"]
+                att_payload.append(entry)
+            payload_data["attachments"] = att_payload
         payload = json.dumps(payload_data)
         trigger_queue.append((payload, thread_id))
 

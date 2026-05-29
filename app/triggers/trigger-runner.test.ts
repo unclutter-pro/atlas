@@ -31,6 +31,8 @@ import {
   aggregateRunCost,
   modelFamily,
   MODEL_PRICING,
+  is400UpstreamError,
+  clearSessionOn400,
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
@@ -1217,5 +1219,165 @@ describe("aggregateRunCost", () => {
 
     expect(result.inputTokens).toBe(200);
     expect(result.outputTokens).toBe(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// is400UpstreamError + clearSessionOn400
+// ---------------------------------------------------------------------------
+
+describe("is400UpstreamError", () => {
+  test("returns true for API Error: 400 result", () => {
+    expect(is400UpstreamError('API Error: 400 {"error":"Upstream error"}')).toBe(true);
+  });
+
+  test("returns true for bare API Error: 400", () => {
+    expect(is400UpstreamError("API Error: 400")).toBe(true);
+  });
+
+  test("returns false for other API errors", () => {
+    expect(is400UpstreamError("API Error: 401 Unauthorized")).toBe(false);
+    expect(is400UpstreamError("API Error: 500 Internal Server Error")).toBe(false);
+  });
+
+  test("returns false for null", () => {
+    expect(is400UpstreamError(null)).toBe(false);
+  });
+
+  test("returns false for undefined", () => {
+    expect(is400UpstreamError(undefined)).toBe(false);
+  });
+
+  test("returns false for normal result text", () => {
+    expect(is400UpstreamError("Email sent successfully")).toBe(false);
+  });
+});
+
+describe("clearSessionOn400", () => {
+  function makeSessionDb(): Database {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE trigger_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trigger_name TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(trigger_name, session_key)
+      );
+    `);
+    return db;
+  }
+
+  function insertSession(db: Database, triggerName: string, sessionKey: string, sessionId: string): void {
+    db.prepare(
+      "INSERT INTO trigger_sessions (trigger_name, session_key, session_id) VALUES (?, ?, ?)"
+    ).run(triggerName, sessionKey, sessionId);
+  }
+
+  function sessionExists(db: Database, triggerName: string, sessionKey: string): boolean {
+    const row = db.prepare(
+      "SELECT id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ? LIMIT 1"
+    ).get(triggerName, sessionKey);
+    return row !== null && row !== undefined;
+  }
+
+  test("deletes session row and logs when result starts with API Error: 400", () => {
+    const db = makeSessionDb();
+    const logMessages: string[] = [];
+    const log = { log: (msg: string) => logMessages.push(msg) };
+
+    insertSession(db, "email-handler", "thread-abc", "sess-broken-123");
+    expect(sessionExists(db, "email-handler", "thread-abc")).toBe(true);
+
+    const cleared = clearSessionOn400(
+      db,
+      'API Error: 400 {"error":"Upstream error"}',
+      "persistent",
+      "email-handler",
+      "thread-abc",
+      "sess-broken-123",
+      null,
+      log,
+    );
+
+    // Row must be deleted
+    expect(sessionExists(db, "email-handler", "thread-abc")).toBe(false);
+    // Returned the cleared session id
+    expect(cleared).toBe("sess-broken-123");
+    // Log message must be emitted
+    expect(logMessages.some(m => m.includes("Upstream 400 detected"))).toBe(true);
+    expect(logMessages.some(m => m.includes("sess-broken-123"))).toBe(true);
+    expect(logMessages.some(m => m.includes("starts fresh"))).toBe(true);
+  });
+
+  test("uses existingSession when capturedSessionId is null", () => {
+    const db = makeSessionDb();
+    const logMessages: string[] = [];
+    const log = { log: (msg: string) => logMessages.push(msg) };
+
+    insertSession(db, "email-handler", "thread-xyz", "sess-old-456");
+
+    const cleared = clearSessionOn400(
+      db,
+      "API Error: 400",
+      "persistent",
+      "email-handler",
+      "thread-xyz",
+      null,              // capturedSessionId is null
+      "sess-old-456",   // existingSession
+      log,
+    );
+
+    expect(sessionExists(db, "email-handler", "thread-xyz")).toBe(false);
+    expect(cleared).toBe("sess-old-456");
+    expect(logMessages.some(m => m.includes("sess-old-456"))).toBe(true);
+  });
+
+  test("does NOT delete session for non-400 result", () => {
+    const db = makeSessionDb();
+    const logMessages: string[] = [];
+    const log = { log: (msg: string) => logMessages.push(msg) };
+
+    insertSession(db, "email-handler", "thread-ok", "sess-good-789");
+
+    const cleared = clearSessionOn400(
+      db,
+      "Email replied successfully.",
+      "persistent",
+      "email-handler",
+      "thread-ok",
+      "sess-good-789",
+      null,
+      log,
+    );
+
+    expect(sessionExists(db, "email-handler", "thread-ok")).toBe(true);
+    expect(cleared).toBeNull();
+    expect(logMessages.length).toBe(0);
+  });
+
+  test("does NOT delete session for ephemeral trigger even on 400", () => {
+    const db = makeSessionDb();
+    const logMessages: string[] = [];
+    const log = { log: (msg: string) => logMessages.push(msg) };
+
+    insertSession(db, "some-trigger", "key-1", "sess-ephemeral");
+
+    const cleared = clearSessionOn400(
+      db,
+      "API Error: 400",
+      "ephemeral",   // not persistent
+      "some-trigger",
+      "key-1",
+      "sess-ephemeral",
+      null,
+      log,
+    );
+
+    // ephemeral triggers: no session table entry to worry about
+    expect(cleared).toBeNull();
+    expect(logMessages.length).toBe(0);
   });
 });

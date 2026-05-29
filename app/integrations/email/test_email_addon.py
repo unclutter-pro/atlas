@@ -7,6 +7,7 @@ Run with:
 """
 import importlib.util
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -2143,3 +2144,138 @@ class TestPollerPersistsAttachments:
             assert count == 0
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# Image preview shrink (_maybe_shrink_image)
+# ---------------------------------------------------------------------------
+
+class TestMaybeShrinkImage:
+    """Tests for the Pillow-based image pre-shrink helper."""
+
+    def _make_png(self, path: str, width: int, height: int, noisy: bool = False) -> int:
+        """Create a PNG test fixture using Pillow and return its file size.
+
+        Use ``noisy=True`` to generate random-pixel content that resists PNG
+        compression and reliably exceeds the 800 KB threshold.
+        """
+        import random
+        from PIL import Image
+        if noisy:
+            pixels = [
+                (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                for _ in range(width * height)
+            ]
+            img = Image.new("RGB", (width, height))
+            img.putdata(pixels)
+        else:
+            img = Image.new("RGB", (width, height), "red")
+        img.save(path, "PNG")
+        return os.path.getsize(path)
+
+    def test_large_png_creates_preview_and_swaps_path(self, tmp_path):
+        """A PNG larger than 800 KB must get a -preview.jpg beside it,
+        with ``path`` swapped to the preview and ``original_path`` set."""
+        orig = str(tmp_path / "HUNTER_CHATGPT_01.png")
+        # Use noisy (random pixel) content so PNG compression can't shrink it
+        # below the 800 KB threshold — solid-color images compress to ~16 KB.
+        size = self._make_png(orig, 1200, 800, noisy=True)
+
+        att = {
+            "filename": "HUNTER_CHATGPT_01.png",
+            "content_type": "image/png",
+            "size": size,
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+
+        preview = str(tmp_path / "HUNTER_CHATGPT_01-preview.jpg")
+        assert os.path.exists(preview), "Preview JPEG must be created on disk"
+        assert result["path"] == preview, "path must point to the preview"
+        assert result["original_path"] == orig, "original_path must be the original file"
+        assert result["size"] == os.path.getsize(preview), "size must reflect the preview"
+        assert result.get("is_preview") is True
+
+    def test_small_png_skips_preview(self, tmp_path):
+        """A PNG smaller than 800 KB must be left unchanged — no preview created."""
+        orig = str(tmp_path / "small.png")
+        # 100x100 PNG is definitely under 800 KB
+        size = self._make_png(orig, 100, 100)
+        assert size < email_addon._IMAGE_PREVIEW_SIZE_THRESHOLD, \
+            "fixture must be small for this test to be meaningful"
+
+        att = {
+            "filename": "small.png",
+            "content_type": "image/png",
+            "size": size,
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+
+        assert result["path"] == orig, "path must be unchanged for small images"
+        assert "original_path" not in result, "original_path must not be set"
+        assert not result.get("is_preview")
+        # No -preview.jpg should appear next to the file
+        preview = str(tmp_path / "small-preview.jpg")
+        assert not os.path.exists(preview)
+
+    def test_svg_skipped_regardless_of_size(self, tmp_path):
+        """SVGs are excluded from preview even if large."""
+        orig = str(tmp_path / "icon.svg")
+        # Write a fake large SVG (just needs to exist and report a big size)
+        open(orig, "wb").write(b"<svg>" + b"x" * (900 * 1024) + b"</svg>")
+        att = {
+            "filename": "icon.svg",
+            "content_type": "image/svg+xml",
+            "size": os.path.getsize(orig),
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+        assert result["path"] == orig
+
+    def test_non_image_skipped(self, tmp_path):
+        """Non-image attachments (video, PDF, etc.) are untouched."""
+        orig = str(tmp_path / "Spot.mp4")
+        open(orig, "wb").write(b"\x00" * (2 * 1024 * 1024))
+        att = {
+            "filename": "Spot.mp4",
+            "content_type": "video/mp4",
+            "size": os.path.getsize(orig),
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+        assert result["path"] == orig
+
+    def test_preview_longest_edge_at_most_1280(self, tmp_path):
+        """The preview image must not exceed 1280 px on its longest edge."""
+        orig = str(tmp_path / "wide.png")
+        size = self._make_png(orig, 3000, 1000, noisy=True)
+
+        att = {
+            "filename": "wide.png",
+            "content_type": "image/png",
+            "size": size,
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+
+        if result.get("is_preview"):
+            from PIL import Image
+            img = Image.open(result["path"])
+            assert max(img.size) <= 1280, \
+                f"Preview longest edge must be ≤1280 px, got {max(img.size)}"
+
+    def test_corrupt_image_leaves_original_and_warns(self, tmp_path, capsys):
+        """A corrupt file must not crash — warning on stderr, path unchanged."""
+        orig = str(tmp_path / "corrupt.png")
+        open(orig, "wb").write(b"this is not a png" + b"\x00" * (900 * 1024))
+        att = {
+            "filename": "corrupt.png",
+            "content_type": "image/png",
+            "size": os.path.getsize(orig),
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+        assert result["path"] == orig, "path must be unchanged on error"
+        err = capsys.readouterr().err
+        assert "WARNING" in err or "could not create preview" in err

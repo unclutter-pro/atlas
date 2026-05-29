@@ -1310,6 +1310,52 @@ export function persistStreamChunk(
 }
 
 // ---------------------------------------------------------------------------
+// 400 Upstream Error session clearing
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect whether a result string indicates an Anthropic 400 upstream error.
+ * These occur when the payload is too large (e.g. inlined image data exceeds
+ * Anthropic's per-image 5 MB or per-request 20 MB limits).
+ */
+export function is400UpstreamError(resultText: string | null | undefined): boolean {
+  if (typeof resultText !== "string") return false;
+  return resultText.startsWith("API Error: 400");
+}
+
+/**
+ * If the result is a 400 Upstream Error, delete the session row for the
+ * given (triggerName, sessionKey) so the next message starts fresh.
+ * Returns the session_id that was cleared, or null if nothing was cleared.
+ *
+ * Exported for testing; called by main() after each query run.
+ */
+export function clearSessionOn400(
+  db: Database,
+  resultText: string | null | undefined,
+  sessionMode: string,
+  triggerName: string,
+  sessionKey: string,
+  capturedSessionId: string | null,
+  existingSession: string | null,
+  log: { log: (msg: string) => void },
+): string | null {
+  if (!is400UpstreamError(resultText)) return null;
+  if (sessionMode !== "persistent") return null;
+
+  const oldSessionId = capturedSessionId ?? existingSession;
+  if (!oldSessionId) return null;
+
+  db.prepare(
+    "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
+  ).run(triggerName, sessionKey);
+  log.log(
+    `Upstream 400 detected — clearing session ${oldSessionId} so next message starts fresh`,
+  );
+  return oldSessionId;
+}
+
+// ---------------------------------------------------------------------------
 // Direct mode (no DB trigger)
 // ---------------------------------------------------------------------------
 
@@ -2179,13 +2225,28 @@ export async function main(): Promise<void> {
   }
 
   // Log result text
-  if (resultMsg && "result" in resultMsg) {
-    log.log(
-      `Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`,
-    );
+  const resultText = resultMsg && "result" in resultMsg
+    ? ((resultMsg as { result: string }).result ?? "(no result)")
+    : null;
+  if (resultText !== null) {
+    log.log(`Result: ${resultText}`);
   }
 
   const endedAt = isoNow();
+
+  // --- 400 Upstream Error guard: clear broken session before saving ---
+  // When the Anthropic API returns a 400 "Upstream error" (e.g. payload too
+  // large due to inline image content), the session itself is fine to discard —
+  // persisting the failing session_id would make every subsequent message in
+  // this thread resume the same broken context and fail identically.
+  const cleared = clearSessionOn400(
+    db, resultText, sessionMode, triggerName, sessionKey,
+    capturedSessionId, existingSession, log,
+  );
+  if (cleared !== null) {
+    // Don't save the failing session below
+    capturedSessionId = null;
+  }
 
   // --- Save session for persistent triggers ---
   if (sessionMode === "persistent" && capturedSessionId) {
