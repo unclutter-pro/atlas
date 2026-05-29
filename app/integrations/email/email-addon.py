@@ -666,31 +666,50 @@ def _fetch_new_emails(imap, db, config):
         inbox_content += f"Subject: {subject}\n\n{body[:20000]}"
         if attachments:
             att_lines = []
+            has_video = False
+            has_document = False
+            _DOC_TYPES = (
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.",
+                "application/msword",
+                "application/vnd.ms-excel",
+                "application/vnd.ms-powerpoint",
+            )
             for a in attachments:
                 size_kb = a['size'] / 1024
                 size_str = f"{size_kb:.0f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+                ct = a['content_type']
                 if a.get("is_preview"):
                     orig_size_kb = os.path.getsize(a["original_path"]) / 1024
                     orig_size_str = (f"{orig_size_kb:.0f} KB" if orig_size_kb < 1024
                                     else f"{orig_size_kb / 1024:.1f} MB")
                     att_lines.append(
-                        f"  - {a['filename']} ({a['content_type']}, {size_str} preview): {a['path']}\n"
+                        f"  - {a['filename']} ({ct}, {size_str} preview): {a['path']}\n"
                         f"    Original: {a['original_path']} ({orig_size_str})"
                     )
                 else:
                     att_lines.append(
-                        f"  - {a['filename']} ({a['content_type']}, {size_str}): {a['path']}"
+                        f"  - {a['filename']} ({ct}, {size_str}): {a['path']}"
                     )
-                    ct = a['content_type']
-                    if ct.startswith("video/"):
-                        att_lines.append(
-                            f"    For video: use `stt <path>` to transcribe audio, "
-                            f"`unclutter-video-analyze <path>` for visual scenes"
-                        )
+                if ct.startswith("video/"):
+                    has_video = True
+                elif any(ct.startswith(d) for d in _DOC_TYPES):
+                    has_document = True
+            # Append a single consolidated tool-hints line only when needed.
+            if has_video or has_document:
+                hint_parts = []
+                if has_video:
+                    hint_parts.append(
+                        "videos → `stt <path>` + `unclutter-video-analyze <path>`"
+                    )
+                if has_document:
+                    hint_parts.append(
+                        "documents (PDF/DOCX/PPTX/XLSX) → `document-parse` skill"
+                    )
+                att_lines.append(f"\nTool hints: {'; '.join(hint_parts)}.")
             att_summary = "\n".join(att_lines)
             inbox_content += (
-                f"\n\nAttachments (paths are downscaled previews when marked "
-                f"— DO NOT Read videos or files >2 MB directly):\n{att_summary}"
+                f"\n\nAttachments (paths only — no inline content):\n{att_summary}"
             )
         inbox_msg_id = write_to_atlas_inbox(sender, inbox_content, thread_id)
 
