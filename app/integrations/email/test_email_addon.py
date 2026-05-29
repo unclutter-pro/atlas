@@ -7,6 +7,7 @@ Run with:
 """
 import importlib.util
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -2143,3 +2144,282 @@ class TestPollerPersistsAttachments:
             assert count == 0
         finally:
             db.close()
+
+
+# ---------------------------------------------------------------------------
+# Attachment summary: consolidated tool hints (token-efficient)
+# ---------------------------------------------------------------------------
+
+class TestAttachmentSummary:
+    """Pin the restructured attachment summary in _fetch_new_emails:
+    tool hints are emitted ONCE after the file list rather than per-file,
+    and only for types that actually appear.
+    """
+
+    _RAW = (
+        b"From: alice@x.com\r\n"
+        b"To: agent@test.local\r\n"
+        b"Subject: Test\r\n"
+        b"Message-ID: <m-sum@x>\r\n"
+        b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+        b"\r\n"
+        b"body text"
+    )
+
+    def _run(self, monkeypatch, db_dir, fake_atts):
+        """Invoke _fetch_new_emails with faked attachments; return inbox body."""
+        captured = {}
+
+        def fake_inbox(sender, content, thread_id):
+            captured["content"] = content
+            return 1
+
+        monkeypatch.setattr(email_addon, "write_to_atlas_inbox", fake_inbox)
+        monkeypatch.setattr(email_addon, "save_email_file", lambda *a, **kw: "/tmp/x.md")
+        monkeypatch.setattr(email_addon, "extract_attachments", lambda *a, **kw: fake_atts)
+        monkeypatch.setattr(email_addon, "subprocess", MagicMock())
+
+        client = MagicMock()
+        client.search_new.return_value = [42]
+        client.fetch_peek_many.return_value = {42: (self._RAW, False)}
+
+        db = email_addon.open_email_db(CONFIG)
+        try:
+            email_addon._fetch_new_emails(client, db, dict(CONFIG))
+        finally:
+            db.close()
+
+        return captured.get("content", "")
+
+    def test_two_videos_hint_emitted_once(self, db_dir, monkeypatch):
+        """2 videos → Tool hints line appears exactly once, mentions both
+        stt and unclutter-video-analyze, does NOT repeat per video."""
+        fake_atts = [
+            {"filename": "clip1.mp4", "content_type": "video/mp4",
+             "size": 22020096, "path": "/tmp/clip1.mp4"},
+            {"filename": "clip2.mov", "content_type": "video/quicktime",
+             "size": 10485760, "path": "/tmp/clip2.mov"},
+        ]
+        content = self._run(monkeypatch, db_dir, fake_atts)
+
+        assert "clip1.mp4" in content
+        assert "clip2.mov" in content
+        # Hint line present exactly once
+        assert content.count("Tool hints:") == 1
+        assert "stt" in content
+        assert "unclutter-video-analyze" in content
+        # Must NOT repeat per-file (the old inline form had "For video:" each time)
+        assert content.count("stt") == 1
+        assert content.count("unclutter-video-analyze") == 1
+
+    def test_one_pdf_hint_mentions_document_parse_not_stt(self, db_dir, monkeypatch):
+        """1 PDF → Tool hints line mentions document-parse; no stt mention."""
+        fake_atts = [
+            {"filename": "report.pdf", "content_type": "application/pdf",
+             "size": 3145728, "path": "/tmp/report.pdf"},
+        ]
+        content = self._run(monkeypatch, db_dir, fake_atts)
+
+        assert "report.pdf" in content
+        assert content.count("Tool hints:") == 1
+        assert "document-parse" in content
+        assert "stt" not in content
+        assert "unclutter-video-analyze" not in content
+
+    def test_mixed_image_video_pdf_both_clauses(self, db_dir, monkeypatch, tmp_path):
+        """1 image (preview) + 1 video + 1 PDF → both video and document
+        clauses appear; image preview Original: sub-line is preserved."""
+        # Create a real file for the original_path size lookup
+        orig_img = str(tmp_path / "photo.png")
+        with open(orig_img, "wb") as f:
+            f.write(b"\x89PNG" + b"\x00" * (100 * 1024))  # 100 KB stub
+        preview_img = str(tmp_path / "photo-preview.jpg")
+        with open(preview_img, "wb") as f:
+            f.write(b"\xff\xd8" + b"\x00" * (50 * 1024))  # 50 KB preview stub
+
+        fake_atts = [
+            {
+                "filename": "photo.png",
+                "content_type": "image/png",
+                "size": 50 * 1024,
+                "path": preview_img,
+                "is_preview": True,
+                "original_path": orig_img,
+            },
+            {"filename": "Spot.mp4", "content_type": "video/mp4",
+             "size": 22020096, "path": "/tmp/Spot.mp4"},
+            {"filename": "report.pdf", "content_type": "application/pdf",
+             "size": 3145728, "path": "/tmp/report.pdf"},
+        ]
+        content = self._run(monkeypatch, db_dir, fake_atts)
+
+        # All three filenames present
+        assert "photo.png" in content
+        assert "Spot.mp4" in content
+        assert "report.pdf" in content
+        # Image preview sub-line preserved
+        assert "Original:" in content
+        # Both hint clauses present in a single Tool hints line
+        assert content.count("Tool hints:") == 1
+        assert "stt" in content
+        assert "unclutter-video-analyze" in content
+        assert "document-parse" in content
+
+    def test_only_images_no_tool_hints(self, db_dir, monkeypatch, tmp_path):
+        """Emails with only image attachments must NOT emit a Tool hints line."""
+        orig_img = str(tmp_path / "banner.png")
+        with open(orig_img, "wb") as f:
+            f.write(b"\x89PNG" + b"\x00" * (100 * 1024))
+        preview_img = str(tmp_path / "banner-preview.jpg")
+        with open(preview_img, "wb") as f:
+            f.write(b"\xff\xd8" + b"\x00" * (50 * 1024))
+
+        fake_atts = [
+            {
+                "filename": "banner.png",
+                "content_type": "image/png",
+                "size": 50 * 1024,
+                "path": preview_img,
+                "is_preview": True,
+                "original_path": orig_img,
+            },
+        ]
+        content = self._run(monkeypatch, db_dir, fake_atts)
+
+        assert "banner.png" in content
+        assert "Tool hints:" not in content
+
+
+# ---------------------------------------------------------------------------
+# Image preview shrink (_maybe_shrink_image)
+# ---------------------------------------------------------------------------
+
+class TestMaybeShrinkImage:
+    """Tests for the Pillow-based image pre-shrink helper."""
+
+    def _make_png(self, path: str, width: int, height: int, noisy: bool = False) -> int:
+        """Create a PNG test fixture using Pillow and return its file size.
+
+        Use ``noisy=True`` to generate random-pixel content that resists PNG
+        compression and reliably exceeds the 800 KB threshold.
+        """
+        import random
+        from PIL import Image
+        if noisy:
+            pixels = [
+                (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                for _ in range(width * height)
+            ]
+            img = Image.new("RGB", (width, height))
+            img.putdata(pixels)
+        else:
+            img = Image.new("RGB", (width, height), "red")
+        img.save(path, "PNG")
+        return os.path.getsize(path)
+
+    def test_large_png_creates_preview_and_swaps_path(self, tmp_path):
+        """A PNG larger than 800 KB must get a -preview.jpg beside it,
+        with ``path`` swapped to the preview and ``original_path`` set."""
+        orig = str(tmp_path / "HUNTER_CHATGPT_01.png")
+        # Use noisy (random pixel) content so PNG compression can't shrink it
+        # below the 800 KB threshold — solid-color images compress to ~16 KB.
+        size = self._make_png(orig, 1200, 800, noisy=True)
+
+        att = {
+            "filename": "HUNTER_CHATGPT_01.png",
+            "content_type": "image/png",
+            "size": size,
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+
+        preview = str(tmp_path / "HUNTER_CHATGPT_01-preview.jpg")
+        assert os.path.exists(preview), "Preview JPEG must be created on disk"
+        assert result["path"] == preview, "path must point to the preview"
+        assert result["original_path"] == orig, "original_path must be the original file"
+        assert result["size"] == os.path.getsize(preview), "size must reflect the preview"
+        assert result.get("is_preview") is True
+
+    def test_small_png_skips_preview(self, tmp_path):
+        """A PNG smaller than 800 KB must be left unchanged — no preview created."""
+        orig = str(tmp_path / "small.png")
+        # 100x100 PNG is definitely under 800 KB
+        size = self._make_png(orig, 100, 100)
+        assert size < email_addon._IMAGE_PREVIEW_SIZE_THRESHOLD, \
+            "fixture must be small for this test to be meaningful"
+
+        att = {
+            "filename": "small.png",
+            "content_type": "image/png",
+            "size": size,
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+
+        assert result["path"] == orig, "path must be unchanged for small images"
+        assert "original_path" not in result, "original_path must not be set"
+        assert not result.get("is_preview")
+        # No -preview.jpg should appear next to the file
+        preview = str(tmp_path / "small-preview.jpg")
+        assert not os.path.exists(preview)
+
+    def test_svg_skipped_regardless_of_size(self, tmp_path):
+        """SVGs are excluded from preview even if large."""
+        orig = str(tmp_path / "icon.svg")
+        # Write a fake large SVG (just needs to exist and report a big size)
+        open(orig, "wb").write(b"<svg>" + b"x" * (900 * 1024) + b"</svg>")
+        att = {
+            "filename": "icon.svg",
+            "content_type": "image/svg+xml",
+            "size": os.path.getsize(orig),
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+        assert result["path"] == orig
+
+    def test_non_image_skipped(self, tmp_path):
+        """Non-image attachments (video, PDF, etc.) are untouched."""
+        orig = str(tmp_path / "Spot.mp4")
+        open(orig, "wb").write(b"\x00" * (2 * 1024 * 1024))
+        att = {
+            "filename": "Spot.mp4",
+            "content_type": "video/mp4",
+            "size": os.path.getsize(orig),
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+        assert result["path"] == orig
+
+    def test_preview_longest_edge_at_most_1280(self, tmp_path):
+        """The preview image must not exceed 1280 px on its longest edge."""
+        orig = str(tmp_path / "wide.png")
+        size = self._make_png(orig, 3000, 1000, noisy=True)
+
+        att = {
+            "filename": "wide.png",
+            "content_type": "image/png",
+            "size": size,
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+
+        if result.get("is_preview"):
+            from PIL import Image
+            img = Image.open(result["path"])
+            assert max(img.size) <= 1280, \
+                f"Preview longest edge must be ≤1280 px, got {max(img.size)}"
+
+    def test_corrupt_image_leaves_original_and_warns(self, tmp_path, capsys):
+        """A corrupt file must not crash — warning on stderr, path unchanged."""
+        orig = str(tmp_path / "corrupt.png")
+        open(orig, "wb").write(b"this is not a png" + b"\x00" * (900 * 1024))
+        att = {
+            "filename": "corrupt.png",
+            "content_type": "image/png",
+            "size": os.path.getsize(orig),
+            "path": orig,
+        }
+        result = email_addon._maybe_shrink_image(att)
+        assert result["path"] == orig, "path must be unchanged on error"
+        err = capsys.readouterr().err
+        assert "WARNING" in err or "could not create preview" in err
