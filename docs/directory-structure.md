@@ -17,7 +17,7 @@ app/
 ├── defaults/                   # Default configs seeded on first run
 │   ├── config.yml             # Default configuration
 │   ├── crontab                # Default cron entries
-│   ├── IDENTITY.md            # Default agent identity
+│   ├── IDENTITY.md            # Default agent identity (with placeholders)
 │   ├── SOUL.md                # Default agent soul
 │   ├── agents/                # Default agent specs (symlinked into .claude/agents/)
 │   └── skills/                # System skills (symlinked into .claude/skills/)
