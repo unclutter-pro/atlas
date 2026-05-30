@@ -752,6 +752,38 @@ describe("createMessageChannel", () => {
 
     ch.close();
   });
+
+  test("push() with shouldQuery=false sets the field on the yielded message", async () => {
+    const ch = createMessageChannel("test-session-6", 60000);
+    ch.push("steering hint", { shouldQuery: false });
+    const iter = ch.generator[Symbol.asyncIterator]();
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    // shouldQuery is technically optional on the SDK type; cast for the test.
+    expect((r.value as unknown as { shouldQuery?: boolean }).shouldQuery).toBe(false);
+    ch.close();
+  });
+
+  test("push() with priority='now' sets the field on the yielded message", async () => {
+    const ch = createMessageChannel("test-session-7", 60000);
+    ch.push("urgent", { priority: "now" });
+    const iter = ch.generator[Symbol.asyncIterator]();
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    expect((r.value as unknown as { priority?: string }).priority).toBe("now");
+    ch.close();
+  });
+
+  test("push() without options omits shouldQuery/priority (default turn-triggering message)", async () => {
+    const ch = createMessageChannel("test-session-8", 60000);
+    ch.push("normal");
+    const iter = ch.generator[Symbol.asyncIterator]();
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    expect((r.value as unknown as { shouldQuery?: boolean }).shouldQuery).toBeUndefined();
+    expect((r.value as unknown as { priority?: string }).priority).toBeUndefined();
+    ch.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -178,6 +178,21 @@ const IDLE_TIMEOUT_MS = parseInt(
   10,
 );
 
+/**
+ * Options for pushing a user message into the channel.
+ *
+ * - `shouldQuery: false` — SDK v0.2.110+: append the message to the transcript
+ *   without triggering a new assistant turn. The message merges into the
+ *   current turn's next LLM call. Use for mid-turn steering (the agent
+ *   reacts to new info without restarting work).
+ * - `priority` — present in SDK type but undocumented. We set `'now'` as a
+ *   hint for mid-turn steering.
+ */
+export type PushOptions = {
+  shouldQuery?: boolean;
+  priority?: "now" | "next" | "later";
+};
+
 /** Socket message protocol: newline-delimited JSON */
 export type SocketMessage = {
   message: string;
@@ -216,13 +231,29 @@ export function createMessageChannel(
     }, idleTimeoutMs);
   }
 
-  function buildUserMessage(text: string): SDKUserMessage {
-    return {
+  function buildUserMessage(
+    text: string,
+    opts?: PushOptions,
+  ): SDKUserMessage {
+    const msg: SDKUserMessage = {
       type: "user",
       message: { role: "user", content: text },
       parent_tool_use_id: null,
       session_id: sessionId,
     };
+    // shouldQuery: false → append context without triggering a new assistant
+    // turn (SDK v0.2.110+). Used for mid-turn steering: the message merges
+    // into the current turn's next LLM call, so the agent reacts to the new
+    // info without restarting work.
+    if (opts?.shouldQuery !== undefined) {
+      (msg as unknown as { shouldQuery: boolean }).shouldQuery = opts.shouldQuery;
+    }
+    // priority: 'now' | 'next' | 'later' — present in SDK type but undocumented.
+    // Setting 'now' for mid-turn steering as a hint; SDK may or may not honor.
+    if (opts?.priority !== undefined) {
+      (msg as unknown as { priority: PushOptions["priority"] }).priority = opts.priority;
+    }
+    return msg;
   }
 
   async function* generator(): AsyncGenerator<SDKUserMessage> {
@@ -248,8 +279,8 @@ export function createMessageChannel(
     if (idleTimer) clearTimeout(idleTimer);
   }
 
-  function push(text: string) {
-    const msg = buildUserMessage(text);
+  function push(text: string, opts?: PushOptions) {
+    const msg = buildUserMessage(text, opts);
     if (waiters.length > 0) {
       const waiter = waiters.shift()!;
       idleReject = null;
@@ -295,7 +326,7 @@ export function getSocketPath(triggerName: string, sessionKey: string): string {
  */
 export function startSocketServer(
   socketPath: string,
-  pushFn: (text: string) => void,
+  pushFn: (text: string, opts?: PushOptions) => void,
   controlFn: (control: "interrupt") => Promise<void> | void,
   logger?: { log: (msg: string) => void },
 ): Server {
@@ -2026,8 +2057,17 @@ export async function main(): Promise<void> {
       } catch {}
     };
 
+    // Mid-turn steering: inject the message as transcript context without
+    // triggering a new turn while one is in progress. The current turn picks
+    // it up in its next LLM call — exactly the "user message between tool
+    // calls" UX you see in Claude Code. Enabled only for signal channel
+    // today; email/web behave like the original streaming queue.
+    const supportsMidTurnSteer = channel === "signal";
+    let inTurn = false;
+
     // Push the initial prompt as the first message + flash typing for turn 1
     msgChannel.push(prompt);
+    inTurn = true;
     sendTypingOnce();
 
     // Use a mutable reference so the socket server control handler can call q.interrupt()
@@ -2037,8 +2077,16 @@ export async function main(): Promise<void> {
     socketServer = startSocketServer(
       socketPath,
       (text) => {
-        msgChannel.push(text);
-        // Each new injected message starts a new turn — fresh typing flash.
+        if (supportsMidTurnSteer && inTurn) {
+          // Mid-turn: append context, do NOT trigger a separate turn.
+          // The active turn merges this into its next LLM call.
+          msgChannel.push(text, { shouldQuery: false, priority: "now" });
+        } else {
+          // Between turns: normal inject, will trigger the next turn.
+          msgChannel.push(text);
+          inTurn = true;
+        }
+        // Each new injected message gets a typing flash.
         sendTypingOnce();
       },
       async (control) => {
@@ -2088,6 +2136,7 @@ export async function main(): Promise<void> {
           resultMsg = msg as SDKResultMessage;
           capturedSessionId = msg.session_id ?? null;
           isError = msg.subtype !== "success";
+          inTurn = false; // turn ended; next push will flip back to true
           const turnText = "result" in msg ? (msg as { result?: string }).result : undefined;
           if (turnText) log.log(`Turn result: ${turnText}`);
           continue;
