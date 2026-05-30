@@ -2011,8 +2011,24 @@ export async function main(): Promise<void> {
       ...(wantsStreaming ? { includePartialMessages: true } : {}),
     };
 
-    // Push the initial prompt as the first message
+    // Typing indicator: one-shot per turn (no heartbeat).
+    // signal-cli's `sendTyping` auto-expires after ~15s on Signal's side,
+    // which is exactly the "the agent is doing something" feedback we want
+    // at the START of each turn. No interval — keeps the indicator honest:
+    // it stops on its own even if the turn runs long.
+    const sendTypingOnce = () => {
+      if (channel !== "signal") return;
+      try {
+        Bun.spawn(["signal", "typing", sessionKey], {
+          stdout: "ignore",
+          stderr: "ignore",
+        });
+      } catch {}
+    };
+
+    // Push the initial prompt as the first message + flash typing for turn 1
     msgChannel.push(prompt);
+    sendTypingOnce();
 
     // Use a mutable reference so the socket server control handler can call q.interrupt()
     let q: import("@anthropic-ai/claude-agent-sdk").Query | null = null;
@@ -2022,6 +2038,8 @@ export async function main(): Promise<void> {
       socketPath,
       (text) => {
         msgChannel.push(text);
+        // Each new injected message starts a new turn — fresh typing flash.
+        sendTypingOnce();
       },
       async (control) => {
         if (control === "interrupt" && q) {
@@ -2053,21 +2071,6 @@ export async function main(): Promise<void> {
         }, triggerTimeout)
       : undefined;
 
-    // Typing indicator heartbeat for Signal sessions
-    let typingInterval: ReturnType<typeof setInterval> | null = null;
-    if (channel === "signal") {
-      const sendTyping = () => {
-        try {
-          Bun.spawn(["signal", "typing", sessionKey], {
-            stdout: "ignore",
-            stderr: "ignore",
-          });
-        } catch {}
-      };
-      sendTyping(); // immediate
-      typingInterval = setInterval(sendTyping, 10_000);
-    }
-
     // Per-message chunk counter for streaming. Resets when a new
     // SDKAssistantMessage uuid appears so each turn's deltas index from 0.
     let streamChunkUuid: string | null = null;
@@ -2076,10 +2079,18 @@ export async function main(): Promise<void> {
     try {
       for await (const msg of q) {
         if (msg.type === "result") {
+          // Multi-turn: capture latest result state but DO NOT break.
+          // runQuery stays alive so mid-turn injected messages (already in
+          // msgChannel's pending queue) are pulled by the SDK as the next
+          // user message. The for-await loop ends naturally when
+          // msgChannel.generator finishes (idle timeout closes it) or when
+          // the trigger timeout fires q.close().
           resultMsg = msg as SDKResultMessage;
           capturedSessionId = msg.session_id ?? null;
           isError = msg.subtype !== "success";
-          break;
+          const turnText = "result" in msg ? (msg as { result?: string }).result : undefined;
+          if (turnText) log.log(`Turn result: ${turnText}`);
+          continue;
         }
         // Capture session_id from any message that carries it
         if ("session_id" in msg && msg.session_id && !capturedSessionId) {
@@ -2117,7 +2128,6 @@ export async function main(): Promise<void> {
         }
       }
     } finally {
-      if (typingInterval) clearInterval(typingInterval);
       if (timeoutHandle) clearTimeout(timeoutHandle);
       msgChannel.close();
       cleanupSocket(socketServer, socketPath);
