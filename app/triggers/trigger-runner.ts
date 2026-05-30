@@ -183,6 +183,7 @@ export type SocketMessage = {
   message: string;
   channel: string;
   sessionKey: string;
+  control?: "interrupt"; // NEW: send instead of injecting message
 };
 
 export type SocketAck = {
@@ -289,11 +290,13 @@ export function getSocketPath(triggerName: string, sessionKey: string): string {
  * them into the message channel. Protocol: newline-delimited JSON.
  *
  * Client sends: {"message":"...", "channel":"signal", "sessionKey":"..."}\n
+ * Client sends (control): {"message":"", "channel":"signal", "sessionKey":"...", "control":"interrupt"}\n
  * Server responds: {"ok":true}\n
  */
 export function startSocketServer(
   socketPath: string,
   pushFn: (text: string) => void,
+  controlFn: (control: "interrupt") => Promise<void> | void,
   logger?: { log: (msg: string) => void },
 ): Server {
   // Clean up stale socket file
@@ -313,19 +316,28 @@ export function startSocketServer(
       const line = buffer.slice(0, newlineIdx);
       buffer = buffer.slice(newlineIdx + 1);
 
-      try {
-        const msg = JSON.parse(line) as SocketMessage;
-        pushFn(msg.message);
-        logger?.log(
-          `Socket: injected message from ${msg.channel}/${msg.sessionKey}`,
-        );
-        const ack: SocketAck = { ok: true };
-        conn.write(JSON.stringify(ack) + "\n");
-      } catch (err) {
-        const ack: SocketAck = { ok: false, error: String(err) };
-        conn.write(JSON.stringify(ack) + "\n");
-      }
-      conn.end();
+      (async () => {
+        try {
+          const msg = JSON.parse(line) as SocketMessage;
+          if (msg.control === "interrupt") {
+            await controlFn("interrupt");
+            logger?.log(
+              `Socket: interrupt control from ${msg.channel}/${msg.sessionKey}`,
+            );
+          } else {
+            pushFn(msg.message);
+            logger?.log(
+              `Socket: injected message from ${msg.channel}/${msg.sessionKey}`,
+            );
+          }
+          const ack: SocketAck = { ok: true };
+          conn.write(JSON.stringify(ack) + "\n");
+        } catch (err) {
+          const ack: SocketAck = { ok: false, error: String(err) };
+          conn.write(JSON.stringify(ack) + "\n");
+        }
+        conn.end();
+      })();
     });
     conn.on("error", () => {}); // Ignore client errors
   });
@@ -336,19 +348,23 @@ export function startSocketServer(
 
 /**
  * Try to inject a message into a running session via the custom Unix domain socket.
- * Returns true if injection succeeded, false otherwise.
+ * If control is set, sends a control message instead of injecting a message.
+ * Returns true if the operation succeeded, false otherwise.
  */
 export async function trySocketInject(
   socketPath: string,
   message: string,
   channel: string,
   sessionKey: string,
+  control?: "interrupt",
 ): Promise<boolean> {
   if (!existsSync(socketPath)) return false;
 
   return new Promise<boolean>((resolve) => {
     const client = createConnection(socketPath, () => {
-      const payload: SocketMessage = { message, channel, sessionKey };
+      const payload: SocketMessage = control
+        ? { message: "", channel, sessionKey, control }
+        : { message, channel, sessionKey };
       client.write(JSON.stringify(payload) + "\n");
     });
 
@@ -1021,34 +1037,6 @@ export function aggregateRunCost(
   }
 }
 
-/**
- * Attempt to inject a message into a running Claude session via IPC socket.
- * Returns true if the injection succeeded, false otherwise.
- */
-export async function tryIpcInject(
-  sessionId: string,
-  message: string,
-): Promise<boolean> {
-  const socketPath = `/tmp/claudec-${sessionId}.sock`;
-
-  if (!existsSync(socketPath)) return false;
-
-  return new Promise((resolve) => {
-    const client = createConnection(socketPath, () => {
-      const payload =
-        JSON.stringify({ action: "send", text: message, submit: true }) + "\n";
-      client.write(payload, () => {
-        client.end();
-        resolve(true);
-      });
-    });
-    client.on("error", () => resolve(false));
-    client.setTimeout(5000, () => {
-      client.destroy();
-      resolve(false);
-    });
-  });
-}
 
 /**
  * Disable remote MCP connectors that hang on startup by writing to ~/.claude.json.
@@ -1719,24 +1707,21 @@ export async function main(): Promise<void> {
       existingSession = null;
     }
 
-    // Try IPC injection if session is running
+    // Try socket injection if session is running
     if (existingSession) {
-      const claudeSocketPath = `/tmp/claudec-${existingSession}.sock`;
-      const claudeSocketAlive = existsSync(claudeSocketPath);
       const customSocketPath = getSocketPath(triggerName, sessionKey);
       const idleSeconds = getSessionIdleSeconds(existingSession);
+      const isStopCommand = payload.trim().toLowerCase() === "/stop";
 
-      if (idleSeconds >= STALE_SESSION_THRESHOLD_S && claudeSocketAlive) {
-        // Session is running but stale — kill it, then resume with notice
+      if (idleSeconds >= STALE_SESSION_THRESHOLD_S) {
+        // Session is stale (no JSONL activity) — kill it, then resume with notice
         log.log(
           `Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killing process`,
         );
         killSessionProcess(existingSession);
         staleRecovery = true;
       } else {
-        // Session might be alive — try injection
-        // Prefer custom socket (goes through message channel, keeps session alive)
-        // over Claude IPC (message may be queued but lost if session is ending)
+        // Session might be alive — try socket injection
         const injectMsg = buildInjectMessage(
           channel,
           triggerName,
@@ -1745,88 +1730,20 @@ export async function main(): Promise<void> {
           prompt,
         );
 
-        // 1. Try custom socket first (most reliable — message channel managed)
-        // Pre-check: skip injection entirely if session is clearly stale
-        // (custom socket may still be alive but session frozen)
-        if (idleSeconds >= STALE_SESSION_THRESHOLD_S) {
+        const socketInjected = await trySocketInject(
+          customSocketPath,
+          injectMsg,
+          channel,
+          sessionKey,
+          isStopCommand ? "interrupt" : undefined,
+        );
+        if (socketInjected) {
           log.log(
-            `Session ${existingSession} is stale (idle ${Math.round(idleSeconds)}s) — killing before injection`,
+            `Injected via custom socket into session ${existingSession} (key=${sessionKey})${isStopCommand ? " [interrupt]" : ""}`,
           );
-          killSessionProcess(existingSession);
-          staleRecovery = true;
-        } else {
-          const socketInjected = await trySocketInject(
-            customSocketPath,
-            injectMsg,
-            channel,
-            sessionKey,
-          );
-          if (socketInjected) {
-            // Verify session is processing — check if JSONL has new activity within timeout
-            const jsonlPath = findSessionJsonl(existingSession);
-            const mtimeBefore = jsonlPath ? statSync(jsonlPath).mtimeMs : 0;
-
-            // Brief wait for session to start processing
-            await Bun.sleep(2000);
-
-            const mtimeAfter = jsonlPath
-              ? (() => {
-                  try {
-                    return statSync(jsonlPath).mtimeMs;
-                  } catch {
-                    return 0;
-                  }
-                })()
-              : 0;
-
-            if (mtimeAfter > mtimeBefore) {
-              // Session is actively responding
-              log.log(
-                `Injected via custom socket into session ${existingSession} (key=${sessionKey})`,
-              );
-              process.exit(0);
-            }
-
-            // Session accepted injection but is frozen — kill and resume
-            log.log(
-              `Session ${existingSession} accepted socket injection but appears frozen (no JSONL activity) — killing`,
-            );
-            killSessionProcess(existingSession);
-            staleRecovery = true;
-          }
+          process.exit(0);
         }
-
-        if (!staleRecovery) {
-          // 2. Fall back to Claude IPC with post-injection verification
-          if (claudeSocketAlive) {
-            const injected = await tryIpcInject(existingSession, injectMsg);
-            if (injected) {
-              // Verify session is still alive after injection — race condition guard:
-              // the session may have ended between socket check and injection,
-              // causing the message to be accepted but never processed.
-              await Bun.sleep(300);
-              if (existsSync(claudeSocketPath)) {
-                log.log(
-                  `Injected via Claude IPC into session ${existingSession} (key=${sessionKey})`,
-                );
-                process.exit(0);
-              }
-              // Session died right after injection — message likely lost
-              log.log(
-                `Session ${existingSession} died after IPC injection — message may be lost, will resume`,
-              );
-              db.prepare(
-                "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
-              ).run(triggerName, sessionKey);
-              existingSession = null;
-            } else {
-              log.log(
-                `Both injection methods failed for ${existingSession}, will resume`,
-              );
-            }
-          }
-          // No sockets available — fall through to resume
-        }
+        // Socket not available — fall through to acquire lock + resume
       }
     }
   }
@@ -1876,6 +1793,7 @@ export async function main(): Promise<void> {
   if (!lockAcquired) {
     // Lock held — try injecting via our custom socket (session is running)
     const socketPath = getSocketPath(triggerName, sessionKey);
+    const isStopCommandLock = payload.trim().toLowerCase() === "/stop";
     const injectMsg = buildInjectMessage(
       channel,
       triggerName,
@@ -1888,10 +1806,11 @@ export async function main(): Promise<void> {
       injectMsg,
       channel,
       sessionKey,
+      isStopCommandLock ? "interrupt" : undefined,
     );
     if (socketInjected) {
       log.log(
-        `Injected via socket into running session for ${triggerName} (key=${sessionKey})`,
+        `Injected via socket into running session for ${triggerName} (key=${sessionKey})${isStopCommandLock ? " [interrupt]" : ""}`,
       );
       process.exit(0);
     }
@@ -1951,8 +1870,9 @@ export async function main(): Promise<void> {
     existingSession = null;
   }
 
-  // Re-check IPC socket after acquiring lock
+  // Re-check custom socket after acquiring lock
   if (sessionMode === "persistent" && existingSession) {
+    const isStopCommandPostLock = payload.trim().toLowerCase() === "/stop";
     const injectMsg = buildInjectMessage(
       channel,
       triggerName,
@@ -1960,40 +1880,21 @@ export async function main(): Promise<void> {
       payload,
       prompt,
     );
-    // Try custom socket first (preferred — message channel managed), then Claude IPC
     const customInjected = await trySocketInject(
       getSocketPath(triggerName, sessionKey),
       injectMsg,
       channel,
       sessionKey,
+      isStopCommandPostLock ? "interrupt" : undefined,
     );
     if (customInjected) {
       log.log(
-        `Injected via custom socket after lock wait for ${triggerName} (key=${sessionKey})`,
+        `Injected via custom socket after lock wait for ${triggerName} (key=${sessionKey})${isStopCommandPostLock ? " [interrupt]" : ""}`,
       );
       releaseLock();
       process.exit(0);
     }
-    const injected = await tryIpcInject(existingSession, injectMsg);
-    if (injected) {
-      // Verify Claude IPC injection — session may have ended during lock wait
-      const claudeSocket = `/tmp/claudec-${existingSession}.sock`;
-      await Bun.sleep(300);
-      if (existsSync(claudeSocket)) {
-        log.log(
-          `Injected via Claude IPC after lock wait ${existingSession} (key=${sessionKey})`,
-        );
-        releaseLock();
-        process.exit(0);
-      }
-      log.log(
-        `Session ${existingSession} died after post-lock IPC injection — starting fresh`,
-      );
-      db.prepare(
-        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
-      ).run(triggerName, sessionKey);
-      existingSession = null;
-    }
+    // Socket not available — fall through to resume
   }
 
   log.log(
@@ -2113,22 +2014,59 @@ export async function main(): Promise<void> {
     // Push the initial prompt as the first message
     msgChannel.push(prompt);
 
+    // Use a mutable reference so the socket server control handler can call q.interrupt()
+    let q: import("@anthropic-ai/claude-agent-sdk").Query | null = null;
+
     // Start socket server so other trigger-runner processes can inject messages
     socketServer = startSocketServer(
       socketPath,
       (text) => {
         msgChannel.push(text);
       },
+      async (control) => {
+        if (control === "interrupt" && q) {
+          try {
+            await q.interrupt();
+            log.log("Received /stop — query interrupted");
+            // Send a short Signal reply to inform the user the session stopped
+            if (channel === "signal") {
+              try {
+                Bun.spawn(["signal", "send", sessionKey, "Session unterbrochen."], {
+                  stdout: "ignore",
+                  stderr: "ignore",
+                });
+              } catch {}
+            }
+          } catch (err) {
+            log.log(`q.interrupt() failed: ${err}`);
+          }
+        }
+      },
       log,
     );
 
-    const q = query({ prompt: msgChannel.generator, options });
+    q = query({ prompt: msgChannel.generator, options });
 
     const timeoutHandle = triggerTimeout
       ? setTimeout(() => {
-          q.close();
+          q?.close();
         }, triggerTimeout)
       : undefined;
+
+    // Typing indicator heartbeat for Signal sessions
+    let typingInterval: ReturnType<typeof setInterval> | null = null;
+    if (channel === "signal") {
+      const sendTyping = () => {
+        try {
+          Bun.spawn(["signal", "typing", sessionKey], {
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+        } catch {}
+      };
+      sendTyping(); // immediate
+      typingInterval = setInterval(sendTyping, 10_000);
+    }
 
     // Per-message chunk counter for streaming. Resets when a new
     // SDKAssistantMessage uuid appears so each turn's deltas index from 0.
@@ -2179,6 +2117,7 @@ export async function main(): Promise<void> {
         }
       }
     } finally {
+      if (typingInterval) clearInterval(typingInterval);
       if (timeoutHandle) clearTimeout(timeoutHandle);
       msgChannel.close();
       cleanupSocket(socketServer, socketPath);

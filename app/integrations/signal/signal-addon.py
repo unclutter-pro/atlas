@@ -957,6 +957,46 @@ def cmd_send(config, to, message, attachments=None):
         db.close()
 
 
+# --- TYPING command ---
+
+def send_typing(recipient: str) -> bool:
+    """Send a 'typing...' indicator via the daemon socket."""
+    if not recipient:
+        return False
+    try:
+        sock = _socket_mod.socket(_socket_mod.AF_UNIX, _socket_mod.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect(DAEMON_SOCKET)
+        req = json.dumps({
+            "jsonrpc": "2.0",
+            "id": "typing",
+            "method": "sendTyping",
+            "params": {
+                "recipient": [recipient],
+            },
+        })
+        sock.sendall(req.encode() + b"\n")
+        # Read response (don't block forever)
+        buf = b""
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
+def cmd_typing(config, recipient: str) -> None:
+    """Send a typing indicator to a recipient."""
+    if not recipient:
+        print("ERROR: recipient is required", file=sys.stderr)
+        sys.exit(1)
+    send_typing(recipient)
+
+
 # --- CONTACTS command ---
 
 def cmd_contacts(config, limit=20):
@@ -1050,6 +1090,10 @@ Examples:
     p_send.add_argument("--attach", action="append", default=[], metavar="FILE",
                          help="Attach a file (image, PDF, etc.). Can be repeated.")
 
+    # typing
+    p_typing = sub.add_parser("typing", help="Send a typing indicator to a recipient")
+    p_typing.add_argument("number", help="Recipient phone number")
+
     # contacts
     p_contacts = sub.add_parser("contacts", help="List known contacts")
     p_contacts.add_argument("--limit", type=int, default=20)
@@ -1078,6 +1122,8 @@ Examples:
                      attachments_json=args.attachments)
     elif args.command == "send":
         cmd_send(config, args.number, args.message, attachments=args.attach)
+    elif args.command == "typing":
+        cmd_typing(config, args.number)
     elif args.command == "contacts":
         cmd_contacts(config, limit=args.limit)
     elif args.command == "history":
