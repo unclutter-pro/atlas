@@ -429,7 +429,9 @@ class TestSetSeen:
         _client(mail).set_seen("INBOX", [42], seen=True)
         call = [c for c in mail.uid.call_args_list if c.args[0] == "store"][0]
         assert call.args[2] == "+FLAGS"
-        assert call.args[3] == "\\Seen"
+        # RFC 3501 §6.4.6: flag list must be parenthesised. Strict servers
+        # (GreenMail, Cyrus, some O365 tenants) reject the bare "\\Seen" form.
+        assert call.args[3] == "(\\Seen)"
         assert "42" in call.args[1]
 
     def test_minus_flags_unseen(self):
@@ -437,6 +439,7 @@ class TestSetSeen:
         _client(mail).set_seen("INBOX", [42], seen=False)
         call = [c for c in mail.uid.call_args_list if c.args[0] == "store"][0]
         assert call.args[2] == "-FLAGS"
+        assert call.args[3] == "(\\Seen)"  # RFC 3501 §6.4.6 parenthesised flag list
 
     def test_selects_folder_first(self):
         mail = _make_mail()
@@ -485,6 +488,37 @@ class TestMove:
         assert "STORE" in verbs
         mail.expunge.assert_called_once()
         assert "MOVE" not in verbs
+
+    def test_fallback_store_uses_parenthesised_flag_list(self):
+        """RFC 3501 §6.4.6: STORE flag list must be parenthesised.
+        Strict servers (GreenMail, Cyrus, some O365 tenants) reject the
+        bare ``\\Deleted`` form with BAD, breaking the COPY-fallback path.
+        """
+        mail = _make_mail(capabilities=b"IMAP4rev1 IDLE")  # no MOVE
+        _client(mail).move("INBOX", [42], "Archive")
+        plus_flags_store = [
+            c for c in mail.uid.call_args_list
+            if c.args[0] == "STORE" and "+FLAGS" in c.args
+        ]
+        assert plus_flags_store, "fallback path must issue +FLAGS \\Deleted"
+        assert plus_flags_store[0].args[3] == "(\\Deleted)"
+
+    def test_rollback_store_uses_parenthesised_flag_list(self):
+        """Same RFC 3501 §6.4.6 requirement applies to the best-effort
+        rollback ``-FLAGS`` issued when EXPUNGE fails on the COPY fallback
+        path. Without parens, strict servers reject the rollback too and
+        the source row stays tombstoned.
+        """
+        mail = _make_mail(capabilities=b"IMAP4rev1 IDLE")  # COPY fallback
+        mail.expunge.return_value = ("NO", [b"quota exceeded"])
+        with pytest.raises(ImapError):
+            _client(mail).move("INBOX", [42], "Archive")
+        rollback = [
+            c for c in mail.uid.call_args_list
+            if c.args[0] == "STORE" and "-FLAGS" in c.args
+        ]
+        assert rollback, "rollback STORE -FLAGS must fire"
+        assert rollback[0].args[3] == "(\\Deleted)"
 
     def test_chunks_large_uid_sets(self):
         mail = _make_mail(capabilities=b"IMAP4rev1 MOVE")
