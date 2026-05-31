@@ -1223,17 +1223,29 @@ function isoNow(): string {
 /**
  * Build the inject message for IPC injection, using channel-specific template
  * or the generic trigger-inject.md template.
+ *
+ * Naming convention: channel-specific inject templates live at
+ * `${PROMPT_DIR}/trigger-channel-${channel}-inject.md` — the same
+ * ``trigger-channel-${channel}-*.md`` family used by buildSystemPrompt for
+ * the channel system prompt, farewell prompt, etc. Keeping the family
+ * consistent means an operator adding a new channel only has to remember
+ * one filename root.
+ *
+ * Exported (with an optional `appDir`) so it's unit-testable without
+ * touching the real `/atlas/app/prompts` directory.
  */
-function buildInjectMessage(
+export function buildInjectMessage(
   channel: string,
   triggerName: string,
   sessionKey: string,
   payload: string,
   promptFallback: string,
+  appDir: string = APP_DIR,
 ): string {
+  const promptDir = `${appDir}/prompts`;
   const candidates = [
-    `${PROMPT_DIR}/trigger-${channel}-inject.md`,
-    `${PROMPT_DIR}/trigger-inject.md`,
+    `${promptDir}/trigger-channel-${channel}-inject.md`,
+    `${promptDir}/trigger-inject.md`,
   ];
 
   for (const candidate of candidates) {
