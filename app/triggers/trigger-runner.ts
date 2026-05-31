@@ -2057,35 +2057,31 @@ export async function main(): Promise<void> {
       } catch {}
     };
 
-    // Mid-turn steering: inject the message as transcript context without
-    // triggering a new turn while one is in progress. The current turn picks
-    // it up in its next LLM call — exactly the "user message between tool
-    // calls" UX you see in Claude Code. Enabled only for signal channel
-    // today; email/web behave like the original streaming queue.
-    const supportsMidTurnSteer = channel === "signal";
-    let inTurn = false;
-
     // Push the initial prompt as the first message + flash typing for turn 1
     msgChannel.push(prompt);
-    inTurn = true;
     sendTypingOnce();
 
     // Use a mutable reference so the socket server control handler can call q.interrupt()
     let q: import("@anthropic-ai/claude-agent-sdk").Query | null = null;
 
-    // Start socket server so other trigger-runner processes can inject messages
+    // Start socket server so other trigger-runner processes can inject messages.
+    //
+    // Every injected message uses the DEFAULT push (no shouldQuery, no priority).
+    // The earlier experiment with shouldQuery=false for mid-turn steering caused
+    // the SDK to append the message to the transcript WITHOUT triggering an
+    // assistant turn — so when the current turn ended, the runQuery just waited
+    // for the next pull, the appended message never produced a response, and
+    // the 5min idle timeout closed the channel. Production effect: follow-up
+    // messages got no reply, sessions ended silently.
+    //
+    // The reliable behavior is the multi-turn loop (see for-await below): mid-
+    // turn injects queue normally and are consumed by the SDK as the next user
+    // message after the current turn's `result`. That gives "follow-up gets a
+    // response" — slightly less elegant than mid-tool steering but never drops.
     socketServer = startSocketServer(
       socketPath,
       (text) => {
-        if (supportsMidTurnSteer && inTurn) {
-          // Mid-turn: append context, do NOT trigger a separate turn.
-          // The active turn merges this into its next LLM call.
-          msgChannel.push(text, { shouldQuery: false, priority: "now" });
-        } else {
-          // Between turns: normal inject, will trigger the next turn.
-          msgChannel.push(text);
-          inTurn = true;
-        }
+        msgChannel.push(text);
         // Each new injected message gets a typing flash.
         sendTypingOnce();
       },
@@ -2136,7 +2132,6 @@ export async function main(): Promise<void> {
           resultMsg = msg as SDKResultMessage;
           capturedSessionId = msg.session_id ?? null;
           isError = msg.subtype !== "success";
-          inTurn = false; // turn ended; next push will flip back to true
           const turnText = "result" in msg ? (msg as { result?: string }).result : undefined;
           if (turnText) log.log(`Turn result: ${turnText}`);
           continue;
