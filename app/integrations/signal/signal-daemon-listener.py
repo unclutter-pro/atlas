@@ -100,13 +100,13 @@ def handle_notification(notification):
         cmd += ["--attachments", json.dumps(attachments)]
 
     try:
-        subprocess.run(cmd, timeout=600, check=False)
+        result = subprocess.run(cmd, timeout=600, check=False)
+        if result.returncode == 0:
+            send_read_receipt(sender, ts)
+        else:
+            log(f"signal incoming exited with {result.returncode} — NOT sending read receipt")
     except Exception as e:
-        log(f"ERROR calling 'signal incoming': {e}")
-
-    # Send read receipt after processing (incl. transcription) so the sender
-    # only sees "read" once the message has actually been handled.
-    send_read_receipt(sender, ts)
+        log(f"ERROR calling 'signal incoming': {e} — NOT sending read receipt")
 
 
 def listen(sock):

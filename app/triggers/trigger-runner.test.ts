@@ -21,7 +21,6 @@ import {
   readTriggerConfig,
   recordMetrics,
   checkCorruptedSession,
-  tryIpcInject,
   createMessageChannel,
   getSocketPath,
   startSocketServer,
@@ -643,22 +642,8 @@ describe("checkCorruptedSession", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// tryIpcInject
-// ---------------------------------------------------------------------------
-
-describe("tryIpcInject", () => {
-  test("returns false for non-existent socket", async () => {
-    const result = await tryIpcInject("nonexistent-session-id-12345", "hello");
-    expect(result).toBe(false);
-  });
-
-  test("returns false for invalid socket path (no socket file)", async () => {
-    // Use a session ID that definitely doesn't have a socket
-    const result = await tryIpcInject("00000000-0000-0000-0000-000000000000", "test message");
-    expect(result).toBe(false);
-  });
-});
+// tryIpcInject has been removed — the Claude IPC fallback was unreliable and
+// caused a 53% false-positive kill rate. The custom socket is the only inject path.
 
 // ---------------------------------------------------------------------------
 // getSocketPath
@@ -767,6 +752,38 @@ describe("createMessageChannel", () => {
 
     ch.close();
   });
+
+  test("push() with shouldQuery=false sets the field on the yielded message", async () => {
+    const ch = createMessageChannel("test-session-6", 60000);
+    ch.push("steering hint", { shouldQuery: false });
+    const iter = ch.generator[Symbol.asyncIterator]();
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    // shouldQuery is technically optional on the SDK type; cast for the test.
+    expect((r.value as unknown as { shouldQuery?: boolean }).shouldQuery).toBe(false);
+    ch.close();
+  });
+
+  test("push() with priority='now' sets the field on the yielded message", async () => {
+    const ch = createMessageChannel("test-session-7", 60000);
+    ch.push("urgent", { priority: "now" });
+    const iter = ch.generator[Symbol.asyncIterator]();
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    expect((r.value as unknown as { priority?: string }).priority).toBe("now");
+    ch.close();
+  });
+
+  test("push() without options omits shouldQuery/priority (default turn-triggering message)", async () => {
+    const ch = createMessageChannel("test-session-8", 60000);
+    ch.push("normal");
+    const iter = ch.generator[Symbol.asyncIterator]();
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    expect((r.value as unknown as { shouldQuery?: boolean }).shouldQuery).toBeUndefined();
+    expect((r.value as unknown as { priority?: string }).priority).toBeUndefined();
+    ch.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -795,7 +812,7 @@ describe("Socket IPC", () => {
 
     server = startSocketServer(socketPath, (text) => {
       received.push(text);
-    });
+    }, async () => {});
 
     // Wait for server to be ready
     await Bun.sleep(50);
@@ -812,7 +829,7 @@ describe("Socket IPC", () => {
 
     server = startSocketServer(socketPath, (text) => {
       received.push(text);
-    });
+    }, async () => {});
 
     await Bun.sleep(50);
 
@@ -832,7 +849,7 @@ describe("Socket IPC", () => {
     const ch = createMessageChannel("test-session-socket", 60000);
     server = startSocketServer(socketPath, (text) => {
       ch.push(text);
-    });
+    }, async () => {});
 
     await Bun.sleep(50);
 
@@ -851,7 +868,7 @@ describe("Socket IPC", () => {
 
   test("cleanupSocket removes socket file", async () => {
     socketPath = `/tmp/.trigger-test-cleanup-${Date.now()}.sock`;
-    server = startSocketServer(socketPath, () => {});
+    server = startSocketServer(socketPath, () => {}, async () => {});
     await Bun.sleep(50);
 
     expect(existsSync(socketPath)).toBe(true);
@@ -859,6 +876,68 @@ describe("Socket IPC", () => {
     server = null; // Already cleaned up
 
     expect(existsSync(socketPath)).toBe(false);
+  });
+
+  test("socket server dispatches interrupt control message and does not push text", async () => {
+    socketPath = `/tmp/.trigger-test-interrupt-${Date.now()}.sock`;
+    const received: string[] = [];
+    const controls: string[] = [];
+
+    server = startSocketServer(
+      socketPath,
+      (text) => { received.push(text); },
+      async (control) => { controls.push(control); },
+    );
+
+    await Bun.sleep(50);
+
+    // Send an interrupt control
+    const ok = await trySocketInject(socketPath, "", "signal", "+491234", "interrupt");
+    expect(ok).toBe(true);
+    // Should call controlFn, not pushFn
+    await Bun.sleep(50);
+    expect(controls).toEqual(["interrupt"]);
+    expect(received).toHaveLength(0);
+  });
+
+  test("trySocketInject sends control field when control is set", async () => {
+    socketPath = `/tmp/.trigger-test-ctrl-field-${Date.now()}.sock`;
+    const controls: string[] = [];
+
+    server = startSocketServer(
+      socketPath,
+      () => {},
+      async (control) => { controls.push(control); },
+    );
+
+    await Bun.sleep(50);
+
+    const ok = await trySocketInject(socketPath, "ignored", "signal", "+491234", "interrupt");
+    expect(ok).toBe(true);
+    await Bun.sleep(50);
+    expect(controls).toEqual(["interrupt"]);
+  });
+
+  test("inject after successful socket inject exits immediately (no mtime check)", async () => {
+    // This test verifies that a successful socket inject does NOT wait 2s for JSONL mtime.
+    // We just check that trySocketInject returns true and the ack is immediate.
+    socketPath = `/tmp/.trigger-test-no-mtime-${Date.now()}.sock`;
+    const received: string[] = [];
+
+    server = startSocketServer(socketPath, (text) => {
+      received.push(text);
+    }, async () => {});
+
+    await Bun.sleep(50);
+
+    const start = Date.now();
+    const ok = await trySocketInject(socketPath, "fast inject", "signal", "+491234");
+    const elapsed = Date.now() - start;
+
+    expect(ok).toBe(true);
+    expect(received).toEqual(["fast inject"]);
+    // Must complete well under 1 second — the old mtime check added 2000ms
+    expect(elapsed).toBeLessThan(1000);
   });
 });
 
