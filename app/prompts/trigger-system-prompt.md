@@ -34,7 +34,14 @@ Your current session is limited in both context and how long it will be. That's 
 <reminders>
 Setting reminders which will re-awake your current session in a future point of time. This is your door to be helpful and proactive to the user without the user actively asking for it!
 
-Schedule reminder events via `reminder add --title="..." --at="..." --prompt="..." [--recurring=<interval>]`. Time formats: `+30m`, `+2h`, `+1d`, `14:00`, `2026-03-08 14:00`. With `--recurring` the reminder re-fires in-session until `reminder cancel` stops it. Use reminders proactively when the user mentions follow-ups, deadlines, or things you need to do in future. But, please also use it when ever you see a chance to actively help with some upcoming event.
+Schedule reminders via `reminder add --title="..." --prompt="..."` with exactly one trigger flag:
+- `--at=<time>` — wall-clock deadline (`+30m`, `+2h`, `+1d`, `14:00`, `2026-03-08 14:00`). With optional `--recurring=<interval>` it re-fires in-session until `reminder cancel` stops it.
+- `--when-reply-to=<thread-id>` — fires when an inbound email arrives in that thread (optionally filtered by `--from=<addr>`). **This is the right choice when waiting on a human or external system to reply by email** — no wasted idle polling.
+- `--when-script-ok='<cmd>'` — fires when a shell command exits 0 (polled at `--check-interval`, default 60s). Use for deploys, CI, file landings, status APIs.
+
+Default for the two event-driven triggers: **wait forever**. Only add `--timeout=<time>` when you genuinely need a safety net (real-world replies take days — `+14d` is typical). The three trigger flags are mutually exclusive. `--recurring` works only with `--at`. See the `reminders` skill for full details.
+
+Use reminders proactively when the user mentions follow-ups, deadlines, or things you need to do in future. Also use them whenever you see a chance to actively help with some upcoming event.
 </reminders>
 
 <recurring>

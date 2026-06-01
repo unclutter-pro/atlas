@@ -437,12 +437,15 @@ switch (command) {
     if (!prompt) die("--prompt is required");
 
     // Exactly one of --at / --when-reply-to / --when-script-ok must be set
-    const triggerFlagsSet = [at, replyTo, scriptOk].filter(Boolean).length;
-    if (triggerFlagsSet === 0) {
-      die("One of --at, --when-reply-to, or --when-script-ok is required.");
+    const triggerFlagsPresent: string[] = [];
+    if (at) triggerFlagsPresent.push("--at");
+    if (replyTo) triggerFlagsPresent.push("--when-reply-to");
+    if (scriptOk) triggerFlagsPresent.push("--when-script-ok");
+    if (triggerFlagsPresent.length === 0) {
+      die("One of --at, --when-reply-to, or --when-script-ok is required. These three trigger flags are mutually exclusive — pick exactly one per reminder.");
     }
-    if (triggerFlagsSet > 1) {
-      die("--at, --when-reply-to, and --when-script-ok are mutually exclusive — pick one.");
+    if (triggerFlagsPresent.length > 1) {
+      die(`${triggerFlagsPresent.join(" and ")} cannot be combined — these trigger flags are mutually exclusive. Pick exactly one per reminder. (If you need both time and event semantics, use one reminder per trigger.)`);
     }
 
     // Validate --recurring flag combinations before touching the DB
@@ -455,7 +458,8 @@ switch (command) {
         die("--recurring can only be used from within a trigger session (the reminder needs a session to fire into).");
       }
       if (replyTo || scriptOk) {
-        die("--recurring is only supported with --at. For repeating event triggers, set a new reminder after each fire.");
+        const eventFlag = replyTo ? "--when-reply-to" : "--when-script-ok";
+        die(`--recurring is only supported with --at, but ${eventFlag} was set. Event-driven triggers (--when-reply-to, --when-script-ok) fire on edges, not on intervals; if you need repeated behavior, set a fresh reminder after each fire.`);
       }
       try {
         recurringIntervalSeconds = parseRecurringInterval(recurringRaw);
