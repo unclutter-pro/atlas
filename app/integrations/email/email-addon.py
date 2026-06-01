@@ -111,11 +111,71 @@ def _ssl_context_for_smtp(config):
 
 
 def _smtp_connect(config):
-    """Connect to SMTP with STARTTLS, optionally disabling cert verification."""
+    """Connect to SMTP, negotiating STARTTLS + AUTH conditionally on EHLO.
+
+    Production submission MTAs (Postfix, Exim, Gmail, O365) advertise both
+    STARTTLS and AUTH, so this path is identical to the previous
+    hard-coded ``starttls() + login()`` flow: the connection is upgraded
+    to TLS and authenticated before any mail flows.
+
+    Two relaxations make us robust to non-Postfix setups that the stock
+    code can't connect to at all:
+
+    1. **STARTTLS only when advertised** — internal MTAs and test
+       servers (GreenMail with default config, dev relay containers,
+       some on-prem Exchange edge configurations on the 25/2525 ports)
+       speak plain SMTP and do not advertise the ``STARTTLS`` extension.
+       Calling ``starttls()`` against them raises
+       ``SMTPNotSupportedError`` and hard-kills the connection. We
+       gate the upgrade on ``has_extn("starttls")`` instead.
+    2. **AUTH only when advertised** — relays that whitelist by IP /
+       client cert (corporate outbound smarthosts, some private MTAs,
+       GreenMail with ``-Dgreenmail.auth.disabled``) do not advertise
+       ``AUTH``. Sending ``AUTH PLAIN`` against them is answered with
+       ``500 Error: command not recognized`` and the session dies. We
+       call ``login()`` only when the server advertised an AUTH
+       mechanism we can negotiate.
+
+    Production deployments against TLS+AUTH submission MTAs are
+    unchanged — both extensions are advertised, both branches run.
+    """
     ctx = _ssl_context_for_smtp(config)
     server = smtplib.SMTP(config["smtp_host"], config["smtp_port"])
-    server.starttls(context=ctx)
-    server.login(config["username"], config["password"])
+
+    # Probe capabilities before deciding on STARTTLS. SMTP requires an
+    # EHLO at the start of a session anyway; smtplib normally lazy-runs
+    # it on the first sender command, but we need the advertised
+    # extension list now.
+    try:
+        server.ehlo()
+    except smtplib.SMTPException:
+        # Older servers may only speak HELO. smtplib's send_message will
+        # fall back internally — nothing more to do here.
+        pass
+
+    if server.has_extn("starttls"):
+        server.starttls(context=ctx)
+        # RFC 3207: after a successful STARTTLS the client MUST discard
+        # any cached EHLO response and re-issue EHLO over the encrypted
+        # channel to learn the post-TLS capabilities (most servers only
+        # advertise AUTH after STARTTLS).
+        try:
+            server.ehlo()
+        except smtplib.SMTPException:
+            pass
+
+    if server.has_extn("auth"):
+        try:
+            server.login(config["username"], config["password"])
+        except smtplib.SMTPNotSupportedError:
+            # AUTH was advertised but the mechanism set doesn't overlap
+            # with what smtplib can negotiate (e.g. only XOAUTH2 offered
+            # against a plain-password config). Better to try sending
+            # unauthenticated than to abort and drop the message — the
+            # server will reject with a clear 530/535 if it really
+            # requires auth.
+            pass
+
     return server
 
 

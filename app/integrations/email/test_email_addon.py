@@ -2423,3 +2423,96 @@ class TestMaybeShrinkImage:
         assert result["path"] == orig, "path must be unchanged on error"
         err = capsys.readouterr().err
         assert "WARNING" in err or "could not create preview" in err
+
+
+# ---------------------------------------------------------------------------
+# SMTP connect: STARTTLS + AUTH conditional on advertised capabilities
+# ---------------------------------------------------------------------------
+
+class TestSmtpConnect:
+    """``_smtp_connect`` must negotiate STARTTLS and AUTH *conditionally* on
+    the EHLO response. Production submission MTAs advertise both, so the
+    happy path is unchanged. Test servers, internal smarthosts, and
+    IP-whitelisted relays don't — and the previous hard-coded
+    ``starttls() + login()`` flow broke against every one of them.
+    """
+
+    def _make_server(self, monkeypatch, capabilities):
+        """Stub smtplib.SMTP. ``capabilities`` is the set of extensions the
+        server advertises (lower-case names — matches what smtplib.has_extn
+        expects after EHLO).
+        """
+        import smtplib
+
+        server = MagicMock()
+        # has_extn() is the standard smtplib API for "did EHLO advertise X?"
+        server.has_extn.side_effect = lambda ext: ext.lower() in capabilities
+        monkeypatch.setattr(smtplib, "SMTP", lambda host, port: server)
+        return server
+
+    def test_production_tls_plus_auth_path_unchanged(self, monkeypatch):
+        """Server advertises both STARTTLS and AUTH (the production case):
+        we must still call starttls() and login() exactly as before.
+        """
+        server = self._make_server(monkeypatch, {"starttls", "auth"})
+        result = email_addon._smtp_connect(CONFIG)
+        assert result is server
+        server.starttls.assert_called_once()
+        server.login.assert_called_once_with(CONFIG["username"], CONFIG["password"])
+
+    def test_starttls_skipped_when_not_advertised(self, monkeypatch):
+        """Plain-SMTP submission ports (test servers, internal MTAs) don't
+        advertise STARTTLS. Calling starttls() against them raises
+        SMTPNotSupportedError and kills the session — so we must skip.
+        """
+        server = self._make_server(monkeypatch, {"auth"})  # AUTH only, no STARTTLS
+        email_addon._smtp_connect(CONFIG)
+        server.starttls.assert_not_called()
+        server.login.assert_called_once()
+
+    def test_auth_skipped_when_not_advertised(self, monkeypatch):
+        """IP-whitelisted relays and auth-disabled test servers don't
+        advertise AUTH. Sending ``AUTH PLAIN`` is answered with 500 and
+        breaks the connection — so we must skip login() too.
+        """
+        server = self._make_server(monkeypatch, {"starttls"})  # STARTTLS only
+        email_addon._smtp_connect(CONFIG)
+        server.starttls.assert_called_once()
+        server.login.assert_not_called()
+
+    def test_plain_smtp_no_extensions(self, monkeypatch):
+        """A bare SMTP server (e.g. GreenMail w/ -Dgreenmail.auth.disabled
+        on a non-TLS submission port) advertises neither extension. We
+        must connect and send unauthenticated, unencrypted — the
+        operator opted into this by pointing us at this host.
+        """
+        server = self._make_server(monkeypatch, set())
+        email_addon._smtp_connect(CONFIG)
+        server.starttls.assert_not_called()
+        server.login.assert_not_called()
+
+    def test_rehello_after_starttls(self, monkeypatch):
+        """RFC 3207: after a successful STARTTLS, the client MUST discard
+        any cached EHLO response and re-issue EHLO over the encrypted
+        channel — most servers only advertise AUTH after STARTTLS.
+        """
+        server = self._make_server(monkeypatch, {"starttls", "auth"})
+        email_addon._smtp_connect(CONFIG)
+        # EHLO once before STARTTLS (capability probe) + once after
+        # (post-TLS capability refresh).
+        assert server.ehlo.call_count >= 2
+
+    def test_login_smtpnotsupported_is_tolerated(self, monkeypatch):
+        """AUTH is advertised but the mechanism set doesn't overlap with
+        what smtplib can negotiate (e.g. XOAUTH2-only against a plain
+        password). We swallow rather than dropping the message — the
+        server will respond with 530/535 on RCPT if auth was actually
+        required.
+        """
+        import smtplib
+
+        server = self._make_server(monkeypatch, {"starttls", "auth"})
+        server.login.side_effect = smtplib.SMTPNotSupportedError("no overlap")
+        # Should not raise — we want to attempt to send anyway.
+        email_addon._smtp_connect(CONFIG)
+        server.login.assert_called_once()
