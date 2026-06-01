@@ -1,18 +1,19 @@
 #!/usr/bin/env bun
 /**
  * Reminder management CLI
- * Usage: bun /atlas/app/triggers/manage-reminders.ts <command> [flags]
  *
- * Commands:
- *   add     --title=<text> --at=<time> --prompt=<text> [--channel=internal] [--new-session] [--recurring=<interval>]
- *   list    [--all] [--recurring]
- *   cancel  --id=<id>
- *   delete  --id=<id>
- *   check   (fire due reminders — called by cron)
+ * Three trigger types:
+ *   - time         : fires at a specific wall-clock time (default, existing behavior)
+ *   - email_reply  : fires when a reply arrives in an email thread
+ *   - script_check : fires when a shell command exits 0
+ *
+ * Usage: bun /atlas/app/triggers/manage-reminders.ts <command> [flags]
  */
 
 import { Database } from "bun:sqlite";
 import { execSync } from "child_process";
+import { createHash } from "crypto";
+import { existsSync, readdirSync } from "fs";
 import { openDb } from "../lib/db.ts";
 
 function die(msg: string): never {
@@ -32,12 +33,12 @@ function parseFlags(args: string[]): Record<string, string> {
 }
 
 /**
- * Parse a human-friendly time string into a UTC ISO 8601 datetime string.
+ * Parse a human-friendly time string into a UTC storage datetime string.
  * Supported formats:
- *   - "+30m", "+2h", "+1d"  — relative offsets
- *   - "14:00"               — today at given time (local)
- *   - "2026-03-08 14:00"    — full date + time (local)
- *   - "2026-03-08T14:00:00" — ISO-style (local)
+ *   - "+30m", "+2h", "+1d", "+14d"  — relative offsets
+ *   - "14:00"                        — today at given time (local)
+ *   - "2026-03-08 14:00"             — full date + time (local)
+ *   - "2026-03-08T14:00:00"          — ISO-style (local)
  */
 function parseAt(at: string): string {
   const now = new Date();
@@ -58,28 +59,24 @@ function parseAt(at: string): string {
   if (timeOnly) {
     const target = new Date(now);
     target.setHours(parseInt(timeOnly[1], 10), parseInt(timeOnly[2], 10), parseInt(timeOnly[3] ?? "0", 10), 0);
-    // If the time has already passed today, don't auto-advance to tomorrow — just use as-is
     return toUtcStorage(target);
   }
 
   // Full datetime: "2026-03-08 14:00" or "2026-03-08T14:00:00" (treat as local time)
   const fullMatch = at.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{1,2}:\d{2}(?::\d{2})?)$/);
   if (fullMatch) {
-    // Parse as local time by using Date constructor with local-timezone interpretation
     const parsed = new Date(`${fullMatch[1]}T${fullMatch[2]}:00`);
     if (isNaN(parsed.getTime())) die(`Cannot parse date/time: ${at}`);
     return toUtcStorage(parsed);
   }
 
-  die(`Unrecognized --at format: "${at}". Use "+30m", "+2h", "+1d", "14:00", "2026-03-08 14:00", or "2026-03-08T14:00:00"`);
+  die(`Unrecognized time format: "${at}". Use "+30m", "+2h", "+1d", "+14d", "14:00", "2026-03-08 14:00", or "2026-03-08T14:00:00"`);
 }
 
 /**
  * Parse a recurring interval string (without leading "+") into seconds.
  * Accepted formats: "30m", "2h", "1d", "90s"
  * Minimum: 60 seconds.
- *
- * Throws an Error (rather than calling die/process.exit) so tests can catch it.
  */
 export function parseRecurringInterval(value: string): number {
   const m = value.match(/^(\d+)([smhd])$/);
@@ -100,8 +97,29 @@ export function parseRecurringInterval(value: string): number {
 }
 
 /**
+ * Parse a check-interval string into seconds. Accepted: "30s", "1m", "5m", "1h".
+ * Minimum: 10 seconds (script_check is a polling trigger, sub-10s is wasteful).
+ */
+export function parseCheckInterval(value: string): number {
+  const m = value.match(/^(\d+)([smhd])$/);
+  if (!m) {
+    throw new Error(`Unrecognized --check-interval format: "${value}". Use "30s", "1m", "1h" (no leading +). Minimum is 10s.`);
+  }
+  const amount = parseInt(m[1], 10);
+  const unit = m[2];
+  const seconds =
+    unit === "s" ? amount
+    : unit === "m" ? amount * 60
+    : unit === "h" ? amount * 3_600
+    : amount * 86_400;
+  if (seconds < 10) {
+    throw new Error(`--check-interval must be at least 10 seconds (got ${seconds}s).`);
+  }
+  return seconds;
+}
+
+/**
  * Format seconds as a human-readable interval string for display.
- * e.g. 3600 → "1h", 7200 → "2h", 86400 → "1d", 90 → "90s"
  */
 export function formatInterval(seconds: number): string {
   if (seconds % 86_400 === 0) return `${seconds / 86_400}d`;
@@ -117,9 +135,109 @@ function toUtcStorage(d: Date): string {
 
 /** Convert a UTC storage string to local time string for display */
 function toLocalDisplay(utcStr: string): string {
-  // SQLite stores as "YYYY-MM-DD HH:MM:SS" (UTC)
   const d = new Date(utcStr.replace(" ", "T") + "Z");
   return d.toLocaleString();
+}
+
+/**
+ * Compute a stable idempotency hash over the fields that semantically
+ * identify a non-time reminder. Used to dedupe accidental double-creates
+ * by an agent (e.g. retry loops, mid-turn steering).
+ *
+ * `time` triggers are NOT deduped — repeating "set a 30m timer twice" is a
+ * legitimate user request. Dedupe applies only to event-shaped triggers
+ * (email_reply, script_check) where double-firing on the same event is wrong.
+ */
+export function computeIdempotencyHash(
+  triggerType: string,
+  triggerConfig: string,
+  prompt: string,
+): string {
+  return createHash("sha256")
+    .update(triggerType)
+    .update("\0")
+    .update(triggerConfig)
+    .update("\0")
+    .update(prompt)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * Validate that an email thread_id exists in any of the per-account email DBs.
+ * Returns true if found, false otherwise. Used at --when-reply-to add time so
+ * we fail loudly if the agent passes a typo / stale id.
+ */
+export function emailThreadExists(threadId: string, emailDbDir: string): boolean {
+  if (!existsSync(emailDbDir)) return false;
+  const files = readdirSync(emailDbDir).filter((f) => f.endsWith(".db"));
+  for (const f of files) {
+    try {
+      const accountDb = new Database(`${emailDbDir}/${f}`, { readonly: true });
+      const row = accountDb.prepare("SELECT 1 FROM threads WHERE thread_id = ? LIMIT 1").get(threadId);
+      accountDb.close();
+      if (row) return true;
+    } catch {
+      // DB might be missing the threads table — skip
+    }
+  }
+  return false;
+}
+
+/**
+ * Check whether a reply that matches the email_reply trigger has arrived
+ * since the reminder was created.
+ *
+ * Returns the matching email's sender + subject for prompt context, or null
+ * if nothing has arrived yet.
+ */
+export function checkEmailReply(
+  threadId: string,
+  fromFilter: string | null,
+  reminderCreatedAt: string,
+  emailDbDir: string,
+): { sender: string; subject: string; created_at: string } | null {
+  if (!existsSync(emailDbDir)) return null;
+  const files = readdirSync(emailDbDir).filter((f) => f.endsWith(".db"));
+  for (const f of files) {
+    try {
+      const accountDb = new Database(`${emailDbDir}/${f}`, { readonly: true });
+      const query = fromFilter
+        ? `SELECT sender, subject, created_at FROM emails
+           WHERE thread_id = ? AND direction = 'in' AND created_at > ? AND lower(sender) LIKE ?
+           ORDER BY created_at ASC LIMIT 1`
+        : `SELECT sender, subject, created_at FROM emails
+           WHERE thread_id = ? AND direction = 'in' AND created_at > ?
+           ORDER BY created_at ASC LIMIT 1`;
+      const params: any[] = fromFilter
+        ? [threadId, reminderCreatedAt, `%${fromFilter.toLowerCase()}%`]
+        : [threadId, reminderCreatedAt];
+      const row = accountDb.prepare(query).get(...params) as any;
+      accountDb.close();
+      if (row) return row;
+    } catch {
+      // Missing emails table — skip
+    }
+  }
+  return null;
+}
+
+/**
+ * Run a shell script (via `bash -c`) and return true if it exited 0.
+ * Stdout/stderr are captured to avoid leaking into the parent log; the
+ * stop signal is purely the exit code.
+ */
+export function runScriptCheck(command: string): boolean {
+  try {
+    execSync(command, {
+      shell: "/bin/bash",
+      stdio: "pipe",
+      timeout: 30_000, // 30s hard cap per check — protect cron from hangs
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function printTable(reminders: any[], recurringOnly = false): void {
@@ -131,16 +249,23 @@ function printTable(reminders: any[], recurringOnly = false): void {
     console.log("No reminders found.");
     return;
   }
-  const cols = ["id", "title", "fire_at (local)", "recurring", "channel", "session", "status"];
-  const rows = filtered.map((r) => ({
-    id: String(r.id),
-    title: r.title,
-    "fire_at (local)": toLocalDisplay(r.fire_at),
-    recurring: r.recurring_interval_seconds != null ? `every ${formatInterval(r.recurring_interval_seconds)}` : "—",
-    channel: r.channel ?? "internal",
-    session: r.trigger_name ? `${r.trigger_name}/${r.session_key || "_default"}` : "ephemeral",
-    status: r.status,
-  }));
+  const cols = ["id", "title", "trigger", "fires_when", "recurring", "channel", "session", "status"];
+  const rows = filtered.map((r) => {
+    const triggerType = r.trigger_type || "time";
+    const firesWhen = triggerType === "time"
+      ? toLocalDisplay(r.fire_at)
+      : describeNonTimeTrigger(triggerType, r.trigger_config);
+    return {
+      id: String(r.id),
+      title: r.title,
+      trigger: triggerType,
+      fires_when: firesWhen,
+      recurring: r.recurring_interval_seconds != null ? `every ${formatInterval(r.recurring_interval_seconds)}` : "—",
+      channel: r.channel ?? "internal",
+      session: r.trigger_name ? `${r.trigger_name}/${r.session_key || "_default"}` : "ephemeral",
+      status: r.status,
+    };
+  });
 
   const widths = cols.map((c) =>
     Math.max(c.length, ...rows.map((r) => String((r as any)[c] ?? "").length))
@@ -154,11 +279,28 @@ function printTable(reminders: any[], recurringOnly = false): void {
   }
 }
 
+function describeNonTimeTrigger(triggerType: string, configJson: string | null): string {
+  if (!configJson) return triggerType;
+  try {
+    const cfg = JSON.parse(configJson);
+    if (triggerType === "email_reply") {
+      const tid = String(cfg.thread_id || "").slice(0, 12);
+      return cfg.from ? `reply in ${tid}… from ${cfg.from}` : `reply in ${tid}…`;
+    }
+    if (triggerType === "script_check") {
+      const cmd = String(cfg.command || "").slice(0, 30);
+      return `script ok: ${cmd}…`;
+    }
+  } catch {
+    // ignore
+  }
+  return triggerType;
+}
+
 // --- Main (only runs when executed directly, not when imported by tests) ---
 
 if (!import.meta.main) {
-  // Module was imported — skip CLI execution
-  // (exported functions like parseRecurringInterval / formatInterval are still available)
+  // Module was imported — exported functions still available; skip CLI.
 } else {
 
 const argv = Bun.argv.slice(2);
@@ -168,31 +310,75 @@ if (!command || command === "--help" || command === "-h") {
   console.log(`Usage: bun /atlas/app/triggers/manage-reminders.ts <command> [flags]
 
 Commands:
-  add     --title=<text> --at=<time> --prompt=<text> [--channel=internal] [--new-session] [--recurring=<interval>]
+  add     [--at=<time> | --when-reply-to=<thread-id> | --when-script-ok=<cmd>]
+          --title=<text> --prompt=<text>
+          [--from=<addr>] [--check-interval=<duration>]
+          [--timeout=<time>] [--channel=internal] [--new-session]
+          [--recurring=<interval>]
   list    [--all] [--recurring]
   cancel  --id=<id>
   delete  --id=<id>
-  check   (fire due reminders — called by cron)
+  check   (evaluate due reminders — called by cron)
 
-Time formats for --at:
-  "+30m", "+2h", "+1d"           relative offset
-  "14:00"                         today at given time
-  "2026-03-08 14:00"              specific date + time (local timezone)
-  "2026-03-08T14:00:00"           ISO-style (local timezone)
+Trigger types (pick exactly one per reminder):
+
+  --at=<time>                  Fire at a wall-clock time. Time formats:
+                                 "+30m", "+2h", "+1d", "+14d"  (relative)
+                                 "14:00"                        (today, local)
+                                 "2026-03-08 14:00"             (full local datetime)
+
+  --when-reply-to=<thread-id>  Fire when an inbound email arrives in <thread-id>.
+                               Optionally restrict with --from=<addr>.
+                               Use 'email threads' to find thread ids.
+
+  --when-script-ok=<cmd>       Fire when '<cmd>' exits 0. The command is run
+                               under 'bash -c'. Checked every --check-interval
+                               (default: 60s; minimum: 10s).
+
+Optional safety net:
+
+  --timeout=<time>             Only meaningful with --when-reply-to or
+                               --when-script-ok. If the trigger condition is
+                               not met by <time>, the reminder fires anyway
+                               with a "[Timeout]" note appended to the prompt
+                               so you can react. NO default — most real-world
+                               events take days. A typical safety net is
+                               --timeout=+14d. Leave unset to wait forever.
 
 Recurring reminders (--recurring):
   Interval formats (no leading +): "30m", "2h", "1d"  (minimum: 60s / "1m")
-  --recurring fires the reminder repeatedly into the same session until cancelled.
-  Each fire re-schedules a new pending row; cancel the latest pending row to stop the chain.
-  Note: the pending row id changes after each fire — use 'reminder list' to find the current one.
-  --recurring requires an active trigger session (ATLAS_TRIGGER must be set).
-  --recurring is incompatible with --new-session (use a cronjob for that).
-  --persist is not supported; use a cronjob for cross-session schedules.
+  Fires repeatedly into the same session until cancelled.
+  Note: the pending row id changes after each fire — use 'reminder list' to
+  find the current one. Incompatible with --new-session.
 
 Session routing:
-  By default, reminders fire into the same session that created them
-  (e.g., a Signal reminder wakes the Signal session).
-  Use --new-session to force a standalone ephemeral session instead.`);
+  By default, reminders fire into the same session that created them.
+  Use --new-session to force a standalone ephemeral session instead.
+
+Idempotency:
+  --when-reply-to and --when-script-ok are deduped over
+  (trigger-config, prompt). Re-adding the same reminder returns the
+  existing id instead of creating a duplicate. --at reminders are not
+  deduped (setting two 30m timers is legitimate).
+
+Examples:
+  # Time-based (existing behavior, unchanged)
+  reminder add --title="Standup" --at="2026-03-08 09:00" --prompt="Send daily standup"
+
+  # Wait for an email reply (forever, no timeout)
+  reminder add --title="Müller OK" --when-reply-to="thread-abc123" \\
+    --prompt="Müller hat geantwortet — gleich abarbeiten"
+
+  # Wait for a reply, but give up after two weeks
+  reminder add --title="Müller OK" --when-reply-to="thread-abc123" \\
+    --from="s.mueller@mueller-partner.de" --timeout="+14d" \\
+    --prompt="Müller hat geantwortet (oder Timeout) — entscheiden"
+
+  # Wait until a CI/deploy script signals ready
+  reminder add --title="Deploy ready" \\
+    --when-script-ok="kubectl rollout status deploy/api --timeout=10s" \\
+    --check-interval="30s" --prompt="Deploy ist live — Tests fahren"
+`);
   process.exit(0);
 }
 
@@ -216,30 +402,51 @@ db.run(`
 `);
 db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_status_fire ON reminders(status, fire_at)`);
 
-// Migration: add trigger_name and session_key columns to existing tables
+// Existing migrations
 try { db.run("ALTER TABLE reminders ADD COLUMN trigger_name TEXT"); } catch {}
 try { db.run("ALTER TABLE reminders ADD COLUMN session_key TEXT"); } catch {}
-// Migration: add recurring_interval_seconds column
 try { db.run("ALTER TABLE reminders ADD COLUMN recurring_interval_seconds INTEGER"); } catch {}
+// New (generalized trigger) migrations
+try { db.run("ALTER TABLE reminders ADD COLUMN trigger_type TEXT DEFAULT 'time'"); } catch {}
+try { db.run("ALTER TABLE reminders ADD COLUMN trigger_config TEXT"); } catch {}
+try { db.run("ALTER TABLE reminders ADD COLUMN timeout_at TEXT"); } catch {}
+try { db.run("ALTER TABLE reminders ADD COLUMN idempotency_hash TEXT"); } catch {}
+try { db.run("ALTER TABLE reminders ADD COLUMN last_checked_at TEXT"); } catch {}
+db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_idempotency ON reminders(status, idempotency_hash)`);
 
 switch (command) {
   case "add": {
     const title = flags["title"] || "";
     const at = flags["at"] || "";
+    const replyTo = flags["when-reply-to"] || "";
+    const scriptOk = flags["when-script-ok"] || "";
+    const fromFilter = flags["from"] || "";
+    const checkIntervalRaw = flags["check-interval"] || "";
+    const timeoutRaw = flags["timeout"] || "";
     const prompt = flags["prompt"] || "";
     const channel = flags["channel"] || "internal";
     const newSession = flags["new-session"] === "true";
     const recurringRaw = flags["recurring"];
     const persistFlag = flags["persist"];
 
-    // --persist is always rejected — point users to cronjobs
     if (persistFlag !== undefined) {
       die("--persist is not supported. Recurring reminders are session-bound by design. For cross-session schedules, use a cronjob — see 'cron --help' or the 'triggers' skill.");
     }
 
     if (!title) die("--title is required");
-    if (!at) die("--at is required");
     if (!prompt) die("--prompt is required");
+
+    // Exactly one of --at / --when-reply-to / --when-script-ok must be set
+    const triggerFlagsPresent: string[] = [];
+    if (at) triggerFlagsPresent.push("--at");
+    if (replyTo) triggerFlagsPresent.push("--when-reply-to");
+    if (scriptOk) triggerFlagsPresent.push("--when-script-ok");
+    if (triggerFlagsPresent.length === 0) {
+      die("One of --at, --when-reply-to, or --when-script-ok is required. These three trigger flags are mutually exclusive — pick exactly one per reminder.");
+    }
+    if (triggerFlagsPresent.length > 1) {
+      die(`${triggerFlagsPresent.join(" and ")} cannot be combined — these trigger flags are mutually exclusive. Pick exactly one per reminder. (If you need both time and event semantics, use one reminder per trigger.)`);
+    }
 
     // Validate --recurring flag combinations before touching the DB
     let recurringIntervalSeconds: number | null = null;
@@ -250,6 +457,10 @@ switch (command) {
       if (!process.env.ATLAS_TRIGGER) {
         die("--recurring can only be used from within a trigger session (the reminder needs a session to fire into).");
       }
+      if (replyTo || scriptOk) {
+        const eventFlag = replyTo ? "--when-reply-to" : "--when-script-ok";
+        die(`--recurring is only supported with --at, but ${eventFlag} was set. Event-driven triggers (--when-reply-to, --when-script-ok) fire on edges, not on intervals; if you need repeated behavior, set a fresh reminder after each fire.`);
+      }
       try {
         recurringIntervalSeconds = parseRecurringInterval(recurringRaw);
       } catch (e: any) {
@@ -257,23 +468,108 @@ switch (command) {
       }
     }
 
-    const fireAt = parseAt(at);
-    const fireAtLocal = toLocalDisplay(fireAt);
+    // --from is only meaningful with --when-reply-to
+    if (fromFilter && !replyTo) {
+      die("--from only applies to --when-reply-to.");
+    }
 
-    // Capture trigger context from environment (set by trigger-runner)
-    // so the reminder fires into the same session that created it.
-    // --new-session forces an ephemeral session (ignores trigger context).
+    // --check-interval is only meaningful with --when-script-ok
+    if (checkIntervalRaw && !scriptOk) {
+      die("--check-interval only applies to --when-script-ok.");
+    }
+
+    let triggerType: string;
+    let triggerConfigObj: Record<string, any> = {};
+    let fireAt: string; // for compatibility with existing schema column
+    let timeoutAt: string | null = null;
+
+    if (at) {
+      triggerType = "time";
+      fireAt = parseAt(at);
+      // --timeout doesn't make sense with --at
+      if (timeoutRaw) die("--timeout doesn't apply to --at reminders (the time itself is the trigger).");
+    } else if (replyTo) {
+      triggerType = "email_reply";
+      // Sanity: validate that the thread exists so a typo fails loudly here
+      const emailDbDir = `${process.env.HOME}/.index/email`;
+      if (existsSync(emailDbDir) && !emailThreadExists(replyTo, emailDbDir)) {
+        console.warn(`Warning: thread '${replyTo}' was not found in any local email DB. The reminder is still scheduled but will only fire on future replies if the thread becomes known.`);
+      }
+      triggerConfigObj = { thread_id: replyTo };
+      if (fromFilter) triggerConfigObj.from = fromFilter;
+      // fire_at acts as a sentinel for the existing index — set far future
+      fireAt = "9999-12-31 23:59:59";
+      if (timeoutRaw) timeoutAt = parseAt(timeoutRaw);
+    } else {
+      // scriptOk
+      triggerType = "script_check";
+      const checkInterval = checkIntervalRaw
+        ? (() => { try { return parseCheckInterval(checkIntervalRaw); } catch (e: any) { die(e.message); } })()
+        : 60;
+      triggerConfigObj = { command: scriptOk, check_interval_seconds: checkInterval };
+      fireAt = "9999-12-31 23:59:59";
+      if (timeoutRaw) timeoutAt = parseAt(timeoutRaw);
+    }
+
+    const triggerConfig = JSON.stringify(triggerConfigObj);
+
+    // Idempotency check for event-shaped triggers
+    let existingId: number | null = null;
+    if (triggerType !== "time") {
+      const ihash = computeIdempotencyHash(triggerType, triggerConfig, prompt);
+      const existing = db
+        .prepare(
+          `SELECT id FROM reminders WHERE status = 'pending' AND idempotency_hash = ? LIMIT 1`,
+        )
+        .get(ihash) as { id: number } | undefined;
+      if (existing) {
+        console.log(
+          `Reminder #${existing.id} already pending for this trigger + prompt (idempotency match). Skipping duplicate.`,
+        );
+        process.exit(0);
+      }
+      var idempotencyHash: string | null = ihash;
+    } else {
+      var idempotencyHash: string | null = null;
+    }
+
+    // Capture trigger context
     const triggerName = newSession ? null : (process.env.ATLAS_TRIGGER || null);
     const sessionKey = newSession ? null : (process.env.ATLAS_TRIGGER_SESSION_KEY || null);
 
     const result = db.prepare(
-      `INSERT INTO reminders (title, prompt, fire_at, channel, trigger_name, session_key, recurring_interval_seconds) VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(title, prompt, fireAt, channel, triggerName, sessionKey, recurringIntervalSeconds);
+      `INSERT INTO reminders (
+         title, prompt, fire_at, channel, trigger_name, session_key,
+         recurring_interval_seconds, trigger_type, trigger_config,
+         timeout_at, idempotency_hash
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      title,
+      prompt,
+      fireAt,
+      channel,
+      triggerName,
+      sessionKey,
+      recurringIntervalSeconds,
+      triggerType,
+      triggerConfig === "{}" ? null : triggerConfig,
+      timeoutAt,
+      idempotencyHash,
+    );
 
     const id = result.lastInsertRowid;
 
     console.log(`Reminder #${id} scheduled: "${title}"`);
-    console.log(`  Fire at: ${fireAtLocal}`);
+    if (triggerType === "time") {
+      console.log(`  Fire at: ${toLocalDisplay(fireAt)}`);
+    } else if (triggerType === "email_reply") {
+      console.log(`  Fires when: reply arrives in thread ${triggerConfigObj.thread_id}${fromFilter ? ` from ${fromFilter}` : ""}`);
+    } else {
+      console.log(`  Fires when: '${triggerConfigObj.command}' exits 0 (checked every ${formatInterval(triggerConfigObj.check_interval_seconds)})`);
+    }
+    if (timeoutAt) {
+      console.log(`  Timeout: ${toLocalDisplay(timeoutAt)} (fires with [Timeout] note if no trigger by then)`);
+    }
     console.log(`  Channel: ${channel}`);
     if (triggerName) {
       console.log(`  Session: ${triggerName}/${sessionKey || "_default"} (will resume originating session)`);
@@ -282,7 +578,6 @@ switch (command) {
     }
     if (recurringIntervalSeconds !== null) {
       console.log(`  Recurring: every ${formatInterval(recurringIntervalSeconds)}. Will run until cancelled. Use 'reminder cancel --id=<id>' to stop.`);
-      console.log(`  Note: after each fire a new pending row is created with a fresh id — use 'reminder list' to find the current one.`);
     }
     break;
   }
@@ -291,8 +586,8 @@ switch (command) {
     const showAll = flags["all"] === "true";
     const recurringOnly = flags["recurring"] === "true";
     const sql = showAll
-      ? "SELECT * FROM reminders ORDER BY fire_at DESC"
-      : "SELECT * FROM reminders WHERE status = 'pending' ORDER BY fire_at ASC";
+      ? "SELECT * FROM reminders ORDER BY id DESC"
+      : "SELECT * FROM reminders WHERE status = 'pending' ORDER BY id ASC";
     const reminders = db.prepare(sql).all() as any[];
     printTable(reminders, recurringOnly);
     break;
@@ -324,9 +619,58 @@ switch (command) {
   }
 
   case "check": {
-    const due = db.prepare(
-      `SELECT * FROM reminders WHERE status = 'pending' AND fire_at <= datetime('now')`
-    ).all() as any[];
+    // Pull all pending reminders. Evaluate per trigger_type.
+    const pending = db.prepare(`SELECT * FROM reminders WHERE status = 'pending'`).all() as any[];
+    const emailDbDir = `${process.env.HOME}/.index/email`;
+
+    const nowIso = toUtcStorage(new Date());
+    const due: Array<{ reminder: any; reason: "fired" | "timeout" }> = [];
+
+    for (const r of pending) {
+      const triggerType = r.trigger_type || "time";
+
+      if (triggerType === "time") {
+        if (r.fire_at <= nowIso) {
+          due.push({ reminder: r, reason: "fired" });
+        }
+        continue;
+      }
+
+      // Timeout takes precedence: if expired, fire with note
+      if (r.timeout_at && r.timeout_at <= nowIso) {
+        due.push({ reminder: r, reason: "timeout" });
+        continue;
+      }
+
+      let cfg: any = {};
+      try { cfg = r.trigger_config ? JSON.parse(r.trigger_config) : {}; } catch {}
+
+      if (triggerType === "email_reply") {
+        const match = checkEmailReply(cfg.thread_id, cfg.from || null, r.created_at, emailDbDir);
+        if (match) {
+          due.push({ reminder: r, reason: "fired" });
+        }
+        continue;
+      }
+
+      if (triggerType === "script_check") {
+        const interval = cfg.check_interval_seconds || 60;
+        // Throttle: only run if last_checked_at + interval <= now
+        if (r.last_checked_at) {
+          const lastMs = new Date(r.last_checked_at.replace(" ", "T") + "Z").getTime();
+          if (Date.now() - lastMs < interval * 1000) continue;
+        }
+        const ok = runScriptCheck(cfg.command);
+        db.prepare(`UPDATE reminders SET last_checked_at = ? WHERE id = ?`).run(nowIso, r.id);
+        if (ok) {
+          due.push({ reminder: r, reason: "fired" });
+        }
+        continue;
+      }
+
+      // Unknown trigger_type — log and skip rather than crash
+      console.warn(`[${new Date().toISOString()}] Reminder #${r.id} has unknown trigger_type '${triggerType}' — skipping.`);
+    }
 
     if (due.length === 0) {
       console.log(`[${new Date().toISOString()}] No due reminders.`);
@@ -335,21 +679,22 @@ switch (command) {
 
     console.log(`[${new Date().toISOString()}] Found ${due.length} due reminder(s).`);
 
-    for (const reminder of due) {
-      console.log(`[${new Date().toISOString()}] Firing reminder #${reminder.id}: "${reminder.title}"`);
+    for (const { reminder, reason } of due) {
+      console.log(`[${new Date().toISOString()}] Firing reminder #${reminder.id}: "${reminder.title}" (reason=${reason})`);
 
-      // Mark as fired immediately to prevent double-firing if cron overlaps
       db.prepare(
         `UPDATE reminders SET status = 'fired', fired_at = datetime('now') WHERE id = ?`
       ).run(reminder.id);
 
-      // Re-schedule recurring reminders by inserting a new pending row.
-      // The old row becomes an audit record (status='fired').
-      // This approach lets 'reminder cancel <id>' stop the chain cleanly.
+      // Re-schedule recurring reminders (only for time-trigger; enforced at add time)
       if (reminder.recurring_interval_seconds != null) {
         const newResult = db.prepare(
-          `INSERT INTO reminders (title, prompt, fire_at, channel, trigger_name, session_key, recurring_interval_seconds)
-           VALUES (?, ?, datetime('now', '+' || ? || ' seconds'), ?, ?, ?, ?)`
+          `INSERT INTO reminders (
+             title, prompt, fire_at, channel, trigger_name, session_key,
+             recurring_interval_seconds, trigger_type, trigger_config,
+             timeout_at, idempotency_hash
+           )
+           VALUES (?, ?, datetime('now', '+' || ? || ' seconds'), ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           reminder.title,
           reminder.prompt,
@@ -358,19 +703,26 @@ switch (command) {
           reminder.trigger_name,
           reminder.session_key,
           reminder.recurring_interval_seconds,
+          reminder.trigger_type || "time",
+          reminder.trigger_config,
+          reminder.timeout_at,
+          reminder.idempotency_hash,
         );
         console.log(`[${new Date().toISOString()}] Reminder #${reminder.id} is recurring — next fire scheduled as #${newResult.lastInsertRowid} in ${formatInterval(reminder.recurring_interval_seconds)}`);
       }
 
       const channel = reminder.channel || "internal";
 
-      // Wrap the user's prompt with reminder context and memory instructions
-      const promptText = `[Reminder #${reminder.id}: "${reminder.title}"]\n\n${reminder.prompt}\n\nIMPORTANT: After completing this task, write a brief note to today's journal (memory/journal/) documenting what you did and any messages you sent. This ensures other sessions (e.g. Signal) have context if the user replies.`;
+      // Wrap the user's prompt with reminder context and memory instructions.
+      // Append a [Timeout] note when the trigger fired because of timeout.
+      const timeoutNote = reason === "timeout"
+        ? `\n\n[Timeout: the trigger condition was not met within the configured window; firing anyway so you can decide how to proceed.]`
+        : "";
+
+      const promptText = `[Reminder #${reminder.id}: "${reminder.title}"]\n\n${reminder.prompt}${timeoutNote}\n\nIMPORTANT: After completing this task, write a brief note to today's journal (memory/journal/) documenting what you did and any messages you sent. This ensures other sessions (e.g. Signal) have context if the user replies.`;
 
       let proc;
       if (reminder.trigger_name) {
-        // Fire into the originating session via trigger.sh
-        // This resumes or injects into the same session that created the reminder
         const sessionKey = reminder.session_key || "_default";
         console.log(`[${new Date().toISOString()}] Reminder #${reminder.id}: routing to ${reminder.trigger_name}/${sessionKey}`);
         proc = Bun.spawn(
@@ -387,7 +739,6 @@ switch (command) {
           }
         );
       } else {
-        // No trigger context — spawn ephemeral session (original behavior)
         proc = Bun.spawn(
           ["/atlas/app/triggers/trigger-runner", "--direct", promptText, "--channel", channel],
           {
@@ -403,7 +754,6 @@ switch (command) {
         );
       }
 
-      // Fire-and-forget: log the PID but don't await
       console.log(`[${new Date().toISOString()}] Reminder #${reminder.id} spawned (pid=${proc.pid})`);
     }
     break;

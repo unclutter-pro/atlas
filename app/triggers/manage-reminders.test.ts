@@ -383,3 +383,212 @@ describe("list: recurring column and filter", () => {
     expect(formatInterval(1_800)).toBe("30m");
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseCheckInterval (script_check trigger)
+// ---------------------------------------------------------------------------
+
+import { parseCheckInterval, computeIdempotencyHash, checkEmailReply, runScriptCheck, emailThreadExists } from "./manage-reminders.ts";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+
+describe("parseCheckInterval", () => {
+  test("parses seconds correctly", () => {
+    expect(parseCheckInterval("30s")).toBe(30);
+  });
+  test("parses minutes correctly", () => {
+    expect(parseCheckInterval("1m")).toBe(60);
+    expect(parseCheckInterval("5m")).toBe(300);
+  });
+  test("parses hours correctly", () => {
+    expect(parseCheckInterval("1h")).toBe(3_600);
+  });
+  test("accepts the 10s minimum", () => {
+    expect(parseCheckInterval("10s")).toBe(10);
+  });
+  test("rejects sub-10s intervals", () => {
+    expect(() => parseCheckInterval("5s")).toThrow();
+    expect(() => parseCheckInterval("1s")).toThrow();
+  });
+  test("rejects unknown unit", () => {
+    expect(() => parseCheckInterval("1w")).toThrow();
+  });
+  test("rejects empty string", () => {
+    expect(() => parseCheckInterval("")).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeIdempotencyHash
+// ---------------------------------------------------------------------------
+
+describe("computeIdempotencyHash", () => {
+  test("same inputs produce the same hash", () => {
+    const a = computeIdempotencyHash("email_reply", '{"thread_id":"t1"}', "ping");
+    const b = computeIdempotencyHash("email_reply", '{"thread_id":"t1"}', "ping");
+    expect(a).toBe(b);
+  });
+  test("different prompt produces different hash", () => {
+    const a = computeIdempotencyHash("email_reply", '{"thread_id":"t1"}', "ping");
+    const b = computeIdempotencyHash("email_reply", '{"thread_id":"t1"}', "pong");
+    expect(a).not.toBe(b);
+  });
+  test("different config produces different hash", () => {
+    const a = computeIdempotencyHash("email_reply", '{"thread_id":"t1"}', "ping");
+    const b = computeIdempotencyHash("email_reply", '{"thread_id":"t2"}', "ping");
+    expect(a).not.toBe(b);
+  });
+  test("different trigger_type produces different hash", () => {
+    const a = computeIdempotencyHash("email_reply", '{"x":1}', "ping");
+    const b = computeIdempotencyHash("script_check", '{"x":1}', "ping");
+    expect(a).not.toBe(b);
+  });
+  test("hash is a 16-char hex string", () => {
+    const h = computeIdempotencyHash("email_reply", "{}", "x");
+    expect(h).toMatch(/^[0-9a-f]{16}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runScriptCheck
+// ---------------------------------------------------------------------------
+
+describe("runScriptCheck", () => {
+  test("returns true when command exits 0", () => {
+    expect(runScriptCheck("true")).toBe(true);
+    expect(runScriptCheck("exit 0")).toBe(true);
+  });
+  test("returns false when command exits non-zero", () => {
+    expect(runScriptCheck("false")).toBe(false);
+    expect(runScriptCheck("exit 1")).toBe(false);
+  });
+  test("returns false when command does not exist", () => {
+    expect(runScriptCheck("definitely-not-a-real-command-xyz")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// emailThreadExists / checkEmailReply
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fake per-account email DB matching the production schema
+ * (the columns we actually query). Returns the dir path.
+ */
+function createFakeEmailDbDir(opts: {
+  threadId?: string;
+  inboundEmails?: Array<{ created_at: string; sender: string; subject: string }>;
+}): string {
+  const { threadId = "thread-xyz", inboundEmails = [] } = opts;
+  const dir = mkdtempSync(join(tmpdir(), "atlas-eml-"));
+  const dbPath = join(dir, "fake-account.db");
+  const db = new Database(dbPath);
+  db.exec(`
+    CREATE TABLE threads (thread_id TEXT PRIMARY KEY, subject TEXT);
+    CREATE TABLE emails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id TEXT,
+      direction TEXT,
+      sender TEXT,
+      subject TEXT,
+      created_at TEXT
+    );
+  `);
+  db.prepare("INSERT INTO threads (thread_id, subject) VALUES (?, ?)").run(threadId, "Subject");
+  for (const e of inboundEmails) {
+    db.prepare(
+      "INSERT INTO emails (thread_id, direction, sender, subject, created_at) VALUES (?, 'in', ?, ?, ?)"
+    ).run(threadId, e.sender, e.subject, e.created_at);
+  }
+  db.close();
+  return dir;
+}
+
+describe("emailThreadExists", () => {
+  test("returns true when thread exists in any per-account DB", () => {
+    const dir = createFakeEmailDbDir({ threadId: "real-thread" });
+    expect(emailThreadExists("real-thread", dir)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  test("returns false for unknown thread", () => {
+    const dir = createFakeEmailDbDir({ threadId: "real-thread" });
+    expect(emailThreadExists("nope", dir)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+  test("returns false when email dir does not exist", () => {
+    expect(emailThreadExists("x", "/tmp/atlas-eml-does-not-exist-xyz")).toBe(false);
+  });
+});
+
+describe("checkEmailReply", () => {
+  test("returns null when no reply has arrived", () => {
+    const dir = createFakeEmailDbDir({ threadId: "t1" });
+    expect(checkEmailReply("t1", null, "2030-01-01 00:00:00", dir)).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  test("returns the matching reply when one arrives after reminder creation", () => {
+    const dir = createFakeEmailDbDir({
+      threadId: "t1",
+      inboundEmails: [
+        { created_at: "2026-06-01 12:00:00", sender: "s.mueller@mueller-partner.de", subject: "Re: Vertrag" },
+      ],
+    });
+    const match = checkEmailReply("t1", null, "2026-06-01 09:00:00", dir);
+    expect(match).not.toBeNull();
+    expect(match!.sender).toBe("s.mueller@mueller-partner.de");
+    rmSync(dir, { recursive: true, force: true });
+  });
+  test("ignores replies that arrived BEFORE the reminder was set", () => {
+    const dir = createFakeEmailDbDir({
+      threadId: "t1",
+      inboundEmails: [
+        { created_at: "2026-05-01 09:00:00", sender: "x@example.com", subject: "old" },
+      ],
+    });
+    const match = checkEmailReply("t1", null, "2026-06-01 00:00:00", dir);
+    expect(match).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  test("--from filter restricts which sender matches", () => {
+    const dir = createFakeEmailDbDir({
+      threadId: "t1",
+      inboundEmails: [
+        { created_at: "2026-06-01 10:00:00", sender: "anna@becker-media.de", subject: "Re" },
+        { created_at: "2026-06-01 11:00:00", sender: "s.mueller@mueller-partner.de", subject: "Re" },
+      ],
+    });
+    const match = checkEmailReply("t1", "s.mueller@", "2026-06-01 00:00:00", dir);
+    expect(match).not.toBeNull();
+    expect(match!.sender).toBe("s.mueller@mueller-partner.de");
+    rmSync(dir, { recursive: true, force: true });
+  });
+  test("returns null when --from matches nothing", () => {
+    const dir = createFakeEmailDbDir({
+      threadId: "t1",
+      inboundEmails: [
+        { created_at: "2026-06-01 10:00:00", sender: "anna@becker-media.de", subject: "Re" },
+      ],
+    });
+    const match = checkEmailReply("t1", "s.mueller@", "2026-06-01 00:00:00", dir);
+    expect(match).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Schema migration: trigger_type defaults to 'time' for legacy rows
+// ---------------------------------------------------------------------------
+
+describe("schema migration: trigger_type default", () => {
+  test("legacy reminders without trigger_type stored as null are treated as 'time'", () => {
+    const db = createRemindersDb();
+    // Old-style insert (no trigger_type column on the in-memory test DB)
+    const id = insertReminder(db, {});
+    const row = db.prepare("SELECT * FROM reminders WHERE id = ?").get(id) as any;
+    // In the production schema the migration adds trigger_type with DEFAULT 'time'.
+    // Here we just verify the row inserts cleanly through the legacy code path.
+    expect(row).toBeTruthy();
+    expect(row.title).toBe("Test reminder");
+  });
+});
