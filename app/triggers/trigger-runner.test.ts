@@ -15,6 +15,7 @@ import type { Server } from "net";
 
 import {
   buildSystemPrompt,
+  buildInjectMessage,
   resolveModel,
   getMcpServers,
   safePlaceholderReplace,
@@ -232,6 +233,132 @@ describe("buildSystemPrompt", () => {
     const result = buildSystemPrompt("internal", { appDir, workspace });
     // With both soul+identity and trigger-system-prompt.md, we expect --- separators
     expect(result).toContain("---");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildInjectMessage — channel-specific inject template lookup
+//
+// Naming convention is `trigger-channel-${channel}-inject.md`, matching the
+// rest of the `trigger-channel-${channel}-*.md` family (system prompt,
+// farewell, etc.) consumed by buildSystemPrompt. Before this was unified,
+// the lookup used `trigger-${channel}-inject.md` which never matched any
+// file in app/prompts/ — every channel silently fell through to the
+// generic trigger-inject.md template.
+// ---------------------------------------------------------------------------
+
+describe("buildInjectMessage", () => {
+  let tmpDir: string;
+  let appDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    appDir = join(tmpDir, "app");
+    mkdirSync(join(appDir, "prompts"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("uses trigger-channel-<channel>-inject.md when present", () => {
+    writeFileSync(
+      join(appDir, "prompts", "trigger-channel-signal-inject.md"),
+      "SIGNAL: {{payload}} from {{sender}}",
+    );
+    const result = buildInjectMessage(
+      "signal", "trig-a", "+491234", "hello", "fb", appDir,
+    );
+    expect(result).toBe("SIGNAL: hello from +491234");
+  });
+
+  test("falls back to trigger-inject.md when channel template missing", () => {
+    writeFileSync(
+      join(appDir, "prompts", "trigger-inject.md"),
+      "GENERIC: {{payload}}",
+    );
+    const result = buildInjectMessage(
+      "telegram", "trig-a", "user", "hi", "fb", appDir,
+    );
+    expect(result).toBe("GENERIC: hi");
+  });
+
+  test("channel-specific template wins over generic", () => {
+    writeFileSync(
+      join(appDir, "prompts", "trigger-channel-email-inject.md"),
+      "EMAIL: {{payload}}",
+    );
+    writeFileSync(
+      join(appDir, "prompts", "trigger-inject.md"),
+      "GENERIC: {{payload}}",
+    );
+    const result = buildInjectMessage(
+      "email", "trig-a", "alice@x.com", "subject body", "fb", appDir,
+    );
+    expect(result).toBe("EMAIL: subject body");
+  });
+
+  test("does NOT match legacy unprefixed filename (regression)", () => {
+    // The old buggy lookup pattern was `trigger-${channel}-inject.md`.
+    // No prompt file in app/prompts/ ever followed that pattern — every
+    // channel template is `trigger-channel-${channel}-inject.md`. Pinning
+    // this expectation guards against a regression to the old lookup.
+    writeFileSync(
+      join(appDir, "prompts", "trigger-email-inject.md"),
+      "LEGACY UNPREFIXED: {{payload}}",
+    );
+    writeFileSync(
+      join(appDir, "prompts", "trigger-inject.md"),
+      "GENERIC: {{payload}}",
+    );
+    const result = buildInjectMessage(
+      "email", "trig-a", "alice@x.com", "body", "fb", appDir,
+    );
+    expect(result).toBe("GENERIC: body");
+  });
+
+  test("substitutes trigger_name, channel, sender, payload", () => {
+    writeFileSync(
+      join(appDir, "prompts", "trigger-channel-web-inject.md"),
+      "trig={{trigger_name}} ch={{channel}} from={{sender}} body={{payload}}",
+    );
+    const result = buildInjectMessage(
+      "web", "morning-brief", "session-1", "good morning", "fb", appDir,
+    );
+    expect(result).toBe(
+      "trig=morning-brief ch=web from=session-1 body=good morning",
+    );
+  });
+
+  test("uses promptFallback when payload is empty", () => {
+    writeFileSync(
+      join(appDir, "prompts", "trigger-inject.md"),
+      "BODY: {{payload}}",
+    );
+    const result = buildInjectMessage(
+      "internal", "trig-a", "self", "", "fallback prompt", appDir,
+    );
+    expect(result).toBe("BODY: fallback prompt");
+  });
+
+  test("hardcoded fallback when no templates exist", () => {
+    const result = buildInjectMessage(
+      "internal", "trig-a", "self", "hello", "fb", appDir,
+    );
+    // No template files written → falls through to the inline default.
+    expect(result).toContain("hello");
+    expect(result).toContain("New message arrived");
+  });
+
+  test("regression: ships an email-channel inject template", () => {
+    // Validates that the repo actually carries
+    // app/prompts/trigger-channel-email-inject.md alongside its
+    // signal/web/whatsapp peers — otherwise the email channel falls
+    // back to the generic prompt and loses its channel-specific
+    // guidance (the original bug).
+    const repoPromptDir = join(import.meta.dir, "..", "prompts");
+    expect(existsSync(join(repoPromptDir, "trigger-channel-email-inject.md")))
+      .toBe(true);
   });
 });
 

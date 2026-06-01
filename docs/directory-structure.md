@@ -39,10 +39,12 @@ app/
 │   ├── sync-crontab.ts        # Crontab auto-generation from DB
 │   └── cron/                  # Cron-specific scripts
 ├── prompts/                    # Prompt templates
-│   ├── trigger-system-prompt.md     # Core trigger session system prompt
-│   ├── trigger-channel-*.md         # Channel-specific system prompt additions
-│   ├── trigger-*-inject.md          # IPC injection templates (persistent sessions)
-│   └── trigger-*-pre-compact.md     # Pre-compaction memory flush prompts
+│   ├── trigger-system-prompt.md           # Core trigger session system prompt
+│   ├── trigger-inject.md                  # Generic IPC injection template (fallback)
+│   ├── trigger-channel-*.md               # Channel-specific system prompt additions
+│   ├── trigger-channel-*-inject.md        # Channel-specific IPC injection templates
+│   ├── trigger-channel-*-farewell.md      # Channel-specific session-end prompts
+│   └── trigger-pre-compact.md             # Pre-compaction memory flush prompt
 ├── nginx.conf                  # nginx reverse proxy config
 ├── entrypoint.sh               # Container entrypoint (permission fix + supervisord)
 └── init.sh                     # Container startup script
