@@ -2026,6 +2026,24 @@ export async function main(): Promise<void> {
   const wantsStreaming = channel === "web";
 
   const runQuery = async (resumeId?: string) => {
+    // Mid-turn steering queue. Signal messages that arrive during an active
+    // turn are pushed here instead of into msgChannel. The PostToolBatch hook
+    // (registered below) drains the queue at every tool-call boundary and
+    // returns its contents as `additionalContext`, which the SDK injects into
+    // the NEXT LLM call within the same turn. That gives the "user message
+    // between tool calls" UX Claude Code's interactive REPL has — without
+    // restarting the turn or dropping work.
+    //
+    // Verified empirically with post-tool-batch-smoke-test.ts: the agent
+    // followed the steering directive on the next tool call.
+    //
+    // When no turn is active (between turns waiting for next user message),
+    // socket injects fall through to msgChannel.push to trigger a new turn.
+    // After a turn ends, any messages still in the queue (arrived after the
+    // last tool batch) are flushed to msgChannel to start a new turn.
+    const injectionQueue: string[] = [];
+    let inTurn = false;
+
     const options: Parameters<typeof query>[0]["options"] = {
       systemPrompt,
       model,
@@ -2040,6 +2058,31 @@ export async function main(): Promise<void> {
         ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
         : {}),
       ...(wantsStreaming ? { includePartialMessages: true } : {}),
+      hooks: {
+        PostToolBatch: [
+          {
+            hooks: [
+              async () => {
+                const pending = injectionQueue.splice(0);
+                if (pending.length === 0) {
+                  return {};
+                }
+                log.log(
+                  `Mid-turn steering: injecting ${pending.length} queued message(s) as additionalContext`,
+                );
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PostToolBatch" as const,
+                    additionalContext: pending
+                      .map((t) => `[Steering-Nachricht von ${sessionKey} (während aktivem Turn empfangen)]\n${t}`)
+                      .join("\n\n---\n\n"),
+                  },
+                };
+              },
+            ],
+          },
+        ],
+      },
     };
 
     // Typing indicator: one-shot per turn (no heartbeat).
@@ -2059,6 +2102,7 @@ export async function main(): Promise<void> {
 
     // Push the initial prompt as the first message + flash typing for turn 1
     msgChannel.push(prompt);
+    inTurn = true;
     sendTypingOnce();
 
     // Use a mutable reference so the socket server control handler can call q.interrupt()
@@ -2066,22 +2110,26 @@ export async function main(): Promise<void> {
 
     // Start socket server so other trigger-runner processes can inject messages.
     //
-    // Every injected message uses the DEFAULT push (no shouldQuery, no priority).
-    // The earlier experiment with shouldQuery=false for mid-turn steering caused
-    // the SDK to append the message to the transcript WITHOUT triggering an
-    // assistant turn — so when the current turn ended, the runQuery just waited
-    // for the next pull, the appended message never produced a response, and
-    // the 5min idle timeout closed the channel. Production effect: follow-up
-    // messages got no reply, sessions ended silently.
-    //
-    // The reliable behavior is the multi-turn loop (see for-await below): mid-
-    // turn injects queue normally and are consumed by the SDK as the next user
-    // message after the current turn's `result`. That gives "follow-up gets a
-    // response" — slightly less elegant than mid-tool steering but never drops.
+    // Routing:
+    //   - inTurn === true (turn in progress) → queue for PostToolBatch hook.
+    //     The hook drains the queue at every tool boundary, returning the
+    //     content as additionalContext — injected into the next LLM call
+    //     within the same turn. No msgChannel push, so the previous
+    //     "shouldQuery=false orphan" idle-timeout regression is structurally
+    //     impossible.
+    //   - inTurn === false (between turns) → push to msgChannel directly,
+    //     triggering the next turn.
     socketServer = startSocketServer(
       socketPath,
       (text) => {
-        msgChannel.push(text);
+        if (inTurn) {
+          // Mid-turn: hand off to the PostToolBatch hook via in-process queue.
+          injectionQueue.push(text);
+        } else {
+          // Between turns: trigger a new turn.
+          msgChannel.push(text);
+          inTurn = true;
+        }
         // Each new injected message gets a typing flash.
         sendTypingOnce();
       },
@@ -2132,8 +2180,25 @@ export async function main(): Promise<void> {
           resultMsg = msg as SDKResultMessage;
           capturedSessionId = msg.session_id ?? null;
           isError = msg.subtype !== "success";
+          inTurn = false;
           const turnText = "result" in msg ? (msg as { result?: string }).result : undefined;
           if (turnText) log.log(`Turn result: ${turnText}`);
+
+          // Flush any messages that arrived AFTER the last tool batch
+          // (PostToolBatch hook never got a chance to drain them) — push
+          // them now to start a new turn so they don't sit orphaned in the
+          // queue until idle timeout.
+          if (injectionQueue.length > 0) {
+            const leftover = injectionQueue.splice(0);
+            log.log(
+              `End-of-turn flush: ${leftover.length} queued message(s) → new turn`,
+            );
+            for (const text of leftover) {
+              msgChannel.push(text);
+            }
+            inTurn = true;
+          }
+
           continue;
         }
         // Capture session_id from any message that carries it
