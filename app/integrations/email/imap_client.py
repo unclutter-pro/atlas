@@ -577,9 +577,14 @@ class ImapClient:
         flag_op = "+FLAGS" if seen else "-FLAGS"
         for batch in _chunked(uids, UID_BATCH):
             uid_set = ",".join(str(u) for u in batch)
+            # RFC 3501 §6.4.6: the flag list argument to UID STORE must be a
+            # parenthesised list, even when it contains a single flag. Lenient
+            # servers (Dovecot, Exchange) accept the unparenthesised form, but
+            # strict ones (GreenMail, Cyrus, some O365 tenants) reject it with
+            # BAD. Always wrap in parens for portability.
             _ok(
-                self._mail.uid("store", uid_set, flag_op, "\\Seen"),
-                f"UID STORE {flag_op} \\Seen on {len(batch)} UIDs in {folder}",
+                self._mail.uid("store", uid_set, flag_op, "(\\Seen)"),
+                f"UID STORE {flag_op} (\\Seen) on {len(batch)} UIDs in {folder}",
             )
 
     def move(self, src_folder: str, uids: List[int], dest_folder: str) -> dict:
@@ -629,9 +634,11 @@ class ImapClient:
                 )
                 result.update(_parse_copyuid(self._mail.response("COPYUID")))
                 try:
+                    # See RFC 3501 §6.4.6 note above: the flag list must be
+                    # parenthesised even for a single flag.
                     _ok(
-                        self._mail.uid("STORE", uid_set, "+FLAGS", "\\Deleted"),
-                        f"UID STORE \\Deleted on {len(batch)}",
+                        self._mail.uid("STORE", uid_set, "+FLAGS", "(\\Deleted)"),
+                        f"UID STORE (\\Deleted) on {len(batch)}",
                     )
                     _ok(self._mail.expunge(), "EXPUNGE")
                 except ImapError:
@@ -641,7 +648,7 @@ class ImapClient:
                     # Swallow rollback errors — we'll surface the original
                     # failure either way.
                     try:
-                        self._mail.uid("STORE", uid_set, "-FLAGS", "\\Deleted")
+                        self._mail.uid("STORE", uid_set, "-FLAGS", "(\\Deleted)")
                     except Exception:
                         pass
                     raise
