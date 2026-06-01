@@ -44,7 +44,7 @@ app/
 │   ├── trigger-channel-*.md               # Channel-specific system prompt additions
 │   ├── trigger-channel-*-inject.md        # Channel-specific IPC injection templates
 │   ├── trigger-channel-*-farewell.md      # Channel-specific session-end prompts
-│   └── trigger-*-pre-compact.md           # Pre-compaction memory flush prompts
+│   └── trigger-pre-compact.md             # Pre-compaction memory flush prompt
 ├── nginx.conf                  # nginx reverse proxy config
 ├── entrypoint.sh               # Container entrypoint (permission fix + supervisord)
 └── init.sh                     # Container startup script
