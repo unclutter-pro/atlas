@@ -1,4 +1,4 @@
-New email arrived in your inbox (trigger "{{trigger_name}}", from {{sender}}):
+New email arrived in your inbox from {{sender}}:
 
 <payload>
 {{payload}}
