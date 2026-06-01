@@ -14,9 +14,10 @@ A .docx file is a ZIP archive containing XML files.
 
 | Task | Approach |
 |------|----------|
+| Standard business doc (letter, report, memo, invoice) | Start from a ready-made template in `assets/templates/` — see Templates below |
 | Read/analyze content | `pandoc` or unpack for raw XML |
-| Create new document | Use `docx-js` - see Creating New Documents below |
-| Edit existing document | Unpack → edit XML → repack - see Editing Existing Documents below |
+| Create a custom document | Use `docx-js` — see Creating New Documents below |
+| Edit existing document | Unpack → edit XML → repack — see Editing Existing Documents below |
 
 ### Converting .doc to .docx
 
@@ -53,9 +54,32 @@ python scripts/accept_changes.py input.docx output.docx
 
 ---
 
+## Templates (start here for standard documents)
+
+For the most common deliverables, don't build from scratch — copy a ready-made template from `assets/templates/` and edit its data. Each is a standalone **A4 + European** generator (docx-js) with a clearly marked data block at the top and the document logic below. Output text is **English**; switch labels/locale if you need another language. They share one design system (Arial, a restrained accent colour, hairline rules) and bake in the fiddly parts: page size, DIN margins, dual table widths, `€1,234.56` formatting, page numbers.
+
+| Template | File | Use for |
+|----------|------|---------|
+| Business letter (A4 / DIN 5008) | `assets/templates/letter-din5008.js` | A4 business letter — address field, info block, fold marks, footer |
+| Report | `assets/templates/report.js` | Multi-page report — cover page, table of contents, headings, data tables, page numbers |
+| Memo | `assets/templates/memo.js` | Short internal memo — To/From/Date/Subject header |
+| Invoice / quote | `assets/templates/invoice.js` | Invoice/quote — line-item table, VAT breakdown, totals, payment details |
+
+**Workflow:**
+1. Copy the template to your working dir (keep the original intact): `cp assets/templates/invoice.js ./invoice.js`
+2. Edit the `data = { … }` block at the top — that is normally the *only* part you change. Replace the placeholders ("Mustermann GmbH", recipient, line items, …) with the real content.
+3. Run it: `node invoice.js output.docx`. Needs the `docx` package — if `require('docx')` cannot resolve a global install, run `NODE_PATH=$(npm root -g) node invoice.js output.docx` or `npm install docx` in the working dir first.
+4. Validate: `python scripts/office/validate.py output.docx`.
+
+These are ordinary docx-js scripts, so **adapt freely** — change the `ACCENT` constant for a brand colour, swap the font, add or remove sections. If the user has fixed company details or a logo, set them once in the template.
+
+**Render target:** optimise for **Microsoft Word** and Word-compatible viewers (LibreOffice, Google Docs). Apple Pages renders `.docx` unreliably — it misplaces page-anchored frames (e.g. the letter's fold marks) and collapses paragraph spacing — so never judge output by Pages.
+
+---
+
 ## Creating New Documents
 
-Generate .docx files with JavaScript, then validate. Install: `npm install -g docx`
+Generate .docx files with JavaScript, then validate. Install: `npm install -g docx` (if a script's `require('docx')` can't find the global install, run it with `NODE_PATH=$(npm root -g) node script.js` or `npm install docx` locally).
 
 ### Setup
 ```javascript
@@ -79,29 +103,28 @@ python scripts/office/validate.py doc.docx
 
 ### Page Size
 
+Default to **A4** for European/German documents (docx-js already defaults to A4, but set it explicitly so the result is predictable). Use US Letter only when the document is specifically for a US audience.
+
 ```javascript
-// CRITICAL: docx-js defaults to A4, not US Letter
-// Always set page size explicitly for consistent results
+// A4 with metric margins. Conversions: 1 mm = 56.7 DXA, 1 cm = 567 DXA, 1 inch = 1440 DXA.
+const mm = v => Math.round(v * 1440 / 25.4);  // handy metric helper -> mm(210), mm(25), ...
 sections: [{
   properties: {
     page: {
-      size: {
-        width: 12240,   // 8.5 inches in DXA
-        height: 15840   // 11 inches in DXA
-      },
-      margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } // 1 inch margins
+      size: { width: 11906, height: 16838 },                      // A4: 210 × 297 mm
+      margin: { top: mm(25), right: mm(20), bottom: mm(20), left: mm(25) } // DIN-style 2.5/2.0 cm
     }
   },
   children: [/* content */]
 }]
 ```
 
-**Common page sizes (DXA units, 1440 DXA = 1 inch):**
+**Common page sizes (DXA units):**
 
-| Paper | Width | Height | Content Width (1" margins) |
-|-------|-------|--------|---------------------------|
-| US Letter | 12,240 | 15,840 | 9,360 |
-| A4 (default) | 11,906 | 16,838 | 9,026 |
+| Paper | Width | Height | Content width |
+|-------|-------|--------|---------------|
+| **A4 (default)** | 11,906 | 16,838 | 9,355 (2.5/2.0 cm margins) · 9,638 (2 cm all round) |
+| US Letter | 12,240 | 15,840 | 9,360 (1" margins) |
 
 **Landscape orientation:** docx-js swaps width/height internally, so pass portrait dimensions and let it handle the swap:
 ```javascript
@@ -122,6 +145,24 @@ DOCX is UTF-8 internally and `docx-js` handles Unicode (Umlauts ÄÖÜß, accent
 - **Reading source text in Python**: always `open(path, encoding="utf-8")`. Default encoding on Linux containers is UTF-8 but Windows hosts default to cp1252.
 - **XML emergency entities** (for unpacked editing when a character won't round-trip): `&#196;` Ä · `&#214;` Ö · `&#220;` Ü · `&#228;` ä · `&#246;` ö · `&#252;` ü · `&#223;` ß
 - **Arial covers** Latin-1, Latin-Extended-A, and common diacritics. For CJK, Cyrillic, or Greek output, switch to a font with the required coverage (e.g. "Noto Sans", "DejaVu Sans") rather than relying on Arial.
+
+### European Conventions
+
+The bundled templates default to A4 + euro and produce **English** text. Apply these (or adjust the locale for another language):
+
+- **Dates**: write the month in letters in headings/covers/letters — `1 June 2026`. For tables/metadata, ISO `2026-06-01` is unambiguous.
+  ```javascript
+  const M = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const dateLong = d => `${d.getDate()} ${M[d.getMonth()]} ${d.getFullYear()}`;
+  ```
+- **Currency & numbers**: use `Intl` (Node ships full ICU). For euro amounts in English, `en-GB` gives `€1,234.56`:
+  ```javascript
+  const eur = new Intl.NumberFormat("en-GB", { style: "currency", currency: "EUR" });
+  eur.format(1234.5); // "€1,234.50"
+  ```
+- **Address**: name / street + number / postal code + city, each on its own line (one Paragraph each — never `\n`).
+- **VAT**: label it `VAT`; standard German rate 19 %, reduced 7 %. Small-business exemption: `Exempt from VAT under the small-business rule (§ 19 UStG).`
+- **German output** (if ever needed): switch to the `de-DE` locale (`1.234,56 €`), German month names (`1. Juni 2026`), and German quotation marks `„…"` / `»…«` instead of `"…"`.
 
 ### Styles (Override Built-in Headings)
 
@@ -387,7 +428,7 @@ sections: [{
 
 ### Critical Rules for docx-js
 
-- **Set page size explicitly** - docx-js defaults to A4; use US Letter (12240 x 15840 DXA) for US documents
+- **Set page size explicitly** - default to A4 (11906 x 16838 DXA) for European documents; use US Letter (12240 x 15840) only for a US audience
 - **Landscape: pass portrait dimensions** - docx-js swaps width/height internally; pass short edge as `width`, long edge as `height`, and set `orientation: PageOrientation.LANDSCAPE`
 - **Never use `\n`** - use separate Paragraph elements
 - **Never use unicode bullets** - use `LevelFormat.BULLET` with numbering config
@@ -407,194 +448,22 @@ sections: [{
 
 ## Editing Existing Documents
 
-**Follow all 3 steps in order.**
+To modify an existing `.docx` (rather than generate a new one): unpack to XML -> edit -> repack.
 
-### Step 1: Unpack
 ```bash
-python scripts/office/unpack.py document.docx unpacked/
-```
-Extracts XML, pretty-prints, merges adjacent runs, and converts smart quotes to XML entities (`&#x201C;` etc.) so they survive editing. Use `--merge-runs false` to skip run merging.
-
-### Step 2: Edit XML
-
-Edit files in `unpacked/word/`. See XML Reference below for patterns.
-
-**Use "Claude" as the author** for tracked changes and comments, unless the user explicitly requests use of a different name.
-
-**Use the Edit tool directly for string replacement. Do not write Python scripts.** Scripts introduce unnecessary complexity. The Edit tool shows exactly what is being replaced.
-
-**CRITICAL: Use smart quotes for new content.** When adding text with apostrophes or quotes, use XML entities to produce smart quotes:
-```xml
-<!-- Use these entities for professional typography -->
-<w:t>Here&#x2019;s a quote: &#x201C;Hello&#x201D;</w:t>
-```
-| Entity | Character |
-|--------|-----------|
-| `&#x2018;` | ‘ (left single) |
-| `&#x2019;` | ’ (right single / apostrophe) |
-| `&#x201C;` | “ (left double) |
-| `&#x201D;` | ” (right double) |
-
-**Adding comments:** Use `comment.py` to handle boilerplate across multiple XML files (text must be pre-escaped XML):
-```bash
-python scripts/comment.py unpacked/ 0 "Comment text with &amp; and &#x2019;"
-python scripts/comment.py unpacked/ 1 "Reply text" --parent 0  # reply to comment 0
-python scripts/comment.py unpacked/ 0 "Text" --author "Custom Author"  # custom author name
-```
-Then add markers to document.xml (see Comments in XML Reference).
-
-### Step 3: Pack
-```bash
-python scripts/office/pack.py unpacked/ output.docx --original document.docx
-```
-Validates with auto-repair, condenses XML, and creates DOCX. Use `--validate false` to skip.
-
-**Auto-repair will fix:**
-- `durableId` >= 0x7FFFFFFF (regenerates valid ID)
-- Missing `xml:space="preserve"` on `<w:t>` with whitespace
-
-**Auto-repair won't fix:**
-- Malformed XML, invalid element nesting, missing relationships, schema violations
-
-### Common Pitfalls
-
-- **Replace entire `<w:r>` elements**: When adding tracked changes, replace the whole `<w:r>...</w:r>` block with `<w:del>...<w:ins>...` as siblings. Don't inject tracked change tags inside a run.
-- **Preserve `<w:rPr>` formatting**: Copy the original run's `<w:rPr>` block into your tracked change runs to maintain bold, font size, etc.
-
----
-
-## XML Reference
-
-### Schema Compliance
-
-- **Element order in `<w:pPr>`**: `<w:pStyle>`, `<w:numPr>`, `<w:spacing>`, `<w:ind>`, `<w:jc>`, `<w:rPr>` last
-- **Whitespace**: Add `xml:space="preserve"` to `<w:t>` with leading/trailing spaces
-- **RSIDs**: Must be 8-digit hex (e.g., `00AB1234`)
-
-### Tracked Changes
-
-**Insertion:**
-```xml
-<w:ins w:id="1" w:author="Claude" w:date="2025-01-01T00:00:00Z">
-  <w:r><w:t>inserted text</w:t></w:r>
-</w:ins>
+python scripts/office/unpack.py document.docx unpacked/                       # extract + pretty-print XML
+# edit files in unpacked/word/ with the Edit tool (string replacement; don't write Python)
+python scripts/office/pack.py unpacked/ output.docx --original document.docx  # validate + repack
 ```
 
-**Deletion:**
-```xml
-<w:del w:id="2" w:author="Claude" w:date="2025-01-01T00:00:00Z">
-  <w:r><w:delText>deleted text</w:delText></w:r>
-</w:del>
-```
-
-**Inside `<w:del>`**: Use `<w:delText>` instead of `<w:t>`, and `<w:delInstrText>` instead of `<w:instrText>`.
-
-**Minimal edits** - only mark what changes:
-```xml
-<!-- Change "30 days" to "60 days" -->
-<w:r><w:t>The term is </w:t></w:r>
-<w:del w:id="1" w:author="Claude" w:date="...">
-  <w:r><w:delText>30</w:delText></w:r>
-</w:del>
-<w:ins w:id="2" w:author="Claude" w:date="...">
-  <w:r><w:t>60</w:t></w:r>
-</w:ins>
-<w:r><w:t> days.</w:t></w:r>
-```
-
-**Deleting entire paragraphs/list items** - when removing ALL content from a paragraph, also mark the paragraph mark as deleted so it merges with the next paragraph. Add `<w:del/>` inside `<w:pPr><w:rPr>`:
-```xml
-<w:p>
-  <w:pPr>
-    <w:numPr>...</w:numPr>  <!-- list numbering if present -->
-    <w:rPr>
-      <w:del w:id="1" w:author="Claude" w:date="2025-01-01T00:00:00Z"/>
-    </w:rPr>
-  </w:pPr>
-  <w:del w:id="2" w:author="Claude" w:date="2025-01-01T00:00:00Z">
-    <w:r><w:delText>Entire paragraph content being deleted...</w:delText></w:r>
-  </w:del>
-</w:p>
-```
-Without the `<w:del/>` in `<w:pPr><w:rPr>`, accepting changes leaves an empty paragraph/list item.
-
-**Rejecting another author's insertion** - nest deletion inside their insertion:
-```xml
-<w:ins w:author="Jane" w:id="5">
-  <w:del w:author="Claude" w:id="10">
-    <w:r><w:delText>their inserted text</w:delText></w:r>
-  </w:del>
-</w:ins>
-```
-
-**Restoring another author's deletion** - add insertion after (don't modify their deletion):
-```xml
-<w:del w:author="Jane" w:id="5">
-  <w:r><w:delText>deleted text</w:delText></w:r>
-</w:del>
-<w:ins w:author="Claude" w:id="10">
-  <w:r><w:t>deleted text</w:t></w:r>
-</w:ins>
-```
-
-### Comments
-
-After running `comment.py` (see Step 2), add markers to document.xml. For replies, use `--parent` flag and nest markers inside the parent's.
-
-**CRITICAL: `<w:commentRangeStart>` and `<w:commentRangeEnd>` are siblings of `<w:r>`, never inside `<w:r>`.**
-
-```xml
-<!-- Comment markers are direct children of w:p, never inside w:r -->
-<w:commentRangeStart w:id="0"/>
-<w:del w:id="1" w:author="Claude" w:date="2025-01-01T00:00:00Z">
-  <w:r><w:delText>deleted</w:delText></w:r>
-</w:del>
-<w:r><w:t> more text</w:t></w:r>
-<w:commentRangeEnd w:id="0"/>
-<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>
-
-<!-- Comment 0 with reply 1 nested inside -->
-<w:commentRangeStart w:id="0"/>
-  <w:commentRangeStart w:id="1"/>
-  <w:r><w:t>text</w:t></w:r>
-  <w:commentRangeEnd w:id="1"/>
-<w:commentRangeEnd w:id="0"/>
-<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>
-<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="1"/></w:r>
-```
-
-### Images
-
-1. Add image file to `word/media/`
-2. Add relationship to `word/_rels/document.xml.rels`:
-```xml
-<Relationship Id="rId5" Type=".../image" Target="media/image1.png"/>
-```
-3. Add content type to `[Content_Types].xml`:
-```xml
-<Default Extension="png" ContentType="image/png"/>
-```
-4. Reference in document.xml:
-```xml
-<w:drawing>
-  <wp:inline>
-    <wp:extent cx="914400" cy="914400"/>  <!-- EMUs: 914400 = 1 inch -->
-    <a:graphic>
-      <a:graphicData uri=".../picture">
-        <pic:pic>
-          <pic:blipFill><a:blip r:embed="rId5"/></pic:blipFill>
-        </pic:pic>
-      </a:graphicData>
-    </a:graphic>
-  </wp:inline>
-</w:drawing>
-```
+Use **"Claude"** as the author for tracked changes and comments unless told otherwise. Before editing, **read `references/editing-existing-docx.md`** — it has the full workflow plus the exact XML for tracked changes (insert/delete/reject/restore), comments, smart/German quotes, and embedding images. Those rules are strict and easy to get wrong by guessing.
 
 ---
 
 ## Dependencies
 
 - **pandoc**: Text extraction
-- **docx**: `npm install -g docx` (new documents)
+- **docx** (npm): document generation — usually already pre-installed; otherwise `npm install -g docx`
 - **LibreOffice**: PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
 - **Poppler**: `pdftoppm` for images
+- **Python**: `defusedxml` + `lxml` — required by unpack / pack / validate / comment

@@ -37,12 +37,12 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   supervisor \
   nginx \
   sqlite3 \
-  python3 python3-pip \
+  python3 python3-pip python-is-python3 \
   openssh-client \
   ca-certificates \
   unzip xz-utils sudo \
   ffmpeg \
-  pandoc libreoffice imagemagick \
+  pandoc libreoffice imagemagick poppler-utils \
   gnupg build-essential procps \
   # --- Headless Chrome runtime libs (required by agent-browser's bundled Chrome on x86_64) ---
   libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
@@ -85,7 +85,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   | tar -xJ --strip-components=1 -C /usr/local/bin "typst-${TYPST_ARCH}-unknown-linux-musl/typst" \
   && chmod +x /usr/local/bin/typst \
   # --- npm globals ---
-  && npm install -g agent-browser \
+  && npm install -g agent-browser docx \
   # Install chrome (for arm64 no native install is possible)
   && if [ "$ARCH" = "arm64" ]; \
   # Install for add-apt-repository (only ARM64)
@@ -97,8 +97,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   else agent-browser install; fi \
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
   && npm cache clean --force \
-  # --- Python packages (used by messaging addons for config parsing) ---
-  && pip install --break-system-packages pyyaml html2text factur-x lxml \
+  # --- Python packages (messaging addons + office skills: defusedxml/lxml power docx/pptx/xlsx unpack·pack·validate) ---
+  && pip install --break-system-packages pyyaml html2text factur-x lxml defusedxml \
   # --- Claude Code CLI ---
   && npm install -g @anthropic-ai/claude-code \
   && claude --version \
@@ -132,6 +132,7 @@ ENV HOME=/home/agent
 ENV BEADS_DIR=/home/agent/.beads
 ENV HOMEBREW_NO_AUTO_UPDATE=1
 ENV HOMEBREW_NO_ANALYTICS=1
+ENV NODE_PATH="/usr/lib/node_modules"
 
 # Create directory structure
 # /home/agent — agent-owned workspace (mounted as volume)
