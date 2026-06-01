@@ -173,6 +173,18 @@ RUN chmod +x /atlas/app/entrypoint.sh \
   && cd /atlas/app/triggers && bun install \
   && cd /atlas/app/integrations/whatsapp && bun install \
   && cd /atlas/app/web-ui && bun install \
+  # Drop bun's install cache — runtime reads node_modules directly, the
+  # cache is only consumed during `bun install` at build time. Removing
+  # it shaves ~600 MB off the image AND deletes the root-owned files
+  # under /home/agent/.bun/install/cache/ that would otherwise force the
+  # entrypoint chown to require CAP_CHOWN at container start.
+  && rm -rf /home/agent/.bun/install/cache \
+  # Re-chown $HOME — the bun installs above ran as root (USER agent
+  # comes later in this Dockerfile) so any files they wrote into
+  # /home/agent (lockfiles, leftover state) are root-owned. Fixing
+  # ownership here lets the entrypoint chown become a no-op and the
+  # container start cleanly without any CAP_CHOWN / CAP_FOWNER caps.
+  && chown -R agent:agent /home/agent \
   && ln -sf /etc/nginx/sites-available/atlas /etc/nginx/sites-enabled/atlas \
   && rm -f /etc/nginx/sites-enabled/default \
   && mkdir -p /var/log/nginx /var/lib/nginx/body \
