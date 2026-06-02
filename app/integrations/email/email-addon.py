@@ -937,6 +937,18 @@ def cmd_poll_idle(config):
     global _shutdown_requested
     _shutdown_requested = False
 
+    # Guard rail: when no IMAP host / username / password is configured, exit
+    # immediately instead of spinning a reconnect loop with an empty host.
+    # The previous behavior printed `Connecting to ...` every 30 s and tried
+    # to connect to an empty string, which (a) burned cron / supervisord
+    # cycles, (b) cluttered the log file, and (c) hid the real "email isn't
+    # configured" signal from operators. ``cmd_poll`` (one-shot) has had
+    # this guard for ages; ``cmd_poll_idle`` (the supervisord-launched
+    # continuous mode) was missing it.
+    if not config.get("imap_host") or not config.get("username") or not config.get("password"):
+        print(f"[{datetime.now()}] ERROR: Email not configured (IMAP). Set email section in config.yml")
+        return
+
     idle_timeout = config.get("idle_timeout", 1500)
     poll_fallback_interval = int(os.environ.get("EMAIL_POLL_INTERVAL", 120))
 
