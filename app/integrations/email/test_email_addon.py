@@ -1299,6 +1299,42 @@ class TestIdlePollFlow:
         assert len(fetch_calls) == 1
         imap.noop.assert_called()
 
+    # ── Guard-rail: misconfigured IMAP must return early, not spin a
+    # reconnect loop with an empty host. These three cases exercise the
+    # equivalent of cmd_poll's `if not imap_host / username / password`
+    # check, which was missing in cmd_poll_idle until this fix.
+
+    def test_idle_missing_imap_host_returns_silently(
+        self, db_dir, imap, monkeypatch, capsys
+    ):
+        """No IMAP host → log "Email not configured", no connect attempt."""
+        cfg = {**CONFIG, "imap_host": ""}
+        email_addon.cmd_poll_idle(cfg)
+        out = capsys.readouterr().out
+        assert "Email not configured" in out
+        imap.connect.assert_not_called()
+        imap.idle.assert_not_called()
+
+    def test_idle_missing_username_returns_silently(
+        self, db_dir, imap, monkeypatch, capsys
+    ):
+        """No username → same early return, no connect attempt."""
+        cfg = {**CONFIG, "username": ""}
+        email_addon.cmd_poll_idle(cfg)
+        out = capsys.readouterr().out
+        assert "Email not configured" in out
+        imap.connect.assert_not_called()
+
+    def test_idle_missing_password_returns_silently(
+        self, db_dir, imap, monkeypatch, capsys
+    ):
+        """No password → same early return, no connect attempt."""
+        cfg = {**CONFIG, "password": ""}
+        email_addon.cmd_poll_idle(cfg)
+        out = capsys.readouterr().out
+        assert "Email not configured" in out
+        imap.connect.assert_not_called()
+
 
 class TestCmdFolders:
     def test_lists_role_mapping(self, db_dir, imap, capsys):
