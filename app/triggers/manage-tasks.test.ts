@@ -592,6 +592,19 @@ describe("Session scoping", () => {
     const allGoals = goalList(db, { all: true });
     expect(allGoals.length).toBeGreaterThanOrEqual(2);
   });
+
+  test("an empty-string scope never matches real session rows", () => {
+    // getSessionScope rejects empty env vars, but guard the query layer too:
+    // a blank session key must not act as a wildcard that leaks other sessions.
+    const scopeA = makeScope("real-a");
+    goalCreate(db, { title: "Goal A", done: "Done A", ...scopeA });
+    taskAdd(db, { title: "Task A", ...scopeA });
+
+    const leakedGoals = goalList(db, { triggerName: "", sessionKey: "" });
+    const leakedTasks = taskList(db, { triggerName: "", sessionKey: "", statuses: ["open"] });
+    expect(leakedGoals.length).toBe(0);
+    expect(leakedTasks.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

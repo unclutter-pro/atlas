@@ -17,13 +17,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TASK_CLI="bun $SCRIPT_DIR/manage-tasks.ts"
-# Find the hooks directory — prefer /atlas/app/hooks/task-session.sh (in container)
-# but fall back to the repo hooks (in dev/CI)
-if [ -x "/atlas/app/hooks/task-session.sh" ]; then
-  HOOKS_DIR="/atlas/app/hooks"
-else
-  HOOKS_DIR="$APP_DIR/hooks"
-fi
+# Resolve hooks relative to THIS test script's own tree, so the suite always
+# exercises the code it ships with — not a (possibly stale) deployed copy at
+# /atlas. The container install runs its own copy of this script, for which
+# $APP_DIR already points at /atlas/app, so the live system is still covered.
+HOOKS_DIR="$APP_DIR/hooks"
 
 export ATLAS_TRIGGER="test"
 export ATLAS_TRIGGER_SESSION_KEY="integration"
@@ -317,6 +315,56 @@ fi
 export ATLAS_TRIGGER_SESSION_KEY="integration"
 
 # ---------------------------------------------------------------------------
+# 8b. Stop gate honors a pending continuation reminder
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "--- 8b. Stop gate honors continuation reminders ---"
+
+REMINDER_CLI="bun $SCRIPT_DIR/manage-reminders.ts"
+
+export ATLAS_TRIGGER_SESSION_KEY="reminder-gate-test"
+
+# Open task → gate must block
+$TASK_CLI add --title="Deferred work" > /dev/null 2>&1
+BLOCK_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
+assert_contains "gate blocks with open task and no reminder" '"decision"' "$BLOCK_OUT"
+
+# Add an event-driven continuation reminder scoped to THIS session
+$REMINDER_CLI add --when-reply-to="reminder-gate-thread" --title="continue" --prompt="resume later" > /dev/null 2>&1
+HAS_CONT=$($REMINDER_CLI has-continuation 2>/dev/null || echo "no")
+assert_contains "has-continuation reports yes for scoped event reminder" "yes" "$HAS_CONT"
+
+ALLOW_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
+assert_not_contains "gate allows stop with pending continuation reminder" '"decision"' "$ALLOW_OUT"
+
+# A recurring reminder also unlocks the gate (re-fires into this session for
+# long-term monitoring); the re-wake prompt warns against permanent bypass.
+export ATLAS_TRIGGER_SESSION_KEY="reminder-recurring-test"
+$TASK_CLI add --title="Recurring-guard work" > /dev/null 2>&1
+$REMINDER_CLI add --at="+1h" --recurring="1h" --title="monitor" --prompt="poll" > /dev/null 2>&1
+REC_HAS=$($REMINDER_CLI has-continuation 2>/dev/null || echo "no")
+assert_contains "has-continuation reports yes for recurring reminder" "yes" "$REC_HAS"
+REC_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
+assert_not_contains "gate allows stop with a recurring reminder" '"decision"' "$REC_OUT"
+
+# A session with an open task and NO continuation reminder still blocks
+export ATLAS_TRIGGER_SESSION_KEY="reminder-none-test"
+$TASK_CLI add --title="Undeferred work" > /dev/null 2>&1
+NONE_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
+assert_contains "gate still blocks with open task and no reminder" '"decision"' "$NONE_OUT"
+
+# Cleanup the reminder-gate sub-sessions (tasks; reminders cleaned in final pass)
+for s in reminder-gate-test reminder-recurring-test reminder-none-test; do
+  export ATLAS_TRIGGER_SESSION_KEY="$s"
+  for tid in $($TASK_CLI list --status=open 2>&1 | grep -oP '#\K\d+'); do
+    $TASK_CLI cancel "$tid" > /dev/null 2>&1 || true
+  done
+done
+
+export ATLAS_TRIGGER_SESSION_KEY="integration"
+
+# ---------------------------------------------------------------------------
 # 9. Kill-switch
 # ---------------------------------------------------------------------------
 
@@ -403,7 +451,7 @@ echo ""
 echo "--- Cleanup ---"
 
 if [ -f "$DB_PATH" ]; then
-  sqlite3 "$DB_PATH" "DELETE FROM tasks WHERE trigger_name='test'; DELETE FROM goals WHERE trigger_name='test';" 2>/dev/null || true
+  sqlite3 "$DB_PATH" "DELETE FROM tasks WHERE trigger_name='test'; DELETE FROM goals WHERE trigger_name='test'; DELETE FROM reminders WHERE trigger_name='test';" 2>/dev/null || true
   echo "  Cleaned test data from atlas.db"
 fi
 

@@ -55,7 +55,8 @@ Runs after each response as a completion gate.
 
 - **Kill-switch**: if `ATLAS_TASKS_DISABLE_GATE=1` is set, skips enforcement and logs a warning to stderr
 - Counts active goals and open tasks (open + in_progress) for the current session
-- If any exist: emits `{"decision":"block","reason":"..."}` JSON to block exit until they are closed
+- If any exist but the session has a **pending continuation reminder** (`reminder has-continuation` → exit 0), exits silently: the open work is legitimately deferred to a future wake of this session, so the gate must not deadlock. A continuation reminder is one that is pending, scoped to this exact session (`trigger_name` + `session_key`), and a genuine forward deferral: **recurring** (re-fires into this session for long-term monitoring), **event-driven** (`email_reply` / `script_check`), or a **one-shot `time`** reminder whose `fire_at` is in the future. A `--new-session` (NULL-scope) reminder or a past-due one-shot does **not** count. Recurring reminders are permitted, but each re-wake prompt explicitly warns that they are recurring and must not be used as a permanent gate bypass — the session is told to make real progress and cancel the reminder when done.
+- Else if any exist: emits `{"decision":"block","reason":"..."}` JSON to block exit until they are closed (the reason explains how to defer with a continuation reminder)
 - If none: exits silently (allows stop)
 
 ## post-compact.sh (PostCompact hook)
