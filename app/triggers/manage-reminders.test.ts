@@ -7,7 +7,11 @@
 
 import { test, describe, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { parseRecurringInterval, formatInterval } from "./manage-reminders.ts";
+import {
+  parseRecurringInterval,
+  formatInterval,
+  hasPendingContinuation,
+} from "./manage-reminders.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -29,6 +33,7 @@ function createRemindersDb(): Database {
       trigger_name TEXT,
       session_key TEXT,
       recurring_interval_seconds INTEGER,
+      trigger_type TEXT DEFAULT 'time',
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending','fired','cancelled')),
       created_at TEXT DEFAULT (datetime('now')),
       fired_at TEXT
@@ -49,6 +54,8 @@ function insertReminder(
     trigger_name?: string | null;
     session_key?: string | null;
     recurring_interval_seconds?: number | null;
+    trigger_type?: string;
+    status?: string;
   }
 ): number {
   const {
@@ -59,11 +66,13 @@ function insertReminder(
     trigger_name = "signal",
     session_key = "max",
     recurring_interval_seconds = null,
+    trigger_type = "time",
+    status = "pending",
   } = opts;
   const result = db.prepare(
-    `INSERT INTO reminders (title, prompt, fire_at, channel, trigger_name, session_key, recurring_interval_seconds)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(title, prompt, fire_at, channel, trigger_name, session_key, recurring_interval_seconds);
+    `INSERT INTO reminders (title, prompt, fire_at, channel, trigger_name, session_key, recurring_interval_seconds, trigger_type, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(title, prompt, fire_at, channel, trigger_name, session_key, recurring_interval_seconds, trigger_type, status);
   return Number(result.lastInsertRowid);
 }
 
@@ -590,5 +599,86 @@ describe("schema migration: trigger_type default", () => {
     // Here we just verify the row inserts cleanly through the legacy code path.
     expect(row).toBeTruthy();
     expect(row.title).toBe("Test reminder");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasPendingContinuation — the Stop-hook gate's "continue later" predicate.
+// A pending continuation reminder lets a session stop with open goals/tasks,
+// but only if it's a genuine forward deferral routed back into THIS session.
+// ---------------------------------------------------------------------------
+
+describe("hasPendingContinuation", () => {
+  const SCOPE = { trigger_name: "email-handler", session_key: "thread-A" };
+  // Fixed "now" so future/past time reminders are deterministic.
+  const NOW = "2026-06-02 12:00:00";
+  const FUTURE = "2026-06-02 18:00:00";
+  const PAST = "2026-06-02 06:00:00";
+
+  test("no reminders → false", () => {
+    const db = createRemindersDb();
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("email_reply reminder scoped to this session → true", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "email_reply", fire_at: "9999-12-31 23:59:59" });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(true);
+  });
+
+  test("script_check reminder scoped to this session → true", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "script_check", fire_at: "9999-12-31 23:59:59" });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(true);
+  });
+
+  test("one-shot time reminder in the FUTURE → true", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "time", fire_at: FUTURE });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(true);
+  });
+
+  test("one-shot time reminder in the PAST → false (already due, not a deferral)", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "time", fire_at: PAST });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("recurring reminder → false (would unlock the gate forever)", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "time", fire_at: FUTURE, recurring_interval_seconds: 3600 });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("reminder for a DIFFERENT session → false (no cross-session unlock)", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { trigger_name: "email-handler", session_key: "thread-B", trigger_type: "email_reply", fire_at: "9999-12-31 23:59:59" });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("reminder for a different trigger, same key → false", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { trigger_name: "signal-chat", session_key: "thread-A", trigger_type: "email_reply", fire_at: "9999-12-31 23:59:59" });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("NULL-scoped (--new-session) reminder → false", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { trigger_name: null, session_key: null, trigger_type: "email_reply", fire_at: "9999-12-31 23:59:59" });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("cancelled / fired reminders → false (only pending counts)", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "email_reply", fire_at: "9999-12-31 23:59:59", status: "cancelled" });
+    insertReminder(db, { ...SCOPE, trigger_type: "time", fire_at: FUTURE, status: "fired" });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+  });
+
+  test("empty/missing scope args → false (no scope, no unlock)", () => {
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "email_reply", fire_at: "9999-12-31 23:59:59" });
+    expect(hasPendingContinuation(db, "", "", NOW)).toBe(false);
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, "", NOW)).toBe(false);
   });
 });

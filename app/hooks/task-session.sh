@@ -206,6 +206,20 @@ case "${1:-help}" in
       exit 0
     fi
 
+    # Honor a genuine "continue later" deferral: if this session has a pending
+    # continuation reminder (event-driven, or a one-shot future timer that
+    # routes back into this same session), the open work is legitimately
+    # scheduled to resume — allow the session to stop instead of deadlocking.
+    # The gate message itself suggests "set a reminder to continue later"; this
+    # makes that suggestion actually work. The predicate is tight (see
+    # manage-reminders.ts hasPendingContinuation) so a throwaway reminder can't
+    # be used to escape the gate.
+    REMINDER_CLI="bun $TRIGGERS_DIR/manage-reminders.ts"
+    continuation=$($REMINDER_CLI has-continuation 2>/dev/null) || continuation="no"
+    if [ "$continuation" = "yes" ]; then
+      exit 0
+    fi
+
     # Build block message
     parts=""
     if [ "$local_goals" -gt 0 ]; then
@@ -221,7 +235,7 @@ case "${1:-help}" in
 
     jq -n --arg parts "$parts" '{
       decision: "block",
-      reason: ("You have " + $parts + ". Complete or close them before exiting. Use `task list` and `task goal list` to review, then `task close <id>` / `task goal close <id> --reason=...` to finish up. Or set a reminder to continue later.")
+      reason: ("You have " + $parts + ". Complete or close them before exiting. Use `task list` and `task goal list` to review, then `task close <id>` / `task goal close <id> --reason=...` to finish up. To defer instead, set a continuation reminder that resumes THIS session — `reminder add --when-reply-to=<thread>` / `--when-script-ok=<cmd>` / `--at=<future-time>` (not --new-session, not --recurring). A pending continuation reminder lets the session stop without false-closing unfinished work.")
     }'
     ;;
 

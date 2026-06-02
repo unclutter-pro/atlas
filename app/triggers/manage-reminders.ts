@@ -133,6 +133,48 @@ function toUtcStorage(d: Date): string {
   return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
 }
 
+/**
+ * Returns true if the given session has a pending reminder that represents a
+ * genuine "continue later" deferral. The Stop hook uses this to allow a
+ * session to exit while goals/tasks are still open — because the work is
+ * legitimately scheduled to resume in this same session.
+ *
+ * The predicate is deliberately TIGHT so a self-issued throwaway reminder
+ * cannot be used to escape the task-completion gate:
+ *   - status = 'pending'
+ *   - routes back into THIS session (trigger_name AND session_key both match,
+ *     both non-empty) — a --new-session reminder (NULL scope) does NOT count,
+ *     since the open goals live in this session_key and would be orphaned.
+ *   - non-recurring — a recurring reminder always leaves a pending row, which
+ *     would unlock the gate forever; that is monitoring, not a continuation.
+ *   - a real forward continuation:
+ *       * event-driven (email_reply / script_check — waiting on the outside
+ *         world), OR
+ *       * a one-shot time reminder whose fire_at is still in the future.
+ */
+export function hasPendingContinuation(
+  db: Database,
+  triggerName: string,
+  sessionKey: string,
+  nowIso: string,
+): boolean {
+  if (!triggerName || !sessionKey) return false;
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM reminders
+        WHERE status = 'pending'
+          AND trigger_name = ?
+          AND session_key = ?
+          AND recurring_interval_seconds IS NULL
+          AND (
+            trigger_type IN ('email_reply', 'script_check')
+            OR (COALESCE(trigger_type, 'time') = 'time' AND fire_at > ?)
+          )`,
+    )
+    .get(triggerName, sessionKey, nowIso) as { n: number } | undefined;
+  return (row?.n ?? 0) > 0;
+}
+
 /** Convert a UTC storage string to local time string for display */
 function toLocalDisplay(utcStr: string): string {
   const d = new Date(utcStr.replace(" ", "T") + "Z");
@@ -319,6 +361,8 @@ Commands:
   cancel  --id=<id>
   delete  --id=<id>
   check   (evaluate due reminders — called by cron)
+  has-continuation  (exit 0 if this session has a pending continuation
+                     reminder — used by the Stop hook; prints yes/no)
 
 Trigger types (pick exactly one per reminder):
 
@@ -757,6 +801,18 @@ switch (command) {
       console.log(`[${new Date().toISOString()}] Reminder #${reminder.id} spawned (pid=${proc.pid})`);
     }
     break;
+  }
+
+  case "has-continuation": {
+    // Used by the Stop hook (task-session.sh) to decide whether open goals/
+    // tasks are legitimately deferred to a future wake of THIS session.
+    // Prints "yes"/"no" and mirrors it in the exit code (0 = yes, 1 = no).
+    const triggerName = process.env.ATLAS_TRIGGER || "";
+    const sessionKey = process.env.ATLAS_TRIGGER_SESSION_KEY || "";
+    const nowIso = toUtcStorage(new Date());
+    const ok = hasPendingContinuation(db, triggerName, sessionKey, nowIso);
+    console.log(ok ? "yes" : "no");
+    process.exit(ok ? 0 : 1);
   }
 
   default:
