@@ -464,29 +464,47 @@ if [ -f "$DB" ]; then
   sqlite3 "$DB" "UPDATE trigger_runs SET completed_at=datetime('now') WHERE completed_at IS NULL;" 2>/dev/null || true
 
   echo "$INTERRUPTED" | python3 -c "
-import json, sys, subprocess, os
+import json, sys, subprocess, os, glob
 rows = json.loads(sys.stdin.read())
+
+PROJECTS_DIR = os.path.join(os.environ.get('HOME', '/home/agent'), '.claude', 'projects')
+
+def session_file_exists(sid):
+    # The SDK writes each session transcript as <sid>.jsonl somewhere under
+    # ~/.claude/projects/<project-dir>/. If it exists, the session is resumable.
+    if not sid:
+        return False
+    return bool(glob.glob(os.path.join(PROJECTS_DIR, '*', sid + '.jsonl')))
+
+# Resume EVERY interrupted run (any trigger type) by its pre-assigned session
+# id — trigger-runner persists session_id up-front, so a mid-turn restart finds
+# the real session and the recovered agent sees its own prior actions (e.g. an
+# email it already sent) instead of repeating them. Only when no resumable
+# session exists do we fall back to a fresh re-fire of the stored payload.
 for row in rows:
     rid = row['id']
     name = row['trigger_name']
     key = row['session_key']
-    mode = row['session_mode']
     sid = row.get('session_id') or ''
     payload = row.get('payload') or ''
 
-    if mode == 'persistent' and sid:
-        # Re-fire with recovery payload — trigger.sh will --resume the session
-        recovery = 'Session resumed after container restart. Continue where you left off.'
-        print(f'  Resuming persistent session: {name} (key={key}, session={sid})')
+    if sid and session_file_exists(sid):
+        # Resume the exact session. ATLAS_RESUME_SESSION_ID tells trigger-runner
+        # to --resume it regardless of trigger mode; the prompt is just a nudge.
+        recovery = 'Session resumed after container restart. Continue where you left off; do not repeat actions you have already completed.'
+        print(f'  Resuming session: {name} (key={key}, session={sid})')
+        env = dict(os.environ, ATLAS_RESUME_SESSION_ID=sid)
         subprocess.Popen(
             ['/atlas/app/triggers/trigger.sh', name, recovery, key],
             stdout=open(f'/atlas/logs/trigger-{name}.log', 'a'),
             stderr=subprocess.STDOUT,
-            start_new_session=True
+            start_new_session=True,
+            env=env,
         )
     elif payload:
-        # Re-fire with stored payload — starts fresh
-        print(f'  Re-firing ephemeral trigger: {name} (key={key})')
+        # No resumable session (interrupted before the SDK wrote a transcript)
+        # → re-process the original payload fresh.
+        print(f'  Re-firing trigger fresh: {name} (key={key})')
         subprocess.Popen(
             ['/atlas/app/triggers/trigger.sh', name, payload, key],
             stdout=open(f'/atlas/logs/trigger-{name}.log', 'a'),
@@ -494,7 +512,7 @@ for row in rows:
             start_new_session=True
         )
     else:
-        print(f'  Skipping unrecoverable run #{rid}: {name} (no session_id or payload)')
+        print(f'  Skipping unrecoverable run #{rid}: {name} (no session or payload)')
 " 2>/dev/null || echo "  ⚠ Trigger resume failed (non-fatal)"
 fi
 
