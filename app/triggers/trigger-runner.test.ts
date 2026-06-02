@@ -33,6 +33,7 @@ import {
   MODEL_PRICING,
   is400UpstreamError,
   clearSessionOn400,
+  persistSessionIdEarly,
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
@@ -1585,5 +1586,142 @@ describe("clearSessionOn400", () => {
     // ephemeral triggers: no session table entry to worry about
     expect(cleared).toBeNull();
     expect(logMessages.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// persistSessionIdEarly — root-cause fix for the 2026-06-02 duplicate-email
+// incident: session_id must be persisted as soon as the SDK emits it so an
+// interrupted run is resumable (not re-fired from raw payload).
+// ---------------------------------------------------------------------------
+
+describe("persistSessionIdEarly", () => {
+  function makeDb(): Database {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE trigger_sessions (
+        trigger_name TEXT NOT NULL,
+        session_key  TEXT NOT NULL,
+        session_id   TEXT NOT NULL,
+        updated_at   TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (trigger_name, session_key)
+      );
+      CREATE TABLE trigger_runs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        trigger_name TEXT NOT NULL,
+        session_key  TEXT,
+        session_mode TEXT,
+        payload      TEXT,
+        session_id   TEXT,
+        completed_at TEXT
+      );
+    `);
+    return db;
+  }
+
+  function silentLog() {
+    const msgs: string[] = [];
+    return { log: { log: (m: string) => msgs.push(m) }, msgs };
+  }
+
+  test("writes trigger_sessions + trigger_runs.session_id for a persistent run", () => {
+    const db = makeDb();
+    const runId = (
+      db
+        .prepare(
+          "INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload) VALUES (?, ?, 'persistent', ?) RETURNING id",
+        )
+        .get("email-handler", "thread-1", "From: a@b.c\nSubject: hi") as { id: number }
+    ).id;
+
+    const { log, msgs } = silentLog();
+    const ok = persistSessionIdEarly(
+      db, "persistent", "email-handler", "thread-1", "sess-XYZ", runId, log,
+    );
+
+    expect(ok).toBe(true);
+
+    const sess = db
+      .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name=? AND session_key=?")
+      .get("email-handler", "thread-1") as { session_id: string };
+    expect(sess.session_id).toBe("sess-XYZ");
+
+    const run = db
+      .prepare("SELECT session_id FROM trigger_runs WHERE id=?")
+      .get(runId) as { session_id: string };
+    expect(run.session_id).toBe("sess-XYZ");
+
+    expect(msgs.some((m) => m.includes("sess-XYZ"))).toBe(true);
+  });
+
+  test("is a no-op for ephemeral sessions", () => {
+    const db = makeDb();
+    const runId = (
+      db
+        .prepare(
+          "INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload) VALUES (?, ?, 'ephemeral', '') RETURNING id",
+        )
+        .get("cron-job", "_default") as { id: number }
+    ).id;
+
+    const { log } = silentLog();
+    const ok = persistSessionIdEarly(
+      db, "ephemeral", "cron-job", "_default", "sess-1", runId, log,
+    );
+
+    expect(ok).toBe(false);
+    const count = db
+      .prepare("SELECT COUNT(*) c FROM trigger_sessions")
+      .get() as { c: number };
+    expect(count.c).toBe(0);
+    const run = db
+      .prepare("SELECT session_id FROM trigger_runs WHERE id=?")
+      .get(runId) as { session_id: string | null };
+    expect(run.session_id).toBeNull();
+  });
+
+  test("is a no-op when runId is unknown (null)", () => {
+    const db = makeDb();
+    const { log } = silentLog();
+    const ok = persistSessionIdEarly(
+      db, "persistent", "email-handler", "thread-1", "sess-1", null, log,
+    );
+    expect(ok).toBe(false);
+    const count = db
+      .prepare("SELECT COUNT(*) c FROM trigger_sessions")
+      .get() as { c: number };
+    expect(count.c).toBe(0);
+  });
+
+  test("upserts on repeat — same key keeps a single row, latest session_id wins", () => {
+    const db = makeDb();
+    const runId = (
+      db
+        .prepare(
+          "INSERT INTO trigger_runs (trigger_name, session_key, session_mode, payload) VALUES (?, ?, 'persistent', '') RETURNING id",
+        )
+        .get("email-handler", "thread-1") as { id: number }
+    ).id;
+
+    const { log } = silentLog();
+    persistSessionIdEarly(db, "persistent", "email-handler", "thread-1", "sess-old", runId, log);
+    persistSessionIdEarly(db, "persistent", "email-handler", "thread-1", "sess-new", runId, log);
+
+    const rows = db
+      .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name=? AND session_key=?")
+      .all("email-handler", "thread-1") as { session_id: string }[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].session_id).toBe("sess-new");
+  });
+
+  test("returns false (never throws) when tables are missing", () => {
+    const db = new Database(":memory:"); // no schema at all
+    const { log } = silentLog();
+    expect(() =>
+      persistSessionIdEarly(db, "persistent", "t", "k", "sess-1", 1, log),
+    ).not.toThrow();
+    expect(
+      persistSessionIdEarly(db, "persistent", "t", "k", "sess-1", 1, log),
+    ).toBe(false);
   });
 });

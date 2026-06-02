@@ -1386,6 +1386,57 @@ export function clearSessionOn400(
   return oldSessionId;
 }
 
+/**
+ * Persist a freshly-captured session_id for a persistent trigger *immediately*,
+ * instead of waiting until the run completes.
+ *
+ * Root-cause fix for the 2026-06-02 duplicate-email incident. Background:
+ * `trigger_sessions` (the trigger+key → session_id map) and
+ * `trigger_runs.session_id` were only written when a run finished. A session
+ * killed mid-turn (e.g. container SIGTERM) therefore left session_id NULL, and
+ * init.sh Phase 11 ("resume interrupted runs") can only `--resume` a persistent
+ * session when a session_id exists. With NULL it fell into the raw-payload
+ * re-fire branch, re-processing the trigger from scratch and re-sending replies
+ * the now-dead session had already sent (one hot thread sent 5 duplicates).
+ *
+ * Writing the id as soon as the SDK emits it (first stream message, before any
+ * tool runs) means a restart re-attaches to the REAL session: the agent sees
+ * its own prior actions in the transcript and won't duplicate them.
+ *
+ * No-op for non-persistent sessions or when runId is unknown. Swallows DB
+ * errors and returns false: a failed early-persist only costs restart
+ * resumability for this one in-flight turn and must never break the live
+ * session (the completion-time save still runs).
+ *
+ * @returns true if the rows were written, false on no-op/error.
+ */
+export function persistSessionIdEarly(
+  db: Database,
+  sessionMode: string,
+  triggerName: string,
+  sessionKey: string,
+  sessionId: string,
+  runId: number | null,
+  log: { log: (msg: string) => void },
+): boolean {
+  if (sessionMode !== "persistent" || runId === null) return false;
+  try {
+    db.prepare(
+      `INSERT INTO trigger_sessions (trigger_name, session_key, session_id)
+       VALUES (?, ?, ?)
+       ON CONFLICT(trigger_name, session_key)
+       DO UPDATE SET session_id = ?, updated_at = datetime('now')`,
+    ).run(triggerName, sessionKey, sessionId, sessionId);
+    db.prepare(
+      "UPDATE trigger_runs SET session_id = ? WHERE id = ?",
+    ).run(sessionId, runId);
+    log.log(`Persisted session_id early (restart-safe): ${sessionId}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Direct mode (no DB trigger)
 // ---------------------------------------------------------------------------
@@ -2216,6 +2267,15 @@ export async function main(): Promise<void> {
         // Capture session_id from any message that carries it
         if ("session_id" in msg && msg.session_id && !capturedSessionId) {
           capturedSessionId = msg.session_id as string;
+          // Persist it IMMEDIATELY — not just at completion (see the
+          // save-session + mark-run-completed blocks far below). The SDK
+          // emits session_id on the very first stream message, before any
+          // tool runs (i.e. before the agent sends an email or chat reply),
+          // so an interrupted run becomes safely resumable. See
+          // persistSessionIdEarly for the full rationale.
+          persistSessionIdEarly(
+            db, sessionMode, triggerName, sessionKey, capturedSessionId, runId, log,
+          );
         }
         // Streaming: persist text deltas so the web-ui SSE handler can
         // forward them to the client in near-real-time. We accept the cost
