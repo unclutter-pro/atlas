@@ -236,7 +236,7 @@ case "${1:-help}" in
 
     jq -n --arg parts "$parts" '{
       decision: "block",
-      reason: ("You have " + $parts + ". Complete or close them before exiting. Use `task list` and `task goal list` to review, then `task close <id>` / `task goal close <id> --reason=...` to finish up. To defer instead, set a continuation reminder that resumes THIS session — `reminder add --when-reply-to=<thread>` / `--when-script-ok=<cmd>` / `--at=<future-time>` (not --new-session, not --recurring). A pending continuation reminder lets the session stop without false-closing unfinished work.")
+      reason: ("You have " + $parts + ". Complete or close them before exiting. Use `task list` and `task goal list` to review, then `task close <id>` / `task goal close <id> --reason=...` to finish up. To defer instead, set a continuation reminder that resumes THIS session — `reminder add` with `--when-reply-to=<thread>` / `--when-script-ok=<cmd>` / `--at=<future-time>` (optionally `--recurring=<interval>` for ongoing monitoring; NOT `--new-session`, which routes elsewhere). A pending continuation reminder lets the session stop without false-closing unfinished work.")
     }'
     ;;
 
