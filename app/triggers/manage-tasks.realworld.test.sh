@@ -338,17 +338,24 @@ assert_contains "has-continuation reports yes for scoped event reminder" "yes" "
 ALLOW_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
 assert_not_contains "gate allows stop with pending continuation reminder" '"decision"' "$ALLOW_OUT"
 
-# A recurring reminder must NOT unlock the gate (would bypass it forever)
+# A recurring reminder also unlocks the gate (re-fires into this session for
+# long-term monitoring); the re-wake prompt warns against permanent bypass.
 export ATLAS_TRIGGER_SESSION_KEY="reminder-recurring-test"
 $TASK_CLI add --title="Recurring-guard work" > /dev/null 2>&1
 $REMINDER_CLI add --at="+1h" --recurring="1h" --title="monitor" --prompt="poll" > /dev/null 2>&1
 REC_HAS=$($REMINDER_CLI has-continuation 2>/dev/null || echo "no")
-assert_contains "has-continuation reports no for recurring-only reminder" "no" "$REC_HAS"
+assert_contains "has-continuation reports yes for recurring reminder" "yes" "$REC_HAS"
 REC_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-assert_contains "gate still blocks with only a recurring reminder" '"decision"' "$REC_OUT"
+assert_not_contains "gate allows stop with a recurring reminder" '"decision"' "$REC_OUT"
+
+# A session with an open task and NO continuation reminder still blocks
+export ATLAS_TRIGGER_SESSION_KEY="reminder-none-test"
+$TASK_CLI add --title="Undeferred work" > /dev/null 2>&1
+NONE_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
+assert_contains "gate still blocks with open task and no reminder" '"decision"' "$NONE_OUT"
 
 # Cleanup the reminder-gate sub-sessions (tasks; reminders cleaned in final pass)
-for s in reminder-gate-test reminder-recurring-test; do
+for s in reminder-gate-test reminder-recurring-test reminder-none-test; do
   export ATLAS_TRIGGER_SESSION_KEY="$s"
   for tid in $($TASK_CLI list --status=open 2>&1 | grep -oP '#\K\d+'); do
     $TASK_CLI cancel "$tid" > /dev/null 2>&1 || true

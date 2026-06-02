@@ -644,10 +644,18 @@ describe("hasPendingContinuation", () => {
     expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
   });
 
-  test("recurring reminder → false (would unlock the gate forever)", () => {
+  test("recurring reminder → true (re-fires into this session; long-term monitoring)", () => {
     const db = createRemindersDb();
     insertReminder(db, { ...SCOPE, trigger_type: "time", fire_at: FUTURE, recurring_interval_seconds: 3600 });
-    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(false);
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(true);
+  });
+
+  test("recurring reminder counts even if its current fire_at is in the PAST", () => {
+    // A recurring reminder always re-schedules, so a momentarily past-due tick
+    // is still a live continuation — unlike a one-shot, which would be dead.
+    const db = createRemindersDb();
+    insertReminder(db, { ...SCOPE, trigger_type: "time", fire_at: PAST, recurring_interval_seconds: 3600 });
+    expect(hasPendingContinuation(db, SCOPE.trigger_name, SCOPE.session_key, NOW)).toBe(true);
   });
 
   test("reminder for a DIFFERENT session → false (no cross-session unlock)", () => {

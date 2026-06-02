@@ -207,16 +207,17 @@ case "${1:-help}" in
     fi
 
     # Honor a genuine "continue later" deferral: if this session has a pending
-    # continuation reminder (event-driven, or a one-shot future timer that
-    # routes back into this same session), the open work is legitimately
+    # continuation reminder (recurring, event-driven, or a one-shot future timer
+    # that routes back into this same session), the open work is legitimately
     # scheduled to resume — allow the session to stop instead of deadlocking.
     # The gate message itself suggests "set a reminder to continue later"; this
     # makes that suggestion actually work. The predicate is tight (see
     # manage-reminders.ts hasPendingContinuation) so a throwaway reminder can't
     # be used to escape the gate.
-    REMINDER_CLI="bun $TRIGGERS_DIR/manage-reminders.ts"
-    continuation=$($REMINDER_CLI has-continuation 2>/dev/null) || continuation="no"
-    if [ "$continuation" = "yes" ]; then
+    #
+    # We branch on the CLI's EXIT CODE (0 = continuation exists), not on stdout
+    # text — so this stays correct regardless of any output the CLI prints.
+    if bun "$TRIGGERS_DIR/manage-reminders.ts" has-continuation >/dev/null 2>&1; then
       exit 0
     fi
 

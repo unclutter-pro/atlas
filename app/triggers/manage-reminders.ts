@@ -145,12 +145,14 @@ function toUtcStorage(d: Date): string {
  *   - routes back into THIS session (trigger_name AND session_key both match,
  *     both non-empty) — a --new-session reminder (NULL scope) does NOT count,
  *     since the open goals live in this session_key and would be orphaned.
- *   - non-recurring — a recurring reminder always leaves a pending row, which
- *     would unlock the gate forever; that is monitoring, not a continuation.
- *   - a real forward continuation:
+ *   - a real forward continuation, one of:
+ *       * recurring (re-fires into this session every interval — fine for
+ *         long-term monitoring; the re-wake prompt warns that it is recurring
+ *         and that a permanent gate-bypass is not allowed, see `check`), OR
  *       * event-driven (email_reply / script_check — waiting on the outside
  *         world), OR
  *       * a one-shot time reminder whose fire_at is still in the future.
+ *     A past-due, non-recurring one-shot does NOT count — nothing will resume it.
  */
 export function hasPendingContinuation(
   db: Database,
@@ -165,9 +167,9 @@ export function hasPendingContinuation(
         WHERE status = 'pending'
           AND trigger_name = ?
           AND session_key = ?
-          AND recurring_interval_seconds IS NULL
           AND (
-            trigger_type IN ('email_reply', 'script_check')
+            recurring_interval_seconds IS NOT NULL
+            OR trigger_type IN ('email_reply', 'script_check')
             OR (COALESCE(trigger_type, 'time') = 'time' AND fire_at > ?)
           )`,
     )
@@ -763,7 +765,15 @@ switch (command) {
         ? `\n\n[Timeout: the trigger condition was not met within the configured window; firing anyway so you can decide how to proceed.]`
         : "";
 
-      const promptText = `[Reminder #${reminder.id}: "${reminder.title}"]\n\n${reminder.prompt}${timeoutNote}\n\nIMPORTANT: After completing this task, write a brief note to today's journal (memory/journal/) documenting what you did and any messages you sent. This ensures other sessions (e.g. Signal) have context if the user replies.`;
+      // A recurring reminder re-fires forever and counts as a valid
+      // "continuation" for the Stop-gate — which means it could mask open goals
+      // indefinitely. Make that explicit on every re-wake so the session
+      // actively resolves the work instead of riding the recurring bypass.
+      const recurringNote = reminder.recurring_interval_seconds != null
+        ? `\n\n[Recurring reminder, every ${formatInterval(reminder.recurring_interval_seconds)}. It keeps this session's open goals/tasks from blocking exit — but that is NOT a free pass to leave work unfinished. Each time it fires, make real progress; when the underlying work is done, cancel it with \`reminder cancel --id=<current-id>\` (find it via \`reminder list\`). Do not rely on it as a permanent gate bypass.]`
+        : "";
+
+      const promptText = `[Reminder #${reminder.id}: "${reminder.title}"]\n\n${reminder.prompt}${timeoutNote}${recurringNote}\n\nIMPORTANT: After completing this task, write a brief note to today's journal (memory/journal/) documenting what you did and any messages you sent. This ensures other sessions (e.g. Signal) have context if the user replies.`;
 
       let proc;
       if (reminder.trigger_name) {
