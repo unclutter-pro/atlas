@@ -75,7 +75,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && ln -sf /usr/local/bin/bun /usr/local/bin/bunx \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
   # --- Supercronic ---
-  && SUPERCRONIC_URL="https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-${ARCH}" \
+  && SUPERCRONIC_URL="https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-${ARCH}" \
   && curl -fsSL "$SUPERCRONIC_URL" -o /usr/local/bin/supercronic \
   && chmod +x /usr/local/bin/supercronic \
   # --- Typst ---
@@ -104,9 +104,6 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && claude --version \
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse \
-  # --- Beads (bd) — kept available so existing sessions can migrate themselves.
-  #     Hooks no longer invoke it; the `task` CLI is the system path.
-  && npm i -g @beads/bd@0.63.3 \
   # --- RTK (Rust Token Killer) — CLI proxy for 60-90% token savings ---
   && RTK_VERSION="0.38.0" \
   && if [ "$ARCH" = "arm64" ]; then RTK_ARCH="aarch64-unknown-linux-gnu"; else RTK_ARCH="x86_64-unknown-linux-musl"; fi \
@@ -129,7 +126,6 @@ RUN bash /tmp/install-google-fonts.sh && rm /tmp/install-google-fonts.sh
 
 ENV PATH="/home/agent/.homebrew/bin:/atlas/app/bin:/home/agent/bin:${PATH}"
 ENV HOME=/home/agent
-ENV BEADS_DIR=/home/agent/.beads
 ENV HOMEBREW_NO_AUTO_UPDATE=1
 ENV HOMEBREW_NO_ANALYTICS=1
 ENV NODE_PATH="/usr/lib/node_modules"
