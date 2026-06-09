@@ -136,6 +136,10 @@ signal contacts
 # Show conversation history
 signal history +491701234567
 
+# Reply-pending check (used by the Stop hook): exit 0 if the last message
+# from the contact is inbound (unanswered), exit 1 otherwise
+signal needs-reply +491701234567
+
 # Poll signal-cli for new messages (background)
 signal poll --once
 signal poll                                        # continuous

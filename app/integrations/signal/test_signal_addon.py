@@ -24,6 +24,7 @@ _spec.loader.exec_module(signal_addon)
 md2signal = signal_addon.markdown_to_signal_styles
 utf16_len = signal_addon._utf16_len
 decode_escapes = signal_addon._decode_shell_escapes
+has_pending_reply = signal_addon.has_pending_reply
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +302,83 @@ def test_decode_escapes_empty():
 
 def test_decode_escapes_no_escapes():
     assert decode_escapes("plain ascii") == "plain ascii"
+
+
+# ---------------------------------------------------------------------------
+# has_pending_reply — ground truth for the Signal-send Stop hook guard
+# ---------------------------------------------------------------------------
+#
+# The Stop hook calls `signal needs-reply <number>`, which returns 0 when the
+# last message in a conversation is inbound (the agent composed but never sent
+# a reply — the recurring "Hello?" failure). These tests pin the DB-direction
+# logic so that regression can't silently come back.
+
+import sqlite3
+
+
+def _make_msg_db():
+    """In-memory DB matching the get_signal_db messages schema (id-ordered)."""
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        """
+        CREATE TABLE messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_number  TEXT NOT NULL,
+            direction       TEXT NOT NULL DEFAULT 'in',
+            body            TEXT NOT NULL DEFAULT '',
+            timestamp       TEXT NOT NULL DEFAULT '',
+            created_at      TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    return db
+
+
+def _add(db, contact, direction, body=""):
+    db.execute(
+        "INSERT INTO messages (contact_number, direction, body) VALUES (?, ?, ?)",
+        (contact, direction, body),
+    )
+    db.commit()
+
+
+def test_pending_when_last_message_inbound():
+    db = _make_msg_db()
+    _add(db, "+49170", "in", "Hi Atlas")
+    assert has_pending_reply(db, "+49170") is True
+
+
+def test_not_pending_when_last_message_outbound():
+    db = _make_msg_db()
+    _add(db, "+49170", "in", "Hi Atlas")
+    _add(db, "+49170", "out", "Hi Max!")
+    assert has_pending_reply(db, "+49170") is False
+
+
+def test_pending_when_new_inbound_after_a_reply():
+    db = _make_msg_db()
+    _add(db, "+49170", "in", "Hi")
+    _add(db, "+49170", "out", "Hi back")
+    _add(db, "+49170", "in", "One more thing")
+    assert has_pending_reply(db, "+49170") is True
+
+
+def test_not_pending_for_unknown_contact():
+    db = _make_msg_db()
+    _add(db, "+49170", "in", "Hi")
+    assert has_pending_reply(db, "+49999") is False
+
+
+def test_no_history_is_not_pending():
+    db = _make_msg_db()
+    assert has_pending_reply(db, "+49170") is False
+
+
+def test_scoped_per_contact():
+    # A reply to one contact does not clear a pending inbound from another.
+    db = _make_msg_db()
+    _add(db, "+49170", "in", "Hi from A")
+    _add(db, "+49888", "in", "Hi from B")
+    _add(db, "+49888", "out", "Hi back to B")
+    assert has_pending_reply(db, "+49170") is True   # A still waiting
+    assert has_pending_reply(db, "+49888") is False  # B answered
