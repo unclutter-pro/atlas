@@ -739,6 +739,25 @@ class EmailDb:
         ).fetchall()
         return [_row_to_email(r) for r in rows]
 
+    def reply_pending(self, thread_id: str) -> bool:
+        """True if the newest message in a thread is inbound — i.e. the
+        correspondent wrote and we have not sent a reply since.
+
+        Ground truth for the Stop-hook reply guard: outgoing replies are stored
+        with direction='out' (insert_outgoing_email), inbound with 'in'. We sort
+        by created_at then id (insertion order) so the direction of the most
+        recent row answers "is a reply still outstanding for this thread?".
+        Unknown / empty threads return False (nothing to reply to).
+        """
+        row = self._conn.execute(
+            "SELECT direction FROM emails WHERE thread_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        return row["direction"] == "in"
+
     def insert_outgoing_email(
         self,
         *,

@@ -12,6 +12,7 @@ Subcommands:
   send     <number> <message>    Send a Signal message (supports --attach for files)
   contacts [--limit N]           List known contacts
   history  <number> [--limit]    Show message history with a contact
+  needs-reply <number>           Exit 0 if last message from <number> is unanswered (Stop hook)
 """
 
 import argparse

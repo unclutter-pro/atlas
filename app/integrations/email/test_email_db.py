@@ -853,3 +853,37 @@ class TestAttachments:
             assert len(idx) == 1
         finally:
             db.close()
+
+
+# ── reply_pending — Stop-hook reply guard ground truth ──────────────────────
+
+class TestReplyPending:
+    def test_inbound_only_is_pending(self, db):
+        _seed_thread(db, thread_id="t1")
+        _seed_email(db, thread_id="t1", direction="in", uid=1)
+        assert db.reply_pending("t1") is True
+
+    def test_outbound_after_inbound_not_pending(self, db):
+        _seed_thread(db, thread_id="t1")
+        _seed_email(db, thread_id="t1", direction="in", uid=1)
+        _seed_email(db, thread_id="t1", direction="out", uid=2)
+        assert db.reply_pending("t1") is False
+
+    def test_new_inbound_after_reply_is_pending(self, db):
+        _seed_thread(db, thread_id="t1")
+        _seed_email(db, thread_id="t1", direction="in", uid=1)
+        _seed_email(db, thread_id="t1", direction="out", uid=2)
+        _seed_email(db, thread_id="t1", direction="in", uid=3)
+        assert db.reply_pending("t1") is True
+
+    def test_unknown_thread_not_pending(self, db):
+        assert db.reply_pending("does-not-exist") is False
+
+    def test_scoped_per_thread(self, db):
+        _seed_thread(db, thread_id="t1")
+        _seed_thread(db, thread_id="t2")
+        _seed_email(db, thread_id="t1", direction="in", uid=1)
+        _seed_email(db, thread_id="t2", direction="in", uid=2)
+        _seed_email(db, thread_id="t2", direction="out", uid=3)
+        assert db.reply_pending("t1") is True    # t1 still waiting
+        assert db.reply_pending("t2") is False   # t2 answered

@@ -298,6 +298,13 @@ email read <email_id>             # Single email by #N from thread view
 email read <email_id> --raw       # Raw HTML
 ```
 
+**Reply-pending check** (used by the Stop hook)
+
+```bash
+# Exit 0 if the newest message in the thread is inbound (unanswered), else exit 1
+email needs-reply <thread_id>
+```
+
 **Polling (background)**
 
 ```bash

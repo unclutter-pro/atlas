@@ -26,25 +26,34 @@ if [ -n "${ATLAS_TRIGGER:-}" ] && [ -n "${ATLAS_TRIGGER_SESSION_KEY:-}" ]; then
   fi
 fi
 
-# --- Signal-send guard (interactive chat sessions) ---
-# In an interactive Signal session the agent must explicitly run `signal send`
-# to deliver its reply — the harness does NOT auto-send the assistant's prose.
-# A reply that is composed but never sent leaves the user waiting (the recurring
-# "Hello?" / "Und?" nudges). Ground truth lives in the Signal DB: if the last
-# message in this conversation is still inbound, no reply has gone out.
+# --- Reply-send guard (interactive reply channels: Signal, Email) ---
+# On these channels the agent must explicitly run a send command to deliver its
+# reply — the harness does NOT auto-deliver the assistant's prose. A reply that
+# is composed but never sent leaves the correspondent waiting (the recurring
+# Signal "Hello?" / "Und?" nudges; the same applies to email threads).
 #
-# We block at most once per turn: the `stop_hook_active` guard means that if the
-# agent genuinely has nothing to send (already replied, or the message was just
-# an acknowledgement), the immediately following stop is allowed through instead
-# of looping forever. `signal needs-reply` exits 0 only when a reply is pending,
-# and fails open (non-zero) on any error, so a broken check never traps the agent.
-if [ "${ATLAS_TRIGGER_CHANNEL:-}" = "signal" ] \
+# Ground truth lives in each channel's own DB: `<channel> needs-reply <key>`
+# exits 0 only when the newest message in the conversation is still inbound
+# (i.e. no reply went out this turn), and fails open (non-zero) on any error.
+# We then block ONCE — a single reminder. The `stop_hook_active` guard means
+# that if no reply is actually needed (already answered, triaged/archived, or a
+# pure acknowledgement), the immediately following stop is allowed through
+# instead of looping. There are legitimate no-reply cases, so this never hard-
+# gates: it just makes sure "composed but not sent" can't pass silently.
+REPLY_BIN=""
+REPLY_NOUN=""
+REPLY_HINT=""
+case "${ATLAS_TRIGGER_CHANNEL:-}" in
+  signal) REPLY_BIN="/atlas/app/bin/signal" ; REPLY_NOUN="Signal chat"   ; REPLY_HINT='signal send "<number>" "<message>"' ;;
+  email)  REPLY_BIN="/atlas/app/bin/email"  ; REPLY_NOUN="email thread"  ; REPLY_HINT='email reply "<thread-id>" "<message>"' ;;
+esac
+if [ -n "$REPLY_BIN" ] \
   && [ -n "${ATLAS_TRIGGER_SESSION_KEY:-}" ] \
   && [ "$STOP_HOOK_ACTIVE" != "true" ]; then
-  if /atlas/app/bin/signal needs-reply "$ATLAS_TRIGGER_SESSION_KEY" >/dev/null 2>&1; then
-    jq -n '{
+  if "$REPLY_BIN" needs-reply "$ATLAS_TRIGGER_SESSION_KEY" >/dev/null 2>&1; then
+    jq -n --arg noun "$REPLY_NOUN" --arg hint "$REPLY_HINT" '{
       decision: "block",
-      reason: "You are in an interactive Signal chat and the last message in this conversation is from the user — you have not sent a reply yet. Signal replies are NOT auto-delivered: you must actually run `signal send \"<number>\" \"<message>\"` for the user to receive anything. If you composed a reply but did not send it, send it now. If no reply is needed (you already answered, or the message was purely an acknowledgement/informational), you may stop — this check fires only once."
+      reason: ("You are handling an interactive " + $noun + " and the newest message in this conversation is from the other person — you have not sent a reply this turn. The user only sees what you actually deliver with `" + $hint + "`; the prose in your turn is NOT delivered to them. If you have a reply ready, send it now. If no reply is needed — you already answered, you triaged/archived the thread, or it was a pure acknowledgement — you may stop; this reminder fires only once.")
     }'
     exit 0
   fi

@@ -25,15 +25,15 @@ Outputs XML-wrapped sections:
 
 ## stop.sh
 
-Runs after Claude finishes a response. Reads the Claude Code hook payload from stdin (for `stop_hook_active`) and runs three guards in order: the task-completion gate, the Signal-send guard, and the journal reminder. The first guard that blocks emits its decision JSON and exits.
+Runs after Claude finishes a response. Reads the Claude Code hook payload from stdin (for `stop_hook_active`) and runs three guards in order: the task-completion gate, the reply-send guard, and the journal reminder. The first guard that blocks emits its decision JSON and exits.
 
-### Signal-send Guard (Interactive Signal Sessions Only)
+### Reply-send Guard (Interactive Reply Channels: Signal, Email)
 
-In an interactive Signal session the agent must explicitly run `signal send` to deliver its reply — the harness does **not** auto-send the assistant's prose. A reply that is composed but never sent leaves the user waiting (the recurring "Hello?" / "Und?" nudges).
+On an interactive reply channel the agent must explicitly run a send command (`signal send`, `email reply`) to deliver its reply — the harness does **not** auto-deliver the assistant's prose. A reply that is composed but never sent leaves the correspondent waiting (the recurring Signal "Hello?" / "Und?" nudges; the same applies to email threads).
 
-When `ATLAS_TRIGGER_CHANNEL=signal`, the hook asks `signal needs-reply <session-key>` for ground truth: the Signal DB records every inbound (`cmd_incoming`) and outbound (`cmd_send`) message in order, so if the highest-id row for the contact is still inbound, no reply has gone out. If a reply is pending it emits `{"decision":"block","reason":"…"}` to make the agent send before stopping.
+When `ATLAS_TRIGGER_CHANNEL` is `signal` or `email`, the hook asks `<channel> needs-reply <session-key>` for ground truth from that channel's own DB: each records inbound and outbound messages with a `direction`, so if the newest message in the conversation is still inbound, no reply went out this turn. If a reply is pending it emits `{"decision":"block","reason":"…"}` with a channel-specific reminder (it spells out that the correspondent only sees what's actually sent, not the turn's prose) before the session stops.
 
-The block fires **at most once per turn**: the `stop_hook_active` flag from the hook payload short-circuits the guard, so if the agent genuinely has nothing to send (already replied, or the message was an acknowledgement) the immediately following stop is allowed through instead of looping. `signal needs-reply` exits non-zero on any error, so the guard fails open and never traps the session.
+The block fires **at most once per turn**: the `stop_hook_active` flag from the hook payload short-circuits the guard, so if no reply is actually needed (already answered, thread triaged/archived, or a pure acknowledgement) the immediately following stop is allowed through instead of looping. `needs-reply` exits non-zero on any error, so the guard fails open and never traps the session.
 
 ### Journal Reminder (Trigger Sessions Only)
 
