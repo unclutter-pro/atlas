@@ -115,10 +115,44 @@ mkdir -p "$(dirname "$OUTPUT")"
 
 # --root / gives Typst access to absolute paths for templates and data files
 # (template lives in the skill dir; --data may be anywhere).
+#
+# On failure, Typst's diagnostics are accurate but terse, and two pitfalls
+# account for most repeated, blind re-runs: an unescaped '#' in content (which
+# silently switches Typst into code mode → "not valid in code"), and an
+# unbalanced (), [], {} or $…$ delimiter ("unclosed delimiter"). Catch the
+# failure and point at the exact fix + the cheatsheet so the loop ends on the
+# first error instead of the third. The reference already documents the rules;
+# the gap was that nothing surfaced it at the moment of failure.
+ERRFILE="$(mktemp)"
+trap 'rm -f "$ERRFILE"' EXIT
+
+set +e
 typst compile \
   --root / \
   "${INPUTS[@]}" \
   "$TEMPLATE" \
-  "$OUTPUT"
+  "$OUTPUT" 2> "$ERRFILE"
+STATUS=$?
+set -e
+
+# Always surface Typst's own diagnostics.
+cat "$ERRFILE" >&2
+
+if [ "$STATUS" -ne 0 ]; then
+  {
+    echo ""
+    echo "── Typst compile failed — check these common causes before re-running ──"
+    if grep -qiE "not valid in code|expected expression|unexpected" "$ERRFILE"; then
+      echo "  • Unescaped '#': in content a literal '#' must be written '\\#' (a bare"
+      echo "    '#' switches Typst into code mode). Same for literal \$ _ * @ → \\\$ \\_ \\* \\@."
+    fi
+    if grep -qiE "unclosed|expected closing|delimiter" "$ERRFILE"; then
+      echo "  • Unbalanced delimiter: check matching (), [], {} and \$…\$ near the"
+      echo "    reported line — a missing closer often surfaces several lines later."
+    fi
+    echo "  • Full escaping + syntax reference: $SKILL_DIR/references/typst-cheatsheet.md"
+  } >&2
+  exit "$STATUS"
+fi
 
 echo "✓ $OUTPUT"
