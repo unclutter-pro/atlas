@@ -690,3 +690,89 @@ describe("hasPendingContinuation", () => {
     expect(hasPendingContinuation(db, SCOPE.trigger_name, "", NOW)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CLI ergonomics: id resolution + combined relative durations
+// (regression coverage for the postmortem KW24 reminder-CLI findings)
+// ---------------------------------------------------------------------------
+
+import { parseFlags, parsePositionals, resolveReminderId, parseAt } from "./manage-reminders.ts";
+
+describe("parsePositionals", () => {
+  test("returns only non-flag tokens, in order", () => {
+    expect(parsePositionals(["42", "--id=7", "foo"])).toEqual(["42", "foo"]);
+    expect(parsePositionals(["--all", "--recurring"])).toEqual([]);
+    expect(parsePositionals([])).toEqual([]);
+  });
+});
+
+describe("resolveReminderId", () => {
+  test("resolves from --id flag", () => {
+    expect(resolveReminderId("42", [], "cancel")).toBe(42);
+  });
+
+  test("resolves from a bare positional (reminder cancel 331)", () => {
+    expect(resolveReminderId(undefined, ["331"], "cancel")).toBe(331);
+  });
+
+  test("--id flag wins over positional when both present", () => {
+    expect(resolveReminderId("7", ["331"], "cancel")).toBe(7);
+  });
+
+  test("falls back to positional when --id was passed without a value (=\"true\")", () => {
+    // parseFlags maps a valueless `--id` to "true"; that must not become id NaN/"true"
+    expect(resolveReminderId("true", ["331"], "cancel")).toBe(331);
+  });
+
+  test("throws actionable error when --id has no value and no positional", () => {
+    expect(() => resolveReminderId("true", [], "cancel")).toThrow(/requires a reminder id/);
+  });
+
+  test("throws when nothing provided", () => {
+    expect(() => resolveReminderId(undefined, [], "delete")).toThrow(/requires a reminder id/);
+  });
+
+  test("throws on non-numeric id instead of querying for NaN", () => {
+    expect(() => resolveReminderId("abc", [], "cancel")).toThrow(/Invalid reminder id/);
+  });
+
+  test("rejects zero and negative ids", () => {
+    expect(() => resolveReminderId("0", [], "cancel")).toThrow(/Invalid reminder id/);
+    expect(() => resolveReminderId("-3", [], "cancel")).toThrow(/Invalid reminder id/);
+  });
+});
+
+describe("parseAt: combined relative durations", () => {
+  const MIN = 60_000;
+  // Parse the stored "YYYY-MM-DD HH:MM:SS" (UTC) back to ms for delta assertions.
+  const toMs = (stored: string) => new Date(stored.replace(" ", "T") + "Z").getTime();
+
+  test("single units still work (+30m, +2h, +1d)", () => {
+    const base = Date.now();
+    expect(toMs(parseAt("+30m")) - base).toBeGreaterThanOrEqual(30 * MIN - 2000);
+    expect(toMs(parseAt("+30m")) - base).toBeLessThanOrEqual(30 * MIN + 2000);
+    expect(toMs(parseAt("+2h")) - base).toBeGreaterThanOrEqual(120 * MIN - 2000);
+    expect(toMs(parseAt("+1d")) - base).toBeGreaterThanOrEqual(1440 * MIN - 2000);
+  });
+
+  test("combined +2h30m → 150 minutes", () => {
+    const base = Date.now();
+    const delta = toMs(parseAt("+2h30m")) - base;
+    expect(delta).toBeGreaterThanOrEqual(150 * MIN - 2000);
+    expect(delta).toBeLessThanOrEqual(150 * MIN + 2000);
+  });
+
+  test("combined +1d2h30m → 1590 minutes", () => {
+    const base = Date.now();
+    const delta = toMs(parseAt("+1d2h30m")) - base;
+    expect(delta).toBeGreaterThanOrEqual(1590 * MIN - 2000);
+    expect(delta).toBeLessThanOrEqual(1590 * MIN + 2000);
+  });
+
+  test("+90m → 90 minutes (multi-digit single unit)", () => {
+    const base = Date.now();
+    const delta = toMs(parseAt("+90m")) - base;
+    expect(delta).toBeGreaterThanOrEqual(90 * MIN - 2000);
+    expect(delta).toBeLessThanOrEqual(90 * MIN + 2000);
+  });
+});
