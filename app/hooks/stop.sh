@@ -5,8 +5,10 @@ set -euo pipefail
 
 # Capture the hook payload from stdin (Claude Code passes JSON with
 # session_id, transcript_path, stop_hook_active, …). Read it once, up front,
-# before anything else might consume stdin. Fail-open if there is none.
-HOOK_INPUT="$(cat 2>/dev/null || true)"
+# before anything else might consume stdin. The `timeout` guards against ever
+# hanging this hook if stdin is left open — it runs on every session stop, so a
+# hang would freeze the session. Fail-open (empty) if there is no payload.
+HOOK_INPUT="$(timeout 5 cat 2>/dev/null || true)"
 STOP_HOOK_ACTIVE="$(printf '%s' "$HOOK_INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null || echo false)"
 
 # --- Kill-switch: ATLAS_TASKS_DISABLE_GATE=1 skips task enforcement ---
