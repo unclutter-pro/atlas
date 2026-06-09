@@ -86,7 +86,8 @@ The command is run under `bash -c`. Exit code 0 fires the reminder; any other ex
 
 - Full datetime: `"2026-03-08 14:00"` or `"2026-03-08T14:00:00"` (local timezone)
 - Time only (today): `"14:00"`
-- Relative: `"+30m"`, `"+2h"`, `"+1d"`, `"+14d"`
+- Relative, single unit: `"+30m"`, `"+2h"`, `"+1d"`, `"+14d"`
+- Relative, combined: `"+1d2h30m"`, `"+2h30m"`, `"+90m"` (units in order: d, h, m)
 
 ## List, cancel, delete
 
@@ -95,8 +96,9 @@ reminder list              # pending only
 reminder list --all        # include fired/cancelled
 reminder list --recurring  # show recurring chains
 
-reminder cancel --id=5     # mark as cancelled (keeps history)
-reminder delete --id=5     # permanently remove
+reminder cancel 5          # by positional id (mark as cancelled, keeps history)
+reminder cancel --id=5     # or by flag — equivalent
+reminder delete 5          # permanently remove (positional or --id=5)
 ```
 
 The `list` output includes the trigger type and a human-readable "fires_when" column so you can scan what each reminder is waiting on.

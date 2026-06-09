@@ -21,7 +21,7 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-function parseFlags(args: string[]): Record<string, string> {
+export function parseFlags(args: string[]): Record<string, string> {
   const flags: Record<string, string> = {};
   for (const arg of args) {
     const m = arg.match(/^--([^=]+)(?:=(.*))?$/s);
@@ -32,25 +32,69 @@ function parseFlags(args: string[]): Record<string, string> {
   return flags;
 }
 
+/** Positional (non-`--flag`) tokens, in order. */
+export function parsePositionals(args: string[]): string[] {
+  return args.filter((a) => !a.startsWith("--"));
+}
+
+/**
+ * Resolve a reminder id for cancel/delete from either `--id=<n>` or a bare
+ * positional (`reminder cancel 42`). Validates that the result is a positive
+ * integer so a missing flag value (`--id` → "true") or a typo fails loudly with
+ * an actionable message instead of querying for id `NaN` / `"true"`.
+ *
+ * Throws on invalid input; the CLI call-site converts the error via `die`.
+ *
+ * @param flagId       flags["id"] — may be undefined, a number-string, or "true"
+ *                     when `--id` was passed without a value.
+ * @param positionals  positional tokens for the command (command token removed).
+ * @param command      "cancel" | "delete" — used only for error messages.
+ */
+export function resolveReminderId(
+  flagId: string | undefined,
+  positionals: string[],
+  command: string,
+): number {
+  // `--id` without a value parses to "true"; treat that as "not provided"
+  // and fall back to the first positional token.
+  let raw = flagId && flagId !== "true" ? flagId : undefined;
+  if (raw === undefined) raw = positionals[0];
+
+  if (raw === undefined || raw === "") {
+    throw new Error(
+      `${command} requires a reminder id — e.g. \`reminder ${command} 42\` or \`reminder ${command} --id=42\` (find ids with \`reminder list\`).`,
+    );
+  }
+
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(
+      `Invalid reminder id: "${raw}". Expected a positive integer — e.g. \`reminder ${command} 42\`.`,
+    );
+  }
+  return n;
+}
+
 /**
  * Parse a human-friendly time string into a UTC storage datetime string.
  * Supported formats:
- *   - "+30m", "+2h", "+1d", "+14d"  — relative offsets
+ *   - "+30m", "+2h", "+1d", "+14d"   — relative offset, single unit
+ *   - "+1d2h30m", "+2h30m", "+90m"   — relative offset, combined units (order: d, h, m)
  *   - "14:00"                        — today at given time (local)
  *   - "2026-03-08 14:00"             — full date + time (local)
  *   - "2026-03-08T14:00:00"          — ISO-style (local)
  */
-function parseAt(at: string): string {
+export function parseAt(at: string): string {
   const now = new Date();
 
-  // Relative: +Nm, +Nh, +Nd
-  const relMatch = at.match(/^\+(\d+)([mhd])$/);
-  if (relMatch) {
-    const amount = parseInt(relMatch[1], 10);
-    const unit = relMatch[2];
-    const ms = unit === "m" ? amount * 60_000
-              : unit === "h" ? amount * 3_600_000
-              : amount * 86_400_000;
+  // Relative offset: single (+30m, +2h, +1d) or combined (+1d2h30m, +2h30m).
+  // Units must appear in descending order (d, h, m) and at least one is required.
+  const rel = at.match(/^\+(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/);
+  if (rel && (rel[1] || rel[2] || rel[3])) {
+    const days = parseInt(rel[1] ?? "0", 10);
+    const hours = parseInt(rel[2] ?? "0", 10);
+    const mins = parseInt(rel[3] ?? "0", 10);
+    const ms = ((days * 24 + hours) * 60 + mins) * 60_000;
     return new Date(now.getTime() + ms).toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
   }
 
@@ -70,7 +114,7 @@ function parseAt(at: string): string {
     return toUtcStorage(parsed);
   }
 
-  die(`Unrecognized time format: "${at}". Use "+30m", "+2h", "+1d", "+14d", "14:00", "2026-03-08 14:00", or "2026-03-08T14:00:00"`);
+  die(`Unrecognized time format: "${at}". Use "+30m", "+2h", "+1d", "+14d", "+2h30m" (combined; order d,h,m), "14:00", "2026-03-08 14:00", or "2026-03-08T14:00:00"`);
 }
 
 /**
@@ -360,8 +404,8 @@ Commands:
           [--timeout=<time>] [--channel=internal] [--new-session]
           [--recurring=<interval>]
   list    [--all] [--recurring]
-  cancel  --id=<id>
-  delete  --id=<id>
+  cancel  <id> | --id=<id>
+  delete  <id> | --id=<id>
   check   (evaluate due reminders — called by cron)
   has-continuation  (exit 0 if this session has a pending continuation
                      reminder — used by the Stop hook; prints yes/no)
@@ -369,7 +413,8 @@ Commands:
 Trigger types (pick exactly one per reminder):
 
   --at=<time>                  Fire at a wall-clock time. Time formats:
-                                 "+30m", "+2h", "+1d", "+14d"  (relative)
+                                 "+30m", "+2h", "+1d", "+14d"   (relative, single unit)
+                                 "+1d2h30m", "+2h30m", "+90m"   (relative, combined; order d,h,m)
                                  "14:00"                        (today, local)
                                  "2026-03-08 14:00"             (full local datetime)
 
@@ -640,26 +685,28 @@ switch (command) {
   }
 
   case "cancel": {
-    const id = flags["id"] || "";
-    if (!id) die("--id is required");
+    let id: number;
+    try { id = resolveReminderId(flags["id"], parsePositionals(argv.slice(1)), "cancel"); }
+    catch (e: any) { die(e.message); }
 
-    const existing = db.prepare("SELECT * FROM reminders WHERE id = ?").get(parseInt(id, 10)) as any;
+    const existing = db.prepare("SELECT * FROM reminders WHERE id = ?").get(id) as any;
     if (!existing) die(`Reminder #${id} not found`);
     if (existing.status !== "pending") die(`Reminder #${id} is already ${existing.status}`);
 
-    db.prepare("UPDATE reminders SET status = 'cancelled' WHERE id = ?").run(parseInt(id, 10));
+    db.prepare("UPDATE reminders SET status = 'cancelled' WHERE id = ?").run(id);
     console.log(`Reminder #${id} cancelled: "${existing.title}"`);
     break;
   }
 
   case "delete": {
-    const id = flags["id"] || "";
-    if (!id) die("--id is required");
+    let id: number;
+    try { id = resolveReminderId(flags["id"], parsePositionals(argv.slice(1)), "delete"); }
+    catch (e: any) { die(e.message); }
 
-    const existing = db.prepare("SELECT * FROM reminders WHERE id = ?").get(parseInt(id, 10)) as any;
+    const existing = db.prepare("SELECT * FROM reminders WHERE id = ?").get(id) as any;
     if (!existing) die(`Reminder #${id} not found`);
 
-    db.prepare("DELETE FROM reminders WHERE id = ?").run(parseInt(id, 10));
+    db.prepare("DELETE FROM reminders WHERE id = ?").run(id);
     console.log(`Reminder #${id} deleted: "${existing.title}"`);
     break;
   }
