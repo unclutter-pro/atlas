@@ -194,6 +194,9 @@ Before delivering a PDF:
 1. **Curly quotes "…" terminate Typst strings** — German typographic quotes (U+201C/U+201D) are ASCII-identical to `"`. Inside string literals use plain `"`; inside content blocks (`[…]`) anything goes.
 2. **Variable fonts** — reference `"Inter"`, not `"Inter Variable"`. The container ships static cuts only.
 3. **Table overflows** — narrow column headers or wrap the body with `text(size: 9pt)`.
+4. **Unescaped `#` in content** — a bare `#` switches Typst into code mode (`error: the character # is not valid in code`). Write `\#` for a literal. Same for literal `$ _ * @`.
+
+When a compile fails, `build-pdf` prints Typst's diagnostic **plus** a targeted hint for these two recurring errors (`#`-escaping and unclosed delimiters) and a pointer to [references/typst-cheatsheet.md](references/typst-cheatsheet.md). Read the cheatsheet before re-running — don't re-compile blindly.
 
 For Typst-authoring gotchas (image paths, `context` for `counter(page).final()`, `table.header(...)` repeat, `pagebreak(weak: true)`) see [templates/custom-templates.md § Common gotchas](templates/custom-templates.md).
 
