@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9"
+  },
+  "overrides": {
+    "fast-uri": "3.1.2"
   }
 }
