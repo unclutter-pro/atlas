@@ -1913,6 +1913,21 @@ export async function main(): Promise<void> {
     existingSession = null;
   }
 
+  // --- Restart recovery: resume a specific session by id (any trigger mode) ---
+  // init.sh Phase 11 sets ATLAS_RESUME_SESSION_ID when it re-fires a run that
+  // was interrupted by a container restart. We resume that exact session — for
+  // ALL trigger types, not just persistent — so the recovered agent sees its
+  // own prior actions (e.g. an email it already sent) in the transcript and
+  // never repeats them. If the session file is gone (interrupted before the
+  // SDK wrote anything) we fall through to a normal fresh run on the payload.
+  const presetResumeId = process.env.ATLAS_RESUME_SESSION_ID || null;
+  if (presetResumeId && !existingSession && sessionFileExists(presetResumeId)) {
+    existingSession = presetResumeId;
+    log.log(
+      `Restart recovery: resuming session ${presetResumeId} (mode=${sessionMode}, key=${sessionKey})`,
+    );
+  }
+
   // Re-check custom socket after acquiring lock
   if (sessionMode === "persistent" && existingSession) {
     const isStopCommandPostLock = payload.trim().toLowerCase() === "/stop";
@@ -1979,6 +1994,26 @@ export async function main(): Promise<void> {
       runId = runRow?.id ?? null;
     } catch {
       // trigger_runs table may not exist in older DBs
+    }
+  }
+
+  // --- Assign this run's session id UP-FRONT (deterministic) ---
+  // We pick the session id now — before the SDK query even starts — and persist
+  // it to trigger_runs immediately. This is the core of restart-safe recovery:
+  // if the container dies mid-turn, init.sh Phase 11 finds a non-NULL session_id
+  // for every open run and resumes the real session, instead of re-firing the
+  // raw payload from scratch (which re-sends replies). Resuming an existing
+  // session reuses its id; a fresh run gets a new UUID passed to the SDK via
+  // `options.sessionId` so the SDK writes the transcript under exactly this id.
+  let runSessionId = existingSession ?? crypto.randomUUID();
+  if (runId !== null) {
+    try {
+      db.prepare("UPDATE trigger_runs SET session_id = ? WHERE id = ?").run(
+        runSessionId,
+        runId,
+      );
+    } catch {
+      // Non-fatal — completion-time marking still records it.
     }
   }
 
@@ -2065,7 +2100,11 @@ export async function main(): Promise<void> {
       autoMemoryEnabled: false,
       disallowedTools: DISALLOWED_BUILTIN_TOOLS,
       cwd: HOME,
-      ...(resumeId ? { resume: resumeId } : {}),
+      // Resume an existing session, or pin a NEW one to our pre-generated id so
+      // the SDK writes its transcript under the id we already persisted to
+      // trigger_runs (restart recovery can then resume it). `sessionId` and
+      // `resume` are mutually exclusive, hence the either/or.
+      ...(resumeId ? { resume: resumeId } : { sessionId: runSessionId }),
       ...(CLAUDE_CODE_PATH
         ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
         : {}),
@@ -2257,7 +2296,7 @@ export async function main(): Promise<void> {
   };
 
   try {
-    if (sessionMode === "persistent" && existingSession) {
+    if (existingSession) {
       log.log(`Resuming session for key=${sessionKey}: ${existingSession}`);
       try {
         await runQuery(existingSession);
@@ -2277,6 +2316,18 @@ export async function main(): Promise<void> {
         resultMsg = null;
         capturedSessionId = null;
         isError = false;
+        // Fresh retry needs a brand-new session id: the one we just failed to
+        // resume may be corrupt, and reusing it as `options.sessionId` could
+        // reattach to that broken transcript. Persist the new id immediately.
+        runSessionId = crypto.randomUUID();
+        if (runId !== null) {
+          try {
+            db.prepare("UPDATE trigger_runs SET session_id = ? WHERE id = ?").run(
+              runSessionId,
+              runId,
+            );
+          } catch {}
+        }
         // Need a fresh message channel for the retry
         cleanupSocket(socketServer, socketPath);
         socketServer = null;
@@ -2408,11 +2459,15 @@ export async function main(): Promise<void> {
   }
 
   // --- Mark run completed ---
-  if (runId !== null && capturedSessionId !== null) {
+  // Always mark on normal end (success OR error) so Phase 11 never re-fires a
+  // run that actually finished. A run killed mid-turn never reaches this line,
+  // so its completed_at stays NULL and Phase 11 resumes it by the session_id we
+  // persisted up-front. Use the captured id when available, else our pre-set id.
+  if (runId !== null) {
     try {
       db.prepare(
         "UPDATE trigger_runs SET session_id = ?, completed_at = datetime('now') WHERE id = ?",
-      ).run(capturedSessionId, runId);
+      ).run(capturedSessionId ?? runSessionId, runId);
     } catch {
       // Non-fatal
     }
