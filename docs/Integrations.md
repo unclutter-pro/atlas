@@ -136,6 +136,10 @@ signal contacts
 # Show conversation history
 signal history +491701234567
 
+# Reply-pending check (used by the Stop hook): exit 0 if the last message
+# from the contact is inbound (unanswered), exit 1 otherwise
+signal needs-reply +491701234567
+
 # Poll signal-cli for new messages (background)
 signal poll --once
 signal poll                                        # continuous
@@ -292,6 +296,13 @@ email thread <thread_id>          # Full thread (Markdown)
 email thread <thread_id> --raw    # Raw HTML
 email read <email_id>             # Single email by #N from thread view
 email read <email_id> --raw       # Raw HTML
+```
+
+**Reply-pending check** (used by the Stop hook)
+
+```bash
+# Exit 0 if the newest message in the thread is inbound (unanswered), else exit 1
+email needs-reply <thread_id>
 ```
 
 **Polling (background)**

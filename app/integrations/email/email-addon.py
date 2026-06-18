@@ -11,6 +11,7 @@ Subcommands:
   reply  <thread_id> <body>      Reply to an existing thread
   threads [--limit N]       List tracked email threads
   thread <thread_id>        Show thread detail
+  needs-reply <thread_id>   Exit 0 if newest message in thread is unanswered (Stop hook)
 
 Concurrency: poll fetches all new UIDs first, writes them to the email DB and
 atlas inbox in a single pass, then fires triggers in the background (non-blocking)
@@ -1655,6 +1656,25 @@ def _format_email_md(
 
 # --- THREAD detail command ---
 
+def cmd_needs_reply(config, thread_id):
+    """Exit 0 if a reply to <thread_id> is pending (newest message inbound),
+    exit 1 otherwise (already replied/triaged, or unknown thread).
+
+    Silent on stdout — intended for the Stop hook. Any error fails open
+    (exit 1) so the hook never traps the session.
+    """
+    try:
+        db = open_email_db(config)
+        try:
+            pending = db.reply_pending(thread_id)
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"needs-reply check failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0 if pending else 1)
+
+
 def cmd_thread_detail(config, thread_id, raw=False):
     """Show all emails in a thread as Markdown (or raw HTML with --raw)."""
     db = open_email_db(config)
@@ -1863,6 +1883,13 @@ Examples:
     # folders listing
     sub.add_parser("folders", help="List server folders and role mapping")
 
+    # needs-reply — exit 0 if the newest message in the thread is unanswered
+    p_needs = sub.add_parser(
+        "needs-reply",
+        help="Exit 0 if a reply to <thread_id> is pending (newest message inbound), else exit 1",
+    )
+    p_needs.add_argument("thread_id", help="Thread id")
+
     args = parser.parse_args()
     config = load_config()
 
@@ -1916,6 +1943,9 @@ Examples:
 
     elif args.command == "read":
         cmd_read_email(config, args.email_id, raw=args.raw)
+
+    elif args.command == "needs-reply":
+        cmd_needs_reply(config, args.thread_id)
 
 
 if __name__ == "__main__":

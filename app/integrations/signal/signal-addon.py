@@ -12,6 +12,7 @@ Subcommands:
   send     <number> <message>    Send a Signal message (supports --attach for files)
   contacts [--limit N]           List known contacts
   history  <number> [--limit]    Show message history with a contact
+  needs-reply <number>           Exit 0 if last message from <number> is unanswered (Stop hook)
 """
 
 import argparse
@@ -1053,6 +1054,47 @@ def cmd_history(config, contact_number, limit=20):
     db.close()
 
 
+# --- REPLY-PENDING CHECK (Stop hook) ---
+
+def has_pending_reply(db, contact_number) -> bool:
+    """True if the latest message in this conversation is inbound — i.e. the
+    user wrote and the agent has not sent a reply yet.
+
+    Outbound replies are recorded by cmd_send, inbound by cmd_incoming, both in
+    insertion (== chronological) order. So the direction of the highest-id row
+    tells us whether a reply is still outstanding. This is the ground-truth
+    signal the Stop hook needs: it does not depend on transcript parsing and
+    cannot be fooled by the agent merely *writing* prose without sending it.
+    """
+    row = db.execute(
+        "SELECT direction FROM messages WHERE contact_number = ? ORDER BY id DESC LIMIT 1",
+        (contact_number,),
+    ).fetchone()
+    if row is None:
+        return False  # no conversation with this contact → nothing to reply to
+    return row[0] == "in"
+
+
+def cmd_needs_reply(config, contact_number):
+    """Exit 0 if a reply to <contact_number> is pending (last message inbound),
+    exit 1 otherwise (already replied, no history, or contact unknown).
+
+    Stays silent on stdout — intended to be called from the Stop hook. Any error
+    (e.g. DB unavailable) is treated as "no pending reply" so the hook fails open
+    and never traps the session.
+    """
+    try:
+        db = get_signal_db(config)
+        try:
+            pending = has_pending_reply(db, contact_number)
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"needs-reply check failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0 if pending else 1)
+
+
 # --- Main CLI ---
 
 def main():
@@ -1103,6 +1145,13 @@ Examples:
     p_history.add_argument("number", help="Contact phone number")
     p_history.add_argument("--limit", type=int, default=20)
 
+    # needs-reply — exit 0 if the last message from <number> is unanswered
+    p_needs = sub.add_parser(
+        "needs-reply",
+        help="Exit 0 if a reply to <number> is pending (last message inbound), else exit 1",
+    )
+    p_needs.add_argument("number", help="Contact phone number")
+
     args = parser.parse_args()
     config = load_config()
 
@@ -1128,6 +1177,8 @@ Examples:
         cmd_contacts(config, limit=args.limit)
     elif args.command == "history":
         cmd_history(config, args.number, limit=args.limit)
+    elif args.command == "needs-reply":
+        cmd_needs_reply(config, args.number)
 
 
 if __name__ == "__main__":
