@@ -141,6 +141,13 @@ const settings: Record<string, unknown> = {
         matcher: "Bash",
         hooks: [
           { type: "command", command: "rtk hook claude" },
+          // Nudge toward the reminder CLI when a Bash command polls/sleeps to
+          // wait on an event — Atlas is event-driven ("no polling"). Advisory
+          // only: emits additionalContext, never blocks.
+          {
+            type: "command",
+            command: "/atlas/app/hooks/remind-use-reminders.sh",
+          },
         ],
       },
     ],
