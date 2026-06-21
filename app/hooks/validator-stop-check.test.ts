@@ -16,14 +16,6 @@ function assistantEvent(text: string): string {
   return JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
 }
 
-function repromptEvent(): string {
-  // Mirrors what Claude Code records when our block reason is injected as a user turn.
-  return JSON.stringify({
-    type: "user",
-    message: { role: "user", content: [{ type: "text", text: "[validator-format-gate] reprompt" }] },
-  });
-}
-
 function writeTranscript(lines: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), "vsc-"));
   const path = join(dir, "transcript.jsonl");
@@ -69,15 +61,9 @@ describe("validator-stop-check", () => {
     expect(JSON.parse(out).decision).toBe("block");
   });
 
-  test("gives up (allows stop) after MAX_REPROMPTS to avoid an infinite loop", async () => {
-    const lines: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      lines.push(assistantEvent("still not json"));
-      lines.push(repromptEvent());
-    }
-    lines.push(assistantEvent("still refusing to comply with the format"));
-    const path = writeTranscript(lines);
-    const out = await runHook(JSON.stringify({ transcript_path: path }));
+  test("does not block again when stop_hook_active is true (loop guard)", async () => {
+    const path = writeTranscript([assistantEvent("still not valid json")]);
+    const out = await runHook(JSON.stringify({ transcript_path: path, stop_hook_active: true }));
     expect(out).toBe("");
   });
 

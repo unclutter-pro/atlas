@@ -2,106 +2,64 @@
 /**
  * Stop-hook gate for the goal-validator session (channel = "validator").
  *
- * The validator MUST end its turn with exactly one parseable JSON verdict line:
+ * The validator must end its turn with exactly one parseable JSON verdict line:
  *   {"verdict": "pass" | "fail", "feedback": "..."}
  *
- * Some models occasionally answer in prose, wrap the JSON in code fences, or add
- * commentary — which the close orchestrator then records as "no parseable
- * output", burning a validation attempt for a complete goal. Instead of treating
- * that as an infrastructure error after the fact, this hook blocks the stop the
- * moment the final message is unparseable and feeds back the required format, so
- * the SAME validator session continues and the model corrects itself.
+ * If the final assistant message isn't parseable (prose, code fences, extra
+ * keys), block the stop and reprompt so the SAME session corrects its format —
+ * instead of the close orchestrator recording "no parseable output" and burning
+ * a validation attempt.
  *
- * Wired in by `app/hooks/stop.sh` only when ATLAS_TRIGGER_CHANNEL=validator.
+ * Wired into `app/hooks/stop.sh`, active only when ATLAS_TRIGGER_CHANNEL=validator.
  *
- * Hook I/O contract (Claude Code Stop hook):
- *   stdin  — JSON: { transcript_path, stop_hook_active, ... }
- *   stdout — empty (allow stop) OR {"decision":"block","reason":"..."} (continue)
+ * Stop-hook contract (see https://code.claude.com/docs/en/hooks):
+ *   stdin  — { transcript_path, stop_hook_active, ... }
+ *   stdout — empty (allow stop) | {"decision":"block","reason":"..."} (continue)
+ *   stop_hook_active is true once we've already blocked this turn — the
+ *   documented guard against infinite loops, so we reprompt at most once.
  */
 import { readFileSync } from "node:fs";
 import { parseValidatorOutput } from "../triggers/manage-tasks.ts";
 
-// Marker embedded in our reprompt so we can count how many times we have already
-// nudged this session and stop looping if a model is hopelessly stuck. The outer
-// validator timeout also bounds this, but an explicit cap avoids wasted turns.
-const REPROMPT_MARKER = "[validator-format-gate]";
-const MAX_REPROMPTS = 5;
+const input = (await Bun.stdin.json().catch(() => null)) as
+  | { transcript_path?: string; stop_hook_active?: boolean }
+  | null;
 
-const REQUIRED_FORMAT = `{"verdict": "pass" | "fail", "feedback": "<short explanation, max 200 chars>"}`;
+// Fail open if we can't inspect the turn, and never block more than once.
+if (!input?.transcript_path || input.stop_hook_active) process.exit(0);
 
-/** Extract the concatenated text of an assistant transcript event, if any. */
-function assistantText(event: unknown): string | null {
-  const message = (event as { message?: { role?: string; content?: unknown } })?.message;
-  if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return null;
-  const text = message.content
-    .filter((c: unknown) => (c as { type?: string })?.type === "text")
-    .map((c: unknown) => (c as { text?: string }).text ?? "")
-    .join("\n")
-    .trim();
-  return text.length > 0 ? text : null;
-}
-
-/** True if a user-injected event carries our reprompt marker. */
-function isOurReprompt(event: unknown): boolean {
-  const message = (event as { message?: { role?: string; content?: unknown } })?.message;
-  if (!message || message.role !== "user") return false;
-  return JSON.stringify(message.content ?? "").includes(REPROMPT_MARKER);
-}
-
-function allowStop(): never {
-  process.exit(0);
-}
-
-function block(reason: string): never {
-  process.stdout.write(JSON.stringify({ decision: "block", reason }));
-  process.exit(0);
-}
-
-async function main(): Promise<void> {
-  const raw = await Bun.stdin.text().catch(() => "");
-  let input: { transcript_path?: string } = {};
-  try {
-    input = JSON.parse(raw);
-  } catch {
-    allowStop(); // no parseable hook input — don't interfere
-  }
-
-  const transcriptPath = input.transcript_path;
-  if (!transcriptPath) allowStop();
-
-  let lines: string[];
-  try {
-    lines = readFileSync(transcriptPath, "utf8").split("\n").filter((l) => l.length > 0);
-  } catch {
-    allowStop(); // unreadable transcript — fail open
-  }
-
-  let lastAssistantText: string | null = null;
-  let repromptCount = 0;
-  for (const line of lines) {
-    let event: unknown;
+// Find the last assistant text message in the transcript (JSONL, one event/line).
+let lastText = "";
+try {
+  for (const line of readFileSync(input.transcript_path, "utf8").split("\n")) {
+    let msg: { role?: string; content?: unknown };
     try {
-      event = JSON.parse(line);
+      msg = JSON.parse(line)?.message;
     } catch {
       continue;
     }
-    const text = assistantText(event);
-    if (text) lastAssistantText = text;
-    if (isOurReprompt(event)) repromptCount++;
+    if (msg?.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    const text = msg.content
+      .filter((c: { type?: string }) => c?.type === "text")
+      .map((c: { text?: string }) => c.text ?? "")
+      .join("\n")
+      .trim();
+    if (text) lastText = text;
   }
-
-  // No assistant message yet, or it already carries a valid verdict → allow stop.
-  if (lastAssistantText === null) allowStop();
-  if (parseValidatorOutput(lastAssistantText) !== null) allowStop();
-
-  // Unparseable. Give up after enough nudges to avoid an infinite loop.
-  if (repromptCount >= MAX_REPROMPTS) allowStop();
-
-  block(
-    `${REPROMPT_MARKER} Your previous message was not a parseable verdict. ` +
-    `Respond with EXACTLY one JSON line and NOTHING else — no prose, no code fences, no extra keys:\n` +
-    REQUIRED_FORMAT,
-  );
+} catch {
+  process.exit(0); // unreadable transcript → fail open
 }
 
-await main();
+// A parseable verdict (or no assistant message yet) → allow stop.
+if (!lastText || parseValidatorOutput(lastText)) process.exit(0);
+
+// Unparseable → block once and state exactly what to produce.
+process.stdout.write(
+  JSON.stringify({
+    decision: "block",
+    reason:
+      'Your last message was not a parseable verdict. Respond with EXACTLY one ' +
+      'JSON line and nothing else — no prose, no code fences, no extra keys:\n' +
+      '{"verdict": "pass" | "fail", "feedback": "<short explanation, max 200 chars>"}',
+  }),
+);
