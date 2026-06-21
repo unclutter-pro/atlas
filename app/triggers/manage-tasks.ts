@@ -426,21 +426,25 @@ export function taskCancel(db: Database, opts: {
 const MAX_VALIDATIONS = 3;
 const VALIDATOR_TIMEOUT_MS = 5 * 60 * 1000;
 
+/** Fallback when the validator output cannot be parsed into a verdict. */
+export const VALIDATOR_UNPARSEABLE_FEEDBACK = "Validator produced no parseable output";
+
 /**
- * Parse the validator's verdict from a spawned trigger-runner's stdout.
+ * Parse the validator's verdict from a chunk of text (a spawned trigger-runner's
+ * stdout, or a single assistant message).
  *
- * Scans lines from last to first and extracts the first {…} object found.
- * This handles trigger-runner's log prefix (`[<iso-timestamp>] Result: {…}`)
- * which would otherwise prevent a strict line-starts-with-{ check from
- * matching. Returns a fail result if no parseable verdict is found.
+ * Scans lines from last to first and extracts the first {…} object that carries
+ * a `pass`/`fail` verdict. This handles trigger-runner's log prefix
+ * (`[<iso-timestamp>] Result: {…}`) which would otherwise defeat a strict
+ * line-starts-with-{ check.
+ *
+ * Returns `null` when no parseable verdict is found. The validator Stop-hook
+ * (`app/hooks/validator-stop-check.ts`) relies on this exact contract: a `null`
+ * means the model did not produce a usable verdict and must be reprompted.
  *
  * Exported for unit testing.
  */
-export function parseValidatorOutput(stdout: string): ValidatorResult {
-  const fallback: ValidatorResult = {
-    verdict: "fail",
-    feedback: "Validator produced no parseable output",
-  };
+export function parseValidatorOutput(stdout: string): ValidatorResult | null {
   const lines = stdout.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
@@ -461,7 +465,7 @@ export function parseValidatorOutput(stdout: string): ValidatorResult {
       continue;
     }
   }
-  return fallback;
+  return null;
 }
 
 export async function runValidator(opts: {
@@ -566,7 +570,14 @@ export async function runValidator(opts: {
 
   const durationMs = Date.now() - startMs;
 
-  const result = parseValidatorOutput(stdout);
+  // The validator Stop-hook normally forces a parseable verdict before the
+  // session can end, so `parseValidatorOutput` should succeed. This fallback
+  // only triggers for true infrastructure failures (crash, timeout, empty
+  // stdout) where the model never got to respond.
+  const result = parseValidatorOutput(stdout) ?? {
+    verdict: "fail" as const,
+    feedback: VALIDATOR_UNPARSEABLE_FEEDBACK,
+  };
 
   // Record validation attempt
   db.prepare(
