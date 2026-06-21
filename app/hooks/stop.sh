@@ -3,6 +3,16 @@
 # Task completion gate is handled by task-session.sh check.
 set -euo pipefail
 
+# --- Validator format gate (channel=validator) ---
+# The goal-validator must end its turn with a parseable JSON verdict. If it
+# answers in prose, block the stop and reprompt so the same session corrects
+# itself. Handled first and in isolation — the validator has no tasks/journal,
+# so the gates below must not run for it.
+if [ "${ATLAS_TRIGGER_CHANNEL:-}" = "validator" ]; then
+  cat | bun /atlas/app/hooks/validator-stop-check.ts 2>/dev/null || true
+  exit 0
+fi
+
 # --- Kill-switch: ATLAS_TASKS_DISABLE_GATE=1 skips task enforcement ---
 if [ "${ATLAS_TASKS_DISABLE_GATE:-0}" = "1" ]; then
   echo "WARNING: ATLAS_TASKS_DISABLE_GATE=1 — task gate disabled, allowing stop" >&2

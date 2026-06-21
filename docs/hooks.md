@@ -27,6 +27,12 @@ Outputs XML-wrapped sections:
 
 Runs after Claude finishes a response.
 
+### Validator Format Gate (Validator Session Only)
+
+When `ATLAS_TRIGGER_CHANNEL=validator` (the isolated goal-close validator session), the stop hook delegates to `validator-stop-check.ts` and handles nothing else — the validator has no tasks or journal to gate.
+
+The validator must end its turn with exactly one parseable JSON verdict (`{"verdict":"pass"|"fail","feedback":"..."}`). If the final assistant message is not parseable (prose, code fences, extra keys), the hook emits `{"decision":"block","reason":"..."}` so the **same** validator session continues and the model corrects its formatting — instead of the close orchestrator recording an unusable "no parseable output" result and burning a validation attempt. Parseability is checked with the same `parseValidatorOutput` the orchestrator uses, so the two never disagree. The reprompt is capped (`MAX_REPROMPTS`) to avoid an infinite loop; the validator's own timeout is the outer bound. The hook fails open (allows stop) if the transcript or hook input is unreadable.
+
 ### Journal Reminder (Trigger Sessions Only)
 
 For trigger sessions (`ATLAS_TRIGGER` is set), the stop hook checks if a journal file for today exists in `memory/journal/`. If no file matching `YYYY-MM-DD*.md` is found, it outputs a `<system-notice>` reminding the session to write a journal entry before ending.
@@ -94,7 +100,8 @@ Configured via `generate-settings.ts` — the model used for this review is set 
 ## Source
 
 - `app/hooks/session-start.sh` — Context loading
-- `app/hooks/stop.sh` — Session lifecycle + task gate (calls task-session.sh check)
+- `app/hooks/stop.sh` — Session lifecycle + task gate (calls task-session.sh check) + validator format gate (calls validator-stop-check.ts)
+- `app/hooks/validator-stop-check.ts` — Validator JSON-verdict gate (Stop hook, validator session only)
 - `app/hooks/task-session.sh` — Task context management (SessionStart, PreCompact, Stop)
 - `app/hooks/post-compact.sh` — PostCompact task context re-injection
 - `app/hooks/pre-compact-auto.sh` — Memory flush (auto compaction)

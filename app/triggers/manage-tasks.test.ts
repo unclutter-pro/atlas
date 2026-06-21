@@ -370,7 +370,7 @@ describe("Validator mock mode", () => {
       `[2026-05-20T11:34:08.868Z] Result: {"verdict": "pass", "feedback": "Done condition verified end-to-end"}`,
       `[2026-05-20T11:34:08.880Z] Direct session done (error=false)`,
     ].join("\n");
-    const out = parseValidatorOutput(stdout);
+    const out = parseValidatorOutput(stdout)!;
     expect(out.verdict).toBe("pass");
     expect(out.feedback).toBe("Done condition verified end-to-end");
   });
@@ -380,21 +380,25 @@ describe("Validator mock mode", () => {
       `[ts] Result: {"thought":"checking files"}`,
       `[ts] Result: {"verdict":"fail","feedback":"final-verdict"}`,
     ].join("\n");
-    const out = parseValidatorOutput(stdout);
+    const out = parseValidatorOutput(stdout)!;
     expect(out.verdict).toBe("fail");
     expect(out.feedback).toBe("final-verdict");
   });
 
-  test("parseValidatorOutput: returns fallback fail when no JSON is found", () => {
-    const out = parseValidatorOutput("no json here\njust prose\n");
-    expect(out.verdict).toBe("fail");
-    expect(out.feedback).toContain("no parseable output");
+  test("parseValidatorOutput: returns null when no JSON verdict is found", () => {
+    // Contract relied on by the validator Stop-hook: null = unparseable =
+    // reprompt the model. A bare prose response is not a verdict.
+    expect(parseValidatorOutput("no json here\njust prose\n")).toBeNull();
+  });
+
+  test("parseValidatorOutput: returns null for JSON with a non-verdict value", () => {
+    expect(parseValidatorOutput(`Result: {"verdict":"maybe","feedback":"unsure"}`)).toBeNull();
   });
 
   test("parseValidatorOutput: truncates feedback to 200 chars", () => {
     const longFeedback = "x".repeat(500);
     const stdout = `Result: {"verdict":"pass","feedback":"${longFeedback}"}`;
-    const out = parseValidatorOutput(stdout);
+    const out = parseValidatorOutput(stdout)!;
     expect(out.verdict).toBe("pass");
     expect(out.feedback.length).toBe(200);
   });
