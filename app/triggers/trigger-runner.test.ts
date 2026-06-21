@@ -606,6 +606,78 @@ describe("migrateSchema: model_key", () => {
 });
 
 // ---------------------------------------------------------------------------
+// migrateSchema — goal_validations 'error' verdict upgrade path
+// ---------------------------------------------------------------------------
+
+describe("migrateSchema: goal_validations error verdict", () => {
+  /**
+   * Build a pre-'error' goal_validations table (the schema shipped before the
+   * validator-resilience fix). Its CHECK constraint only allows pass/fail/
+   * exhausted, so recording an infrastructure failure as verdict='error' would
+   * violate the constraint until the migration widens it.
+   */
+  function makeLegacyDb(): Database {
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        done_condition TEXT NOT NULL DEFAULT 'x',
+        validation_count INTEGER NOT NULL DEFAULT 0,
+        trigger_name TEXT NOT NULL DEFAULT 't',
+        session_key TEXT NOT NULL DEFAULT 's',
+        status TEXT NOT NULL DEFAULT 'active'
+      );
+      CREATE TABLE goal_validations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+        attempt INTEGER NOT NULL,
+        verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'exhausted')),
+        feedback TEXT,
+        duration_ms INTEGER,
+        started_at TEXT NOT NULL DEFAULT ''
+      );
+    `);
+    db.prepare("INSERT INTO goals (title) VALUES ('g')").run();
+    return db;
+  }
+
+  test("widens CHECK constraint to accept 'error' verdict", () => {
+    const db = makeLegacyDb();
+    expect(() =>
+      db.prepare("INSERT INTO goal_validations (goal_id, attempt, verdict) VALUES (1,1,'error')").run()
+    ).toThrow();
+
+    migrateSchema(db);
+
+    expect(() =>
+      db.prepare("INSERT INTO goal_validations (goal_id, attempt, verdict, feedback) VALUES (1,1,'error','crash')").run()
+    ).not.toThrow();
+  });
+
+  test("preserves existing validation rows through the rebuild", () => {
+    const db = makeLegacyDb();
+    db.prepare("INSERT INTO goal_validations (goal_id, attempt, verdict, feedback) VALUES (1,1,'fail','old row')").run();
+
+    migrateSchema(db);
+
+    const row = db.prepare("SELECT verdict, feedback FROM goal_validations WHERE attempt = 1").get() as { verdict: string; feedback: string };
+    expect(row.verdict).toBe("fail");
+    expect(row.feedback).toBe("old row");
+  });
+
+  test("re-running migration is idempotent", () => {
+    const db = makeLegacyDb();
+    migrateSchema(db);
+    db.prepare("INSERT INTO goal_validations (goal_id, attempt, verdict) VALUES (1,1,'error')").run();
+    // Second run must not rebuild the table again or drop the error row.
+    migrateSchema(db);
+    const count = db.prepare("SELECT COUNT(*) AS n FROM goal_validations WHERE verdict = 'error'").get() as { n: number };
+    expect(count.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // recordMetrics
 // ---------------------------------------------------------------------------
 

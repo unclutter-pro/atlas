@@ -254,7 +254,7 @@ function createTables(database: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
       attempt INTEGER NOT NULL,
-      verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'exhausted')),
+      verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'error', 'exhausted')),
       feedback TEXT,
       duration_ms INTEGER,
       started_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -537,6 +537,39 @@ export function migrateSchema(database: Database): void {
         DROP TABLE session_metrics;
         ALTER TABLE _session_metrics_new RENAME TO session_metrics;
         CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
+      `);
+      database.exec("COMMIT");
+    } catch (e) {
+      database.exec("ROLLBACK");
+      throw e;
+    }
+  }
+
+  // --- v7 migration: add 'error' verdict to goal_validations ---
+  // Validator infrastructure failures (crash, timeout, empty/unparseable output)
+  // are now recorded as verdict='error' instead of being mistaken for a genuine
+  // 'fail'. The CHECK constraint must allow the new value. SQLite bakes CHECK
+  // into the table definition, so rebuild the table to widen the constraint.
+  const goalValInfo = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='goal_validations'"
+  ).get() as { sql: string } | undefined;
+  if (goalValInfo?.sql?.includes("CHECK(verdict IN") && !goalValInfo.sql.includes("'error'")) {
+    database.exec("BEGIN");
+    try {
+      database.exec(`
+        ALTER TABLE goal_validations RENAME TO _goal_validations_old;
+        CREATE TABLE goal_validations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+          attempt INTEGER NOT NULL,
+          verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'error', 'exhausted')),
+          feedback TEXT,
+          duration_ms INTEGER,
+          started_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO goal_validations (id, goal_id, attempt, verdict, feedback, duration_ms, started_at)
+          SELECT id, goal_id, attempt, verdict, feedback, duration_ms, started_at FROM _goal_validations_old;
+        DROP TABLE _goal_validations_old;
       `);
       database.exec("COMMIT");
     } catch (e) {

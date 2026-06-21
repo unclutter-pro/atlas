@@ -62,14 +62,22 @@ export type GoalValidation = {
   id: number;
   goal_id: number;
   attempt: number;
-  verdict: "pass" | "fail" | "exhausted";
+  verdict: "pass" | "fail" | "error" | "exhausted";
   feedback: string | null;
   duration_ms: number | null;
   started_at: string;
 };
 
+/**
+ * Outcome of one validator run.
+ *
+ * - `pass` / `fail` are genuine verdicts: the validator ran and judged the work.
+ * - `error` is an infrastructure failure (crash, timeout, empty/unparseable
+ *   output). It is NOT a rejection of the work and does NOT consume the goal's
+ *   genuine-attempt budget (`validation_count`).
+ */
 export type ValidatorResult = {
-  verdict: "pass" | "fail";
+  verdict: "pass" | "fail" | "error";
   feedback: string;
 };
 
@@ -425,6 +433,33 @@ export function taskCancel(db: Database, opts: {
 
 const MAX_VALIDATIONS = 3;
 const VALIDATOR_TIMEOUT_MS = 5 * 60 * 1000;
+// Transient validator failures (crash, empty/unparseable output) are retried
+// inline before giving up. These retries do NOT count against MAX_VALIDATIONS —
+// they are infrastructure recovery, not genuine validation attempts.
+const VALIDATOR_MAX_RETRIES = 2;
+const VALIDATOR_RETRY_BACKOFF_MS = [2_000, 5_000];
+
+/**
+ * Record one validation attempt in the audit log. A genuine verdict
+ * (`pass`/`fail`) advances the goal's attempt budget; an `error` (infrastructure
+ * failure) is logged for diagnostics but does NOT consume the budget.
+ */
+function recordValidation(
+  db: Database,
+  goalId: number,
+  attempt: number,
+  result: ValidatorResult,
+  durationMs: number,
+): void {
+  db.prepare(
+    `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback, duration_ms)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(goalId, attempt, result.verdict, result.feedback, durationMs);
+
+  if (result.verdict !== "error") {
+    db.prepare("UPDATE goals SET validation_count = validation_count + 1 WHERE id = ?").run(goalId);
+  }
+}
 
 /**
  * Parse the validator's verdict from a spawned trigger-runner's stdout.
@@ -432,13 +467,15 @@ const VALIDATOR_TIMEOUT_MS = 5 * 60 * 1000;
  * Scans lines from last to first and extracts the first {…} object found.
  * This handles trigger-runner's log prefix (`[<iso-timestamp>] Result: {…}`)
  * which would otherwise prevent a strict line-starts-with-{ check from
- * matching. Returns a fail result if no parseable verdict is found.
+ * matching. Returns an `error` result (not `fail`) when no parseable verdict
+ * is found — an unparseable run is an infrastructure failure, not a genuine
+ * rejection of the work, and must not consume the goal's attempt budget.
  *
  * Exported for unit testing.
  */
 export function parseValidatorOutput(stdout: string): ValidatorResult {
   const fallback: ValidatorResult = {
-    verdict: "fail",
+    verdict: "error",
     feedback: "Validator produced no parseable output",
   };
   const lines = stdout.split("\n");
@@ -475,24 +512,21 @@ export async function runValidator(opts: {
   const mockEnv = process.env.ATLAS_VALIDATOR_MOCK;
   if (mockEnv) {
     const [mockVerdict, ...feedbackParts] = mockEnv.split(":");
-    const verdict = (mockVerdict === "pass" || mockVerdict === "fail") ? mockVerdict : "fail";
-    const feedback = feedbackParts.join(":") || (verdict === "pass" ? "Mock: validation passed" : "Mock: validation failed");
+    const verdict: ValidatorResult["verdict"] =
+      (mockVerdict === "pass" || mockVerdict === "fail" || mockVerdict === "error") ? mockVerdict : "fail";
+    const defaultFeedback =
+      verdict === "pass" ? "Mock: validation passed"
+      : verdict === "error" ? "Mock: validator error"
+      : "Mock: validation failed";
+    const feedback = feedbackParts.join(":") || defaultFeedback;
 
-    const attempt = goal.validation_count + 1;
-    const startedAt = Date.now();
-    db.prepare(
-      `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback, duration_ms)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(goal.id, attempt, verdict, feedback, 0);
-
-    db.prepare("UPDATE goals SET validation_count = validation_count + 1 WHERE id = ?").run(goal.id);
-
-    return { verdict, feedback };
+    const result: ValidatorResult = { verdict, feedback };
+    recordValidation(db, goal.id, goal.validation_count + 1, result, 0);
+    return result;
   }
 
   // Real validator spawn
   const APP_DIR = "/atlas/app";
-  const HOME = process.env.HOME ?? "/home/agent";
   const triggerRunnerPath = `${APP_DIR}/triggers/trigger-runner`;
 
   if (!existsSync(triggerRunnerPath)) {
@@ -525,14 +559,6 @@ export async function runValidator(opts: {
     if (v !== undefined) strippedEnv[k] = v;
   }
 
-  const attempt = goal.validation_count + 1;
-  const startMs = Date.now();
-
-  // Determine executable
-  const execPath = existsSync(triggerRunnerPath)
-    ? triggerRunnerPath
-    : "bun";
-
   // Tag this session with trigger-name=validator so dreaming/memory-cleanup
   // filters can exclude it (the validator is a quality gate, not a real
   // session worth analyzing).
@@ -540,43 +566,76 @@ export async function runValidator(opts: {
     ? [triggerRunnerPath, "--direct", prompt, "--channel", "validator", "--trigger-name", "validator"]
     : ["bun", `${APP_DIR}/triggers/trigger-runner.ts`, "--direct", prompt, "--channel", "validator", "--trigger-name", "validator"];
 
-  const proc = Bun.spawn(spawnArgs, {
-    env: strippedEnv,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  // One spawn of the validator subprocess. Classifies process-level failures
+  // (timeout, non-zero exit, empty stdout) as `error` so they are never
+  // mistaken for a genuine "fail" verdict on the work itself.
+  const spawnOnce = async (): Promise<{ result: ValidatorResult; durationMs: number }> => {
+    const startMs = Date.now();
+    const proc = Bun.spawn(spawnArgs, {
+      env: strippedEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
 
-  // Apply timeout
-  const timeoutHandle = setTimeout(() => {
-    try { proc.kill(); } catch {}
-  }, VALIDATOR_TIMEOUT_MS);
+    let timedOut = false;
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      try { proc.kill(); } catch {}
+    }, VALIDATOR_TIMEOUT_MS);
 
-  let stdout = "";
-  let stderr = "";
+    let stdout = "";
+    let stderr = "";
+    try {
+      stdout = await new Response(proc.stdout).text();
+      stderr = await new Response(proc.stderr).text();
+      await proc.exited;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
 
-  try {
-    const stdoutText = await new Response(proc.stdout).text();
-    const stderrText = await new Response(proc.stderr).text();
-    stdout = stdoutText;
-    stderr = stderrText;
-    await proc.exited;
-  } finally {
-    clearTimeout(timeoutHandle);
+    const durationMs = Date.now() - startMs;
+    const exitCode = proc.exitCode;
+
+    if (timedOut) {
+      return {
+        result: { verdict: "error", feedback: `Validator timed out after ${Math.round(VALIDATOR_TIMEOUT_MS / 1000)}s` },
+        durationMs,
+      };
+    }
+    if (exitCode !== 0) {
+      const tail = stderr.trim().split("\n").slice(-3).join(" ").slice(0, 180);
+      return {
+        result: { verdict: "error", feedback: `Validator exited with code ${exitCode}${tail ? `: ${tail}` : ""}` },
+        durationMs,
+      };
+    }
+    if (stdout.trim() === "") {
+      return {
+        result: { verdict: "error", feedback: "Validator produced no output (empty stdout)" },
+        durationMs,
+      };
+    }
+
+    return { result: parseValidatorOutput(stdout), durationMs };
+  };
+
+  // Retry transient errors a bounded number of times. A genuine pass/fail
+  // verdict returns immediately; only `error` results are retried.
+  let last: ValidatorResult = { verdict: "error", feedback: "Validator did not run" };
+  for (let attempt = 0; attempt <= VALIDATOR_MAX_RETRIES; attempt++) {
+    const { result, durationMs } = await spawnOnce();
+    recordValidation(db, goal.id, goal.validation_count + 1, result, durationMs);
+
+    if (result.verdict !== "error") {
+      return result;
+    }
+    last = result;
+    if (attempt < VALIDATOR_MAX_RETRIES) {
+      await Bun.sleep(VALIDATOR_RETRY_BACKOFF_MS[attempt] ?? 5_000);
+    }
   }
 
-  const durationMs = Date.now() - startMs;
-
-  const result = parseValidatorOutput(stdout);
-
-  // Record validation attempt
-  db.prepare(
-    `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback, duration_ms)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(goal.id, attempt, result.verdict, result.feedback, durationMs);
-
-  db.prepare("UPDATE goals SET validation_count = validation_count + 1 WHERE id = ?").run(goal.id);
-
-  return result;
+  return last;
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +811,18 @@ async function main(): Promise<void> {
           `UPDATE goals SET status = 'done', closed_at = datetime('now'), close_reason = ? WHERE id = ?`
         ).run(reason, id);
         console.log(`Goal #${id} closed. Validator passed: ${validationResult.feedback}`);
+      } else if (validationResult.verdict === "error") {
+        // Infrastructure failure — the validator could not run. This is NOT a
+        // rejection and did not consume an attempt; the goal stays open so the
+        // agent can retry once the validator is healthy again.
+        const used = goalGet(db, id)?.validation_count ?? goal.validation_count;
+        console.error(
+          `Validator could not run for goal #${id} (transient): ${validationResult.feedback}\n` +
+          `This is NOT a rejection of your work and did NOT consume a validation attempt ` +
+          `(${used}/${MAX_VALIDATIONS} used). Re-run \`task goal close ${id} --reason=...\` to retry; ` +
+          `if it keeps failing, the validator subprocess itself is broken — escalate rather than abandoning the goal.`
+        );
+        process.exit(1);
       } else {
         console.error(
           `Validator rejected close for goal #${id}: ${validationResult.feedback}\n` +

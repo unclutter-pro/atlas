@@ -83,7 +83,7 @@ function createTestDb(): Database {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
       attempt INTEGER NOT NULL,
-      verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'exhausted')),
+      verdict TEXT NOT NULL CHECK(verdict IN ('pass', 'fail', 'error', 'exhausted')),
       feedback TEXT,
       duration_ms INTEGER,
       started_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -385,10 +385,54 @@ describe("Validator mock mode", () => {
     expect(out.feedback).toBe("final-verdict");
   });
 
-  test("parseValidatorOutput: returns fallback fail when no JSON is found", () => {
+  test("parseValidatorOutput: returns error verdict (not fail) when no JSON is found", () => {
+    // Regression (Talos 2026-06-21): an unparseable validator run is an
+    // infrastructure failure, not a genuine rejection. It must surface as
+    // 'error' so it does not burn the goal's attempt budget.
     const out = parseValidatorOutput("no json here\njust prose\n");
-    expect(out.verdict).toBe("fail");
+    expect(out.verdict).toBe("error");
     expect(out.feedback).toContain("no parseable output");
+  });
+
+  test("parseValidatorOutput: malformed verdict value yields error, not fail", () => {
+    const out = parseValidatorOutput(`Result: {"verdict":"maybe","feedback":"unsure"}`);
+    expect(out.verdict).toBe("error");
+  });
+
+  test("ATLAS_VALIDATOR_MOCK=error → error verdict, does NOT consume attempt budget", async () => {
+    process.env.ATLAS_VALIDATOR_MOCK = "error:Validator crashed";
+    const goal = goalCreate(db, { title: "Erroring goal", done: "Done", ...scope });
+
+    const { runValidator } = await import("./manage-tasks.ts");
+    const result = await runValidator({ goal, reason: "work is done", db });
+
+    expect(result.verdict).toBe("error");
+    expect(result.feedback).toContain("Validator crashed");
+
+    // Telemetry row is recorded for diagnostics...
+    const row = db.prepare("SELECT * FROM goal_validations WHERE goal_id = ?").get(goal.id) as any;
+    expect(row.verdict).toBe("error");
+
+    // ...but the genuine-attempt budget is untouched.
+    const updated = goalGet(db, goal.id)!;
+    expect(updated.validation_count).toBe(0);
+  });
+
+  test("repeated validator errors never reach validation_exhausted", async () => {
+    process.env.ATLAS_VALIDATOR_MOCK = "error";
+    const goal = goalCreate(db, { title: "Flaky validator", done: "Done", ...scope });
+
+    const { runValidator } = await import("./manage-tasks.ts");
+    for (let i = 0; i < 5; i++) {
+      const result = await runValidator({ goal, reason: `attempt ${i}`, db });
+      expect(result.verdict).toBe("error");
+    }
+
+    // Five infrastructure failures, yet the budget stays at 0 — the goal can
+    // still be closed cleanly once the validator recovers.
+    const updated = goalGet(db, goal.id)!;
+    expect(updated.validation_count).toBe(0);
+    expect(updated.validation_count).toBeLessThan(3);
   });
 
   test("parseValidatorOutput: truncates feedback to 200 chars", () => {
