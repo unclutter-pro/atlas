@@ -766,6 +766,30 @@ class EmailDb:
         )
         return int(cur.lastrowid or 0)
 
+    def find_email_by_message_id(self, message_id: str) -> Optional[Email]:
+        """Look up one stored email by its RFC Message-ID header.
+
+        Poller re-ingest guard: when the server re-reports a message we
+        already stored (UID-watermark reset → ``UNSEEN`` search, UIDVALIDITY
+        change renumbering the mailbox, a message bounced back into the
+        polled folder), the poller must recognise it instead of inserting a
+        duplicate unread row and re-firing the email-handler trigger on a
+        historical thread.
+
+        Matches either the bracketed (``<id>``) or bare stored form, same
+        normalisation as :meth:`find_thread_id_by_message_ids`. Returns the
+        oldest matching row, or ``None``.
+        """
+        bare = (message_id or "").strip().strip("<>")
+        if not bare:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM emails WHERE message_id IN (?, ?) "
+            "ORDER BY id ASC LIMIT 1",
+            (bare, f"<{bare}>"),
+        ).fetchone()
+        return _row_to_email(row) if row else None
+
     def insert_incoming_email(
         self,
         *,

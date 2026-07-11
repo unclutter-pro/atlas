@@ -518,6 +518,40 @@ class ImapClient:
             return []
         return [int(u) for u in data[0].split()]
 
+    def find_uid_by_message_id(self, folder: str, message_id: str) -> Optional[int]:
+        """Resolve a message's UID in ``folder`` via its ``Message-ID`` header.
+
+        Recovery path for DB rows that predate UID snapshotting
+        ("pre-migration" rows with ``imap_uid IS NULL``): without a stored
+        UID, flag operations like mark-read can only update the local DB,
+        leaving the server's ``\\Seen`` state permanently stale. Searching by
+        the globally-unique Message-ID re-anchors such rows to a live UID.
+
+        Searches the bracketed form (``<id>``) — RFC 5322 mandates angle
+        brackets in the header, and the substring semantics of ``HEADER``
+        (RFC 3501 §6.4.4) would otherwise let a bare id match a longer,
+        unrelated Message-ID that merely contains it.
+
+        Returns the highest matching UID (a message can appear twice after a
+        COPY; the newest copy is the one the server would re-report), or
+        ``None`` when the id is empty/unquotable or nothing matches. Raises
+        :class:`ImapError` on a non-OK SEARCH reply.
+        """
+        mid = (message_id or "").strip().strip("<>")
+        # A double-quote can't be sent inside an IMAP quoted string without
+        # escaping games; ids containing one are malformed anyway — bail out.
+        if not mid or '"' in mid:
+            return None
+        self.select(folder)
+        data = _ok(
+            self._mail.uid("search", None, "HEADER", "Message-ID", f'"<{mid}>"'),
+            f"UID SEARCH HEADER Message-ID in {folder}",
+        )
+        if not data or not data[0]:
+            return None
+        uids = [int(u) for u in data[0].split()]
+        return max(uids) if uids else None
+
     def fetch_peek(self, folder: str, uid: int):
         """Fetch one message with ``BODY.PEEK[]`` — preserves the \\Seen flag.
 
