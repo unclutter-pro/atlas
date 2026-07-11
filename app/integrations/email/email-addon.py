@@ -644,6 +644,7 @@ def _fetch_new_emails(imap, db, config):
     trigger_queue = []      # Collect triggers to fire after all emails stored
     mark_seen_uids = []     # Collect UIDs to mark \Seen in one batched call
     mark_seen_row_ids = []  # Parallel list of DB row ids — flipped is_read=1 only after set_seen confirms
+    resync_seen_uids = []   # Already-handled rows the server still shows unseen — re-assert \Seen
     processed = 0
 
     # Single batched FETCH — chunked internally at UID_BATCH=100. This
@@ -672,13 +673,44 @@ def _fetch_new_emails(imap, db, config):
         cc_header = msg.get("Cc", "").strip()
         subject = msg.get("Subject", "(no subject)")
         body, body_html = get_body(msg)
-        thread_id = extract_thread_id(msg, db)
         message_id_hdr = msg.get("Message-ID", "").strip()
+
+        # Re-ingest guard. The server can legitimately re-report a message we
+        # already stored: a UID-watermark reset (fresh state table → UNSEEN
+        # search), a UIDVALIDITY change renumbering the mailbox, or a message
+        # bounced back into the polled folder. Without this check every
+        # re-report inserted a duplicate unread row and re-fired the
+        # email-handler trigger on a months-old, already-answered thread.
+        # (Messages without a Message-ID header can't be recognised — they
+        # fall through to normal processing.)
+        existing = db.find_email_by_message_id(message_id_hdr)
+        if existing is not None:
+            if existing.direction == "in":
+                # Re-anchor the row to the UID the server just reported so
+                # triage (mark-read / archive) can reach the server again —
+                # pre-migration rows carry imap_uid=NULL and were DB-only
+                # forever otherwise.
+                db.set_email_folder_and_uid(
+                    existing.id, folder=folder, imap_uid=uid_int
+                )
+                if existing.is_read and not server_is_read:
+                    # The DB says this message was already handled, but the
+                    # server still shows it unseen (the pre-migration
+                    # mark-read gap). Push \Seen so the server stops
+                    # re-reporting it as new mail.
+                    resync_seen_uids.append(uid_int)
+            print(f"[{datetime.now()}] Already stored (Message-ID match): "
+                  f"UID {uid_int} {message_id_hdr} — skipping re-ingest, "
+                  f"no trigger")
+            max_uid = max(max_uid, uid_int)
+            continue
 
         if not is_whitelisted(sender, whitelist):
             print(f"[{datetime.now()}] Blocked email from {sender}")
             max_uid = max(max_uid, uid_int)
             continue
+
+        thread_id = extract_thread_id(msg, db)
 
         # 1. Update thread state in email DB
         thread_info = update_thread(db, thread_id, msg)
@@ -836,6 +868,19 @@ def _fetch_new_emails(imap, db, config):
             # server). The next poll's UID-watermark search keeps us from
             # re-processing them; the user can still see them in `email inbox`
             # since they remain in the unread filter.
+            print(f"[{datetime.now()}] {e}")
+
+    # Re-reported messages the DB already recorded as read, but the server
+    # still shows unseen (mark-read on a pre-migration row could only update
+    # the DB). Re-asserting \Seen here is what breaks the re-report loop: the
+    # server stops listing them as unread, so they can never surface as "new
+    # mail" again. No DB rows to flip — is_read is already 1.
+    if resync_seen_uids:
+        try:
+            imap.set_seen(folder, resync_seen_uids, seen=True)
+        except ImapError as e:
+            # Non-fatal: the divergence stays, and the same guard retries the
+            # next time the server re-reports these messages.
             print(f"[{datetime.now()}] {e}")
 
     # Persist UID state
@@ -1337,41 +1382,78 @@ def _do_read_state(config, ident, mark_read):
 
         with_uid    = [t for t in in_rows if t.imap_uid is not None]
         without_uid = [t for t in in_rows if t.imap_uid is None]
-        if with_uid:
-            try:
-                with _imap_client(config) as imap:
-                    # One set_seen() per source folder. The client chunks
-                    # large UID sets internally and raises ImapError on
-                    # any non-OK reply so we never commit the DB mirror.
-                    for folder, group in _group_by_folder(with_uid).items():
-                        uids = [t.imap_uid for t in group]
-                        imap.set_seen(folder, uids, seen=mark_read)
-            except ImapError as e:
-                print(f"ERROR: {e}", file=sys.stderr)
-                sys.exit(1)
+        # Pre-migration rows (imap_uid IS NULL) can't be targeted by UID —
+        # but the Message-ID header is globally unique, so we can ask the
+        # server for the UID and re-anchor the row. Without this, mark-read
+        # on such rows was DB-only forever: the server kept reporting them
+        # UNSEEN, and any unseen-based selection re-surfaced months-old,
+        # already-answered threads as if they were new mail.
+        recovered   = []  # (target, folder, live_uid) — resolved via Message-ID
+        unresolved  = []  # genuinely unreachable: no Message-ID / no server match
+        try:
+            with _imap_client(config) as imap:
+                for t in without_uid:
+                    folder = t.folder or "INBOX"
+                    uid = None
+                    try:
+                        uid = imap.find_uid_by_message_id(folder, t.message_id)
+                    except ImapError:
+                        # Best-effort recovery: a failed SEARCH degrades
+                        # to the old DB-only behaviour for this row.
+                        uid = None
+                    if uid is None:
+                        unresolved.append(t)
+                    else:
+                        recovered.append((t, folder, uid))
+
+                # One set_seen() per source folder. The client chunks
+                # large UID sets internally and raises ImapError on
+                # any non-OK reply so we never commit the DB mirror.
+                folder_uids: dict = {}
+                for t in with_uid:
+                    folder_uids.setdefault(t.folder or "INBOX", []) \
+                               .append(t.imap_uid)
+                for t, folder, uid in recovered:
+                    folder_uids.setdefault(folder, []).append(uid)
+                for folder, uids in folder_uids.items():
+                    imap.set_seen(folder, uids, seen=mark_read)
+        except ImapError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
 
         # Only reached on IMAP success (or when there were no UIDs to touch).
+        # Persist the recovered UIDs so every later triage command (archive,
+        # spam, another mark-read) can hit the server directly.
+        for t, folder, uid in recovered:
+            db.set_email_folder_and_uid(t.id, folder=folder, imap_uid=uid)
         db.set_emails_is_read([t.id for t in in_rows], is_read=mark_read)
         db.commit()
 
         verb = "read" if mark_read else "unread"
         n = len(in_rows)
         # Be explicit about which rows were server-side vs DB-only.
-        # Pre-migration rows (no stored imap_uid) can't be IMAP-flipped
-        # — we still mirror them in the DB so the agent's view stays
-        # consistent, but the user needs to know the server's \Seen
-        # state for those rows hasn't changed. This matches the
-        # ``archive``/``move`` flow where UID-less rows are explicitly
-        # called out instead of being silently bypassed.
-        db_only_note = ""
-        if without_uid:
-            db_only_note = (
-                f" {len(without_uid)} of those had no stored UID "
-                "(pre-migration) — DB updated, server state unchanged."
+        # Unresolved rows (no stored UID *and* no server match — e.g. the
+        # message was expunged, or it predates Message-ID tracking) are
+        # still mirrored in the DB so the agent's view stays consistent,
+        # but the user needs to know the server's \Seen state for those
+        # rows hasn't changed. This matches the ``archive``/``move`` flow
+        # where UID-less rows are explicitly called out instead of being
+        # silently bypassed.
+        notes = ""
+        if recovered:
+            notes += (
+                f" {len(recovered)} of those had no stored UID — "
+                "recovered via server Message-ID search, UID backfilled."
+            )
+        if unresolved:
+            notes += (
+                f" {len(unresolved)} of those had no stored UID and no "
+                "server match (pre-migration) — DB updated, server state "
+                "unchanged."
             )
         print(
             f"Marked {n} email{'s' if n != 1 else ''} {verb}."
-            f"{db_only_note}{_skip_note(out_rows)}"
+            f"{notes}{_skip_note(out_rows)}"
         )
     finally:
         db.close()

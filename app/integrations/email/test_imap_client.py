@@ -289,6 +289,60 @@ class TestSearchNew:
             _client(mail).search_new("INBOX", 0)
 
 
+class TestFindUidByMessageId:
+    """UID recovery for pre-migration rows: resolve a live server UID from
+    the (globally-unique) Message-ID header so flag operations can reach
+    the server for rows that never had a UID snapshotted.
+    """
+
+    def test_sends_quoted_bracketed_header_search(self):
+        mail = _make_mail()
+        mail.uid.return_value = ("OK", [b"77"])
+        uid = _client(mail).find_uid_by_message_id("INBOX", "<m1@x>")
+        assert uid == 77
+        call = mail.uid.call_args_list[0]
+        assert call.args[0] == "search"
+        assert call.args[1] is None
+        assert call.args[2:] == ("HEADER", "Message-ID", '"<m1@x>"')
+
+    def test_bare_id_gets_rebracketed(self):
+        """RFC 5322 headers always carry angle brackets; searching the
+        bracketed form avoids HEADER's substring semantics matching a
+        longer unrelated id that merely contains ours.
+        """
+        mail = _make_mail()
+        mail.uid.return_value = ("OK", [b"5"])
+        assert _client(mail).find_uid_by_message_id("INBOX", "m1@x") == 5
+        assert mail.uid.call_args_list[0].args[4] == '"<m1@x>"'
+
+    def test_no_match_returns_none(self):
+        mail = _make_mail()
+        mail.uid.return_value = ("OK", [b""])
+        assert _client(mail).find_uid_by_message_id("INBOX", "<gone@x>") is None
+
+    def test_multiple_matches_returns_highest_uid(self):
+        """After a COPY the same message can exist twice; the highest UID is
+        the copy the server would re-report as new.
+        """
+        mail = _make_mail()
+        mail.uid.return_value = ("OK", [b"5 9 7"])
+        assert _client(mail).find_uid_by_message_id("INBOX", "<m1@x>") == 9
+
+    def test_empty_or_unquotable_id_returns_none_without_search(self):
+        mail = _make_mail()
+        client = _client(mail)
+        assert client.find_uid_by_message_id("INBOX", "") is None
+        assert client.find_uid_by_message_id("INBOX", None) is None
+        assert client.find_uid_by_message_id("INBOX", '<we"ird@x>') is None
+        mail.uid.assert_not_called()
+
+    def test_search_no_raises(self):
+        mail = _make_mail()
+        mail.uid.return_value = ("NO", [b"oops"])
+        with pytest.raises(ImapError):
+            _client(mail).find_uid_by_message_id("INBOX", "<m1@x>")
+
+
 class TestFetchPeek:
     def _setup_fetch(self, mail, flags=""):
         meta = f"1 (UID 42 FLAGS ({flags}) BODY[] {{12}}".encode()

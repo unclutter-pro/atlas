@@ -116,6 +116,10 @@ def imap(monkeypatch):
     # care about the new UID still pass; tests that assert the rebind
     # override this per-case.
     client.move.return_value = {}
+    # UID recovery via Message-ID search (pre-migration rows): default to
+    # "no server match" so triage tests exercise the DB-only fallback; the
+    # recovery tests override this per-case.
+    client.find_uid_by_message_id.return_value = None
     # Context-manager support: ``with _imap_client(cfg) as imap:``
     client.__enter__ = MagicMock(return_value=client)
     client.__exit__ = MagicMock(return_value=False)
@@ -945,8 +949,9 @@ class TestCmdMarkRead:
         assert None not in uids          # outgoing row never reaches the client
 
     def test_no_imap_call_when_no_uid(self, db_dir, imap):
-        """If the row has no IMAP UID (synthetic test row), skip the client
-        entirely but still update the DB mirror.
+        """If the row has no IMAP UID and the server-side Message-ID
+        recovery search finds no match (fixture default), no STORE must be
+        issued — but the DB mirror is still updated.
         """
         conn = email_addon.open_email_db(CONFIG).conn
         conn.execute("""
@@ -1193,11 +1198,13 @@ class TestSurfaceOutgoingSkip:
     def test_mark_read_thread_with_pre_migration_rows_notes_db_only(
         self, db_dir, imap, capsys
     ):
-        """Pre-migration incoming rows have imap_uid=NULL — mark-read can't
-        flip the server flag for those. We still mirror them in the DB so
-        the agent's view stays consistent, but the user needs to know the
-        server's \\Seen state is unchanged for that subset (otherwise the
-        webmail-vs-agent discrepancy is invisible).
+        """Pre-migration incoming rows have imap_uid=NULL — when the
+        Message-ID recovery search also finds nothing on the server
+        (fixture default), mark-read can't flip the server flag for those.
+        We still mirror them in the DB so the agent's view stays
+        consistent, but the user needs to know the server's \\Seen state is
+        unchanged for that subset (otherwise the webmail-vs-agent
+        discrepancy is invisible).
         """
         # 1 incoming with UID + 1 incoming pre-migration (no UID)
         _seed_mixed_thread([("in", 10), ("in", None)])
@@ -1229,6 +1236,114 @@ class TestSurfaceOutgoingSkip:
             email_addon.cmd_mark_read(CONFIG, "1")
         err = capsys.readouterr().err
         assert "outgoing" in err
+
+
+class TestMarkReadUidRecovery:
+    """Pre-migration rows (imap_uid=NULL) must be re-anchored to a live
+    server UID via Message-ID search so mark-read/unread actually reaches
+    the server. The old DB-only behaviour left the server's \\Seen state
+    permanently stale — the server kept reporting those messages UNSEEN and
+    the email-handler trigger looped over months-old, already-answered
+    threads.
+    """
+
+    def test_recovers_uid_and_stores_seen_on_server(self, db_dir, imap, capsys):
+        _seed_one_incoming(uid=None, is_read=0)
+        imap.find_uid_by_message_id.return_value = 77
+
+        email_addon.cmd_mark_read(CONFIG, "1")
+
+        imap.find_uid_by_message_id.assert_called_once_with("INBOX", "<m1@x>")
+        imap.set_seen.assert_called_once()
+        folder, uids = imap.set_seen.call_args.args[:2]
+        assert folder == "INBOX"
+        assert uids == [77]
+        assert imap.set_seen.call_args.kwargs.get("seen", True) is True
+        out = capsys.readouterr().out
+        assert "recovered via server Message-ID search" in out
+        assert "server state unchanged" not in out
+
+    def test_recovered_uid_backfilled_into_db(self, db_dir, imap):
+        _seed_one_incoming(uid=None, is_read=0)
+        imap.find_uid_by_message_id.return_value = 77
+
+        email_addon.cmd_mark_read(CONFIG, "1")
+
+        conn = _open_db(db_dir)
+        row = conn.execute(
+            "SELECT imap_uid, is_read FROM emails WHERE id=1"
+        ).fetchone()
+        conn.close()
+        assert row[0] == 77, "recovered UID must persist for later triage"
+        assert row[1] == 1
+
+    def test_mark_unread_recovers_and_clears_seen(self, db_dir, imap):
+        _seed_one_incoming(uid=None, is_read=1)
+        imap.find_uid_by_message_id.return_value = 77
+
+        email_addon.cmd_mark_unread(CONFIG, "1")
+
+        imap.set_seen.assert_called_once()
+        assert imap.set_seen.call_args.args[1] == [77]
+        assert imap.set_seen.call_args.kwargs.get("seen") is False
+        conn = _open_db(db_dir)
+        row = conn.execute("SELECT is_read FROM emails WHERE id=1").fetchone()
+        conn.close()
+        assert row[0] == 0
+
+    def test_recovered_uid_batched_with_stored_uids(self, db_dir, imap):
+        """A mixed thread must land stored + recovered UIDs in one set_seen
+        call per folder, not one call each.
+        """
+        _seed_mixed_thread([("in", 10), ("in", None)])
+        imap.find_uid_by_message_id.return_value = 77
+
+        email_addon.cmd_mark_read(CONFIG, "mixed")
+
+        imap.set_seen.assert_called_once()
+        folder, uids = imap.set_seen.call_args.args[:2]
+        assert folder == "INBOX"
+        assert set(uids) == {10, 77}
+
+    def test_set_seen_failure_after_recovery_commits_nothing(self, db_dir, imap):
+        """IMAP-first contract holds for recovered UIDs too: a failed STORE
+        must leave both is_read and the UID backfill uncommitted.
+        """
+        _seed_one_incoming(uid=None, is_read=0)
+        imap.find_uid_by_message_id.return_value = 77
+        imap.set_seen.side_effect = email_addon.ImapError(
+            "IMAP UID STORE +FLAGS \\Seen on 1 UIDs in INBOX failed: NO quota"
+        )
+
+        with pytest.raises(SystemExit):
+            email_addon.cmd_mark_read(CONFIG, "1")
+
+        conn = _open_db(db_dir)
+        row = conn.execute(
+            "SELECT imap_uid, is_read FROM emails WHERE id=1"
+        ).fetchone()
+        conn.close()
+        assert row[0] is None
+        assert row[1] == 0
+
+    def test_failed_search_degrades_to_db_only(self, db_dir, imap, capsys):
+        """An ImapError from the recovery SEARCH must not kill the command —
+        the row falls back to the old DB-only behaviour with the note.
+        """
+        _seed_one_incoming(uid=None, is_read=0)
+        imap.find_uid_by_message_id.side_effect = email_addon.ImapError(
+            "IMAP UID SEARCH HEADER Message-ID in INBOX failed: NO"
+        )
+
+        email_addon.cmd_mark_read(CONFIG, "1")
+
+        imap.set_seen.assert_not_called()
+        out = capsys.readouterr().out
+        assert "server state unchanged" in out
+        conn = _open_db(db_dir)
+        row = conn.execute("SELECT is_read FROM emails WHERE id=1").fetchone()
+        conn.close()
+        assert row[0] == 1
 
 
 class TestIdlePollFlow:
@@ -1539,12 +1654,14 @@ class TestPollerStoresImapState:
     behaviour (PEEK syntax, FLAGS parsing) is verified in test_imap_client.py.
     """
 
-    def _build_raw(self, subject="Hi", sender="alice@x.com"):
+    def _build_raw(self, subject="Hi", sender="alice@x.com", message_id="<m1@x>"):
+        # Each distinct message needs a distinct Message-ID — the poller's
+        # re-ingest guard dedupes on it (see TestPollerReingestGuard).
         return (
             f"From: {sender}\r\n"
             f"To: agent@test.local\r\n"
             f"Subject: {subject}\r\n"
-            f"Message-ID: <m1@x>\r\n"
+            f"Message-ID: {message_id}\r\n"
             f"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
             f"\r\n"
             f"Body content"
@@ -1609,7 +1726,7 @@ class TestPollerStoresImapState:
         client = MagicMock()
         client.search_new.return_value = [10, 11, 12]
         client.fetch_peek_many.return_value = {
-            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x"), False)
+            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x", message_id=f"<m{uid}@x>"), False)
             for uid in (10, 11, 12)
         }
         db = email_addon.open_email_db(CONFIG)
@@ -1665,7 +1782,7 @@ class TestPollerStoresImapState:
         client = MagicMock()
         client.search_new.return_value = [10, 11]
         client.fetch_peek_many.return_value = {
-            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x"), False)
+            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x", message_id=f"<m{uid}@x>"), False)
             for uid in (10, 11)
         }
         client.set_seen.side_effect = email_addon.ImapError(
@@ -1694,7 +1811,7 @@ class TestPollerStoresImapState:
         client = MagicMock()
         client.search_new.return_value = [10, 11]
         client.fetch_peek_many.return_value = {
-            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x"), False)
+            uid: (self._build_raw(subject=f"S{uid}", sender=f"a{uid}@x", message_id=f"<m{uid}@x>"), False)
             for uid in (10, 11)
         }
         db = email_addon.open_email_db(CONFIG)
@@ -1752,6 +1869,210 @@ class TestPollerStoresImapState:
         ).fetchone()[0]
         conn.close()
         assert count == 1   # only the surviving UID was stored
+
+
+# ---------------------------------------------------------------------------
+# Poller re-ingest guard — server re-reports of already-stored messages
+# ---------------------------------------------------------------------------
+
+class TestPollerReingestGuard:
+    """The server can re-report a message we already stored (UID-watermark
+    reset → UNSEEN search, UIDVALIDITY change, message bounced back into the
+    polled folder). The poller must recognise it by Message-ID instead of
+    inserting a duplicate unread row and re-firing the email-handler trigger
+    on a historical, already-answered thread.
+    """
+
+    def _build_raw(self, message_id="<m1@x>", sender="a@x"):
+        return (
+            f"From: {sender}\r\n"
+            f"To: agent@test.local\r\n"
+            f"Subject: Hi\r\n"
+            f"Message-ID: {message_id}\r\n"
+            f"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n"
+            f"\r\n"
+            f"Body content"
+        ).encode()
+
+    def _patch_side_effects(self, monkeypatch):
+        """Stub filesystem/trigger side effects; returns the subprocess mock
+        so tests can assert on trigger firing (``.Popen``)."""
+        monkeypatch.setattr(email_addon, "write_to_atlas_inbox", lambda *a, **kw: 1)
+        monkeypatch.setattr(email_addon, "save_email_file",     lambda *a, **kw: "/tmp/x.md")
+        monkeypatch.setattr(email_addon, "extract_attachments", lambda *a, **kw: [])
+        sub = MagicMock()
+        monkeypatch.setattr(email_addon, "subprocess", sub)
+        return sub
+
+    def _client(self, raw, uid=500, server_is_read=False):
+        client = MagicMock()
+        client.search_new.return_value = [uid]
+        client.fetch_peek_many.return_value = {uid: (raw, server_is_read)}
+        return client
+
+    def _run(self, client, config=None):
+        cfg = dict(config or CONFIG)
+        db = email_addon.open_email_db(cfg)
+        try:
+            email_addon._fetch_new_emails(client, db, cfg)
+        finally:
+            db.close()
+
+    def test_known_message_not_duplicated_and_no_trigger(self, db_dir, monkeypatch):
+        sub = self._patch_side_effects(monkeypatch)
+        # Pre-migration row: already handled (is_read=1), no stored UID.
+        _seed_one_incoming(uid=None, is_read=1)
+
+        self._run(self._client(self._build_raw(), uid=500))
+
+        conn = _open_db(db_dir)
+        count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        last_uid = conn.execute(
+            "SELECT value FROM state WHERE key='last_uid'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1, "re-reported message must not be duplicated"
+        sub.Popen.assert_not_called()  # no trigger fire for historical mail
+        assert last_uid == "500", "watermark must still advance past the re-report"
+
+    def test_known_message_gets_uid_reanchored(self, db_dir, monkeypatch):
+        self._patch_side_effects(monkeypatch)
+        _seed_one_incoming(uid=None, is_read=1)
+
+        self._run(self._client(self._build_raw(), uid=500))
+
+        conn = _open_db(db_dir)
+        row = conn.execute("SELECT imap_uid, folder FROM emails WHERE id=1").fetchone()
+        conn.close()
+        assert row[0] == 500, "live server UID must be backfilled"
+        assert row[1] == "INBOX"
+
+    def test_db_read_but_server_unseen_reasserts_seen(self, db_dir, monkeypatch):
+        """The loop-breaker: mark-read on a pre-migration row was DB-only, so
+        the server kept the message UNSEEN and re-reported it forever. On
+        re-ingest of a row the DB already recorded as read, \\Seen must be
+        pushed to the server.
+        """
+        self._patch_side_effects(monkeypatch)
+        _seed_one_incoming(uid=None, is_read=1)
+        client = self._client(self._build_raw(), uid=500, server_is_read=False)
+
+        self._run(client)
+
+        client.set_seen.assert_called_once()
+        folder, uids = client.set_seen.call_args.args[:2]
+        assert folder == "INBOX"
+        assert uids == [500]
+        assert client.set_seen.call_args.kwargs.get("seen", True) is True
+
+    def test_known_unread_row_is_not_marked_seen(self, db_dir, monkeypatch):
+        """A known-but-still-unhandled row (is_read=0) must stay unread on
+        both sides — the guard only suppresses the duplicate row + trigger.
+        """
+        self._patch_side_effects(monkeypatch)
+        _seed_one_incoming(uid=None, is_read=0)
+        client = self._client(self._build_raw(), uid=500)
+
+        self._run(client)
+
+        client.set_seen.assert_not_called()
+        conn = _open_db(db_dir)
+        row = conn.execute("SELECT is_read FROM emails WHERE id=1").fetchone()
+        conn.close()
+        assert row[0] == 0
+
+    def test_reassert_seen_failure_is_nonfatal(self, db_dir, monkeypatch):
+        """A NO on the re-assert STORE must not crash the poll — the guard
+        simply retries the next time the server re-reports the message.
+        """
+        self._patch_side_effects(monkeypatch)
+        _seed_one_incoming(uid=None, is_read=1)
+        client = self._client(self._build_raw(), uid=500)
+        client.set_seen.side_effect = email_addon.ImapError(
+            "IMAP UID STORE +FLAGS \\Seen on 1 UIDs in INBOX failed: NO"
+        )
+
+        self._run(client)  # must not raise
+
+        conn = _open_db(db_dir)
+        last_uid = conn.execute(
+            "SELECT value FROM state WHERE key='last_uid'"
+        ).fetchone()[0]
+        conn.close()
+        assert last_uid == "500"
+
+    def test_outgoing_echo_skipped_without_reanchor(self, db_dir, monkeypatch):
+        """An echo of our own sent message (same Message-ID, lands in INBOX)
+        must neither fire the handler nor rebind the Sent row to INBOX.
+        """
+        sub = self._patch_side_effects(monkeypatch)
+        conn = email_addon.open_email_db(CONFIG).conn
+        conn.execute("""
+            INSERT INTO threads (thread_id, subject, last_message_id, references_chain,
+              last_sender, last_sender_full, participants, message_count)
+            VALUES ('t1', 'Hi', '<m1@x>', '[]', 'me', 'me', '[]', 1)
+        """)
+        conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient,
+              subject, body, folder, is_read)
+            VALUES ('t1', '<m1@x>', 'out', 'agent@test.local', 'a@x',
+                    'Hi', 'B', 'Sent', 1)
+        """)
+        conn.commit()
+        conn.close()
+
+        self._run(self._client(self._build_raw(), uid=500))
+
+        conn = _open_db(db_dir)
+        count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        row = conn.execute("SELECT folder, imap_uid FROM emails WHERE id=1").fetchone()
+        conn.close()
+        assert count == 1
+        sub.Popen.assert_not_called()
+        assert row[0] == "Sent", "outgoing row must keep its Sent folder"
+        assert row[1] is None
+
+    def test_unknown_message_still_processed_and_triggers(self, db_dir, monkeypatch):
+        """Control: a genuinely new Message-ID goes through the full path —
+        row inserted, trigger fired.
+        """
+        sub = self._patch_side_effects(monkeypatch)
+        self._run(self._client(self._build_raw(message_id="<new@x>"), uid=500))
+
+        conn = _open_db(db_dir)
+        count = conn.execute(
+            "SELECT COUNT(*) FROM emails WHERE direction='in'"
+        ).fetchone()[0]
+        conn.close()
+        assert count == 1
+        sub.Popen.assert_called_once()
+
+    def test_bare_vs_bracketed_message_id_still_matches(self, db_dir, monkeypatch):
+        """A row stored with the bare id form must still dedupe a header
+        carrying the bracketed form (and not duplicate/fire).
+        """
+        sub = self._patch_side_effects(monkeypatch)
+        conn = email_addon.open_email_db(CONFIG).conn
+        conn.execute("""
+            INSERT INTO threads (thread_id, subject, last_message_id, references_chain,
+              last_sender, last_sender_full, participants, message_count)
+            VALUES ('t1', 'Hi', 'm1@x', '[]', 'a@x', 'a@x', '[]', 1)
+        """)
+        conn.execute("""
+            INSERT INTO emails (thread_id, message_id, direction, sender, recipient,
+              subject, body, folder, is_read)
+            VALUES ('t1', 'm1@x', 'in', 'a@x', 'me', 'Hi', 'B', 'INBOX', 1)
+        """)
+        conn.commit()
+        conn.close()
+
+        self._run(self._client(self._build_raw(message_id="<m1@x>"), uid=500))
+
+        conn = _open_db(db_dir)
+        count = conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0]
+        conn.close()
+        assert count == 1
+        sub.Popen.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
