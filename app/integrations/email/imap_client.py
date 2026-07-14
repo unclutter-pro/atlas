@@ -538,9 +538,11 @@ class ImapClient:
         :class:`ImapError` on a non-OK SEARCH reply.
         """
         mid = (message_id or "").strip().strip("<>")
-        # A double-quote can't be sent inside an IMAP quoted string without
-        # escaping games; ids containing one are malformed anyway — bail out.
-        if not mid or '"' in mid:
+        # Reject double-quotes (unrepresentable in an IMAP quoted string) and
+        # CR/LF/NUL: a folded Message-ID header preserves internal CRLF, which
+        # imaplib would forward verbatim into the SEARCH command (command
+        # injection). Such ids are malformed anyway — bail out.
+        if not mid or any(c in mid for c in '"\r\n\x00'):
             return None
         self.select(folder)
         data = _ok(
