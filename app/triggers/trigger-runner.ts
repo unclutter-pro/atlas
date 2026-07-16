@@ -551,6 +551,18 @@ export function buildSystemPrompt(
  * @param triggerType - Model key to look up (e.g. "trigger", "cron")
  * @param _extraCandidates - Deprecated, kept for API compatibility (ignored)
  */
+
+/**
+ * Internal quality-gate roles must not inherit the strong/expensive `trigger`
+ * model when their own key is absent from an older config — they have a
+ * deliberate, cheaper default. The generic `trigger` fallback still applies to
+ * every other key.
+ */
+const INTERNAL_ROLE_MODEL_DEFAULTS: Record<string, string> = {
+  validator: "sonnet",
+  subagent_review: "sonnet",
+};
+
 export function resolveModel(
   _configPath: string,
   triggerType: string,
@@ -559,7 +571,12 @@ export function resolveModel(
   const homeDir = process.env.HOME ?? "/home/agent";
   const config = resolveConfig(homeDir);
   const models = config.models as Record<string, string>;
-  return models[triggerType] ?? models["trigger"] ?? "opus";
+  return (
+    models[triggerType] ??
+    INTERNAL_ROLE_MODEL_DEFAULTS[triggerType] ??
+    models["trigger"] ??
+    "opus"
+  );
 }
 
 /**

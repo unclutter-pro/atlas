@@ -73,6 +73,17 @@ export type ValidatorResult = {
   feedback: string;
 };
 
+/**
+ * Outcome of a full validator run. A `pass`/`fail` is a verdict on the merits
+ * and consumes one of the goal's limited validation attempts. `infra_error`
+ * means the validator never produced a usable verdict (crash, timeout, empty
+ * or unparseable output) — it must NOT consume an attempt, so a transient
+ * glitch can't push a legitimately-complete goal into `validation_exhausted`.
+ */
+export type ValidatorOutcome =
+  | { verdict: "pass" | "fail"; feedback: string }
+  | { verdict: "infra_error"; feedback: string };
+
 // ---------------------------------------------------------------------------
 // Session scoping helpers
 // ---------------------------------------------------------------------------
@@ -426,8 +437,17 @@ export function taskCancel(db: Database, opts: {
 const MAX_VALIDATIONS = 3;
 const VALIDATOR_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Fallback when the validator output cannot be parsed into a verdict. */
-export const VALIDATOR_UNPARSEABLE_FEEDBACK = "Validator produced no parseable output";
+/**
+ * How many times to spawn the validator within a single close attempt before
+ * declaring an infra error. A transient glitch (crash, overload, empty output)
+ * is retried in-place — none of these tries consume a validation attempt.
+ */
+const VALIDATOR_SPAWN_TRIES = 3;
+const VALIDATOR_RETRY_BACKOFF_MS = [1500, 4000];
+
+/** Feedback surfaced to the caller when every spawn failed to yield a verdict. */
+export const VALIDATOR_INFRA_ERROR_FEEDBACK =
+  "Validator could not produce a verdict (crash/timeout/empty output) — this did not count against the attempt budget; try closing again";
 
 /**
  * Parse the validator's verdict from a chunk of text (a spawned trigger-runner's
@@ -468,59 +488,17 @@ export function parseValidatorOutput(stdout: string): ValidatorResult | null {
   return null;
 }
 
-export async function runValidator(opts: {
-  goal: Goal;
-  reason: string;
-  db: Database;
-}): Promise<ValidatorResult> {
-  const { goal, reason, db } = opts;
-
-  // Mock mode for tests
-  const mockEnv = process.env.ATLAS_VALIDATOR_MOCK;
-  if (mockEnv) {
-    const [mockVerdict, ...feedbackParts] = mockEnv.split(":");
-    const verdict = (mockVerdict === "pass" || mockVerdict === "fail") ? mockVerdict : "fail";
-    const feedback = feedbackParts.join(":") || (verdict === "pass" ? "Mock: validation passed" : "Mock: validation failed");
-
-    const attempt = goal.validation_count + 1;
-    const startedAt = Date.now();
-    db.prepare(
-      `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback, duration_ms)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(goal.id, attempt, verdict, feedback, 0);
-
-    db.prepare("UPDATE goals SET validation_count = validation_count + 1 WHERE id = ?").run(goal.id);
-
-    return { verdict, feedback };
-  }
-
-  // Real validator spawn
+/**
+ * Spawn the validator once and parse its verdict.
+ *
+ * Returns a `ValidatorResult` on a parseable pass/fail, or `null` for any infra
+ * failure (crash, timeout, empty or unparseable stdout). No DB side effects —
+ * the caller decides whether a verdict consumes a validation attempt.
+ */
+async function spawnValidatorOnce(prompt: string): Promise<ValidatorResult | null> {
   const APP_DIR = "/atlas/app";
-  const HOME = process.env.HOME ?? "/home/agent";
   const triggerRunnerPath = `${APP_DIR}/triggers/trigger-runner`;
-
-  if (!existsSync(triggerRunnerPath)) {
-    // Fallback path for development
-    const devPath = `${APP_DIR}/triggers/trigger-runner.ts`;
-    if (!existsSync(devPath)) {
-      return die("trigger-runner not found — cannot run validator");
-    }
-  }
-
-  // Build validator prompt from template
-  const promptTemplatePath = `${APP_DIR}/prompts/validator.md`;
-  let promptTemplate = "";
-  if (existsSync(promptTemplatePath)) {
-    promptTemplate = await Bun.file(promptTemplatePath).text();
-  } else {
-    promptTemplate = `Verify: {title}\nDone condition: {done_condition}\nReason: {reason}\nRespond: {"verdict":"pass"|"fail","feedback":"..."}`;
-  }
-
-  const prompt = promptTemplate
-    .split("{title}").join(goal.title)
-    .split("{description}").join(goal.description ?? "(none provided)")
-    .split("{done_condition}").join(goal.done_condition)
-    .split("{reason}").join(reason);
+  const hasBinary = existsSync(triggerRunnerPath);
 
   // Spawn with stripped environment (no ATLAS_TRIGGER, no ATLAS_TRIGGER_SESSION_KEY)
   const strippedEnv: Record<string, string> = {};
@@ -529,65 +507,107 @@ export async function runValidator(opts: {
     if (v !== undefined) strippedEnv[k] = v;
   }
 
-  const attempt = goal.validation_count + 1;
-  const startMs = Date.now();
+  // `--model-key validator` pins the control model (config.models.validator →
+  // sonnet) instead of inheriting the parent context's default. `--trigger-name
+  // validator` lets dreaming/memory-cleanup exclude these quality-gate sessions.
+  const baseArgs = [
+    "--direct", prompt,
+    "--channel", "validator",
+    "--model-key", "validator",
+    "--trigger-name", "validator",
+  ];
+  const spawnArgs = hasBinary
+    ? [triggerRunnerPath, ...baseArgs]
+    : ["bun", `${APP_DIR}/triggers/trigger-runner.ts`, ...baseArgs];
 
-  // Determine executable
-  const execPath = existsSync(triggerRunnerPath)
-    ? triggerRunnerPath
-    : "bun";
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(spawnArgs, { env: strippedEnv, stdout: "pipe", stderr: "pipe" });
+  } catch {
+    return null;
+  }
 
-  // Tag this session with trigger-name=validator so dreaming/memory-cleanup
-  // filters can exclude it (the validator is a quality gate, not a real
-  // session worth analyzing).
-  const spawnArgs = existsSync(triggerRunnerPath)
-    ? [triggerRunnerPath, "--direct", prompt, "--channel", "validator", "--trigger-name", "validator"]
-    : ["bun", `${APP_DIR}/triggers/trigger-runner.ts`, "--direct", prompt, "--channel", "validator", "--trigger-name", "validator"];
-
-  const proc = Bun.spawn(spawnArgs, {
-    env: strippedEnv,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  // Apply timeout
   const timeoutHandle = setTimeout(() => {
     try { proc.kill(); } catch {}
   }, VALIDATOR_TIMEOUT_MS);
 
   let stdout = "";
-  let stderr = "";
-
   try {
-    const stdoutText = await new Response(proc.stdout).text();
-    const stderrText = await new Response(proc.stderr).text();
-    stdout = stdoutText;
-    stderr = stderrText;
+    stdout = await new Response(proc.stdout).text();
     await proc.exited;
+  } catch {
+    return null;
   } finally {
     clearTimeout(timeoutHandle);
   }
 
-  const durationMs = Date.now() - startMs;
+  return parseValidatorOutput(stdout);
+}
 
-  // The validator Stop-hook normally forces a parseable verdict before the
-  // session can end, so `parseValidatorOutput` should succeed. This fallback
-  // only triggers for true infrastructure failures (crash, timeout, empty
-  // stdout) where the model never got to respond.
-  const result = parseValidatorOutput(stdout) ?? {
-    verdict: "fail" as const,
-    feedback: VALIDATOR_UNPARSEABLE_FEEDBACK,
+export async function runValidator(opts: {
+  goal: Goal;
+  reason: string;
+  db: Database;
+}): Promise<ValidatorOutcome> {
+  const { goal, reason, db } = opts;
+  const attempt = goal.validation_count + 1;
+
+  const recordVerdict = (result: ValidatorResult, durationMs: number): ValidatorOutcome => {
+    db.prepare(
+      `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback, duration_ms)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(goal.id, attempt, result.verdict, result.feedback, durationMs);
+    db.prepare("UPDATE goals SET validation_count = validation_count + 1 WHERE id = ?").run(goal.id);
+    return result;
   };
 
-  // Record validation attempt
-  db.prepare(
-    `INSERT INTO goal_validations (goal_id, attempt, verdict, feedback, duration_ms)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(goal.id, attempt, result.verdict, result.feedback, durationMs);
+  // Mock mode for tests
+  const mockEnv = process.env.ATLAS_VALIDATOR_MOCK;
+  if (mockEnv) {
+    const [mockVerdict, ...feedbackParts] = mockEnv.split(":");
+    // `infra` simulates a validator that never produced a verdict — no attempt consumed.
+    if (mockVerdict === "infra") {
+      return { verdict: "infra_error", feedback: VALIDATOR_INFRA_ERROR_FEEDBACK };
+    }
+    const verdict = (mockVerdict === "pass" || mockVerdict === "fail") ? mockVerdict : "fail";
+    const feedback = feedbackParts.join(":") || (verdict === "pass" ? "Mock: validation passed" : "Mock: validation failed");
+    return recordVerdict({ verdict, feedback }, 0);
+  }
 
-  db.prepare("UPDATE goals SET validation_count = validation_count + 1 WHERE id = ?").run(goal.id);
+  // Build validator prompt from template
+  const APP_DIR = "/atlas/app";
+  const triggerRunnerPath = `${APP_DIR}/triggers/trigger-runner`;
+  if (!existsSync(triggerRunnerPath) && !existsSync(`${APP_DIR}/triggers/trigger-runner.ts`)) {
+    return die("trigger-runner not found — cannot run validator");
+  }
 
-  return result;
+  const promptTemplatePath = `${APP_DIR}/prompts/validator.md`;
+  const promptTemplate = existsSync(promptTemplatePath)
+    ? await Bun.file(promptTemplatePath).text()
+    : `Verify: {title}\nDone condition: {done_condition}\nReason: {reason}\nRespond: {"verdict":"pass"|"fail","feedback":"..."}`;
+
+  const prompt = promptTemplate
+    .split("{title}").join(goal.title)
+    .split("{description}").join(goal.description ?? "(none provided)")
+    .split("{done_condition}").join(goal.done_condition)
+    .split("{reason}").join(reason);
+
+  // Retry transient infra failures in-place. Only a real pass/fail verdict is
+  // recorded and consumes an attempt; if every spawn fails we return an
+  // infra_error the caller can surface without burning the attempt budget.
+  for (let i = 0; i < VALIDATOR_SPAWN_TRIES; i++) {
+    const startMs = Date.now();
+    const result = await spawnValidatorOnce(prompt);
+    if (result) return recordVerdict(result, Date.now() - startMs);
+
+    if (i < VALIDATOR_SPAWN_TRIES - 1) {
+      const backoff = VALIDATOR_RETRY_BACKOFF_MS[i] ?? VALIDATOR_RETRY_BACKOFF_MS.at(-1)!;
+      console.error(`Validator produced no verdict (try ${i + 1}/${VALIDATOR_SPAWN_TRIES}) — retrying in ${backoff}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+
+  return { verdict: "infra_error", feedback: VALIDATOR_INFRA_ERROR_FEEDBACK };
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +783,14 @@ async function main(): Promise<void> {
           `UPDATE goals SET status = 'done', closed_at = datetime('now'), close_reason = ? WHERE id = ?`
         ).run(reason, id);
         console.log(`Goal #${id} closed. Validator passed: ${validationResult.feedback}`);
+      } else if (validationResult.verdict === "infra_error") {
+        // Infra failure — the validator never rendered a verdict. This did NOT
+        // consume an attempt, so the goal is not pushed toward exhaustion.
+        console.error(
+          `Validator could not run for goal #${id}: ${validationResult.feedback}\n` +
+          `No validation attempt was used (still ${goal.validation_count}/${MAX_VALIDATIONS}). Run \`task goal close ${id} --reason=...\` again.`
+        );
+        process.exit(1);
       } else {
         console.error(
           `Validator rejected close for goal #${id}: ${validationResult.feedback}\n` +

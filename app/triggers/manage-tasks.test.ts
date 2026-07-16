@@ -360,6 +360,23 @@ describe("Validator mock mode", () => {
     expect(updated.validation_count).toBe(1);
   });
 
+  test("ATLAS_VALIDATOR_MOCK=infra → infra_error, no attempt consumed, no telemetry", async () => {
+    process.env.ATLAS_VALIDATOR_MOCK = "infra";
+    const goal = goalCreate(db, { title: "Infra glitch", done: "Done", ...scope });
+
+    const { runValidator } = await import("./manage-tasks.ts");
+    const result = await runValidator({ goal, reason: "legit done", db });
+
+    expect(result.verdict).toBe("infra_error");
+
+    // An infra failure must NOT burn a validation attempt...
+    const updated = goalGet(db, goal.id)!;
+    expect(updated.validation_count).toBe(0);
+    // ...nor record a phantom 'fail' verdict against the goal.
+    const rows = db.prepare("SELECT * FROM goal_validations WHERE goal_id = ?").all(goal.id);
+    expect(rows.length).toBe(0);
+  });
+
   test("parseValidatorOutput: extracts JSON even when trigger-runner prefixes it with [ISO] Result:", () => {
     // Regression: in real validator runs, trigger-runner.ts logs the final
     // assistant message as `[2026-05-20T11:34:08.868Z] Result: {…}` to stdout.

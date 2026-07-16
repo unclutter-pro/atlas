@@ -10,6 +10,7 @@ models:
   trigger: opus # Trigger sessions (PM/team lead) — needs strong reasoning
   cron: sonnet # Cron/scheduled trigger sessions
   subagent_review: sonnet # SubagentStop quality gate (prompt hook)
+  validator: sonnet # Goal-close validator (independent quality gate)
   hooks: haiku # Default model for other prompt/agent hooks
 
 memory:

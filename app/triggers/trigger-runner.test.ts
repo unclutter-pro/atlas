@@ -431,6 +431,17 @@ models:
     expect(model).toBe("claude-sonnet-4-6");
   });
 
+  test("validator falls back to sonnet, not the trigger model, when its key is absent", () => {
+    // Older configs have no `validator` key. The quality gate must still resolve
+    // to its deliberate sonnet default rather than inheriting trigger (opus).
+    writeFileSync(join(tmpDir, "config.yml"), `
+models:
+  trigger: opus
+`);
+    process.env.HOME = tmpDir;
+    expect(resolveModel("", "validator")).toBe("sonnet");
+  });
+
   test("handles malformed YAML gracefully", () => {
     const badDir = makeTempDir();
     writeFileSync(join(badDir, "config.yml"), "{ this is: not valid: yaml: [");
