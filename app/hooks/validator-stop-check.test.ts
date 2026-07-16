@@ -12,8 +12,15 @@ import { join } from "node:path";
 
 const HOOK = join(import.meta.dir, "validator-stop-check.ts");
 
+const CORRECTION_MARKER = "Invalid format. Please respond in the following JSON format only:";
+
 function assistantEvent(text: string): string {
   return JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+}
+
+/** A prior injected correction, as it appears back in the transcript. */
+function correctionEvent(): string {
+  return JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: CORRECTION_MARKER }] } });
 }
 
 function writeTranscript(lines: string[]): string {
@@ -42,14 +49,14 @@ describe("validator-stop-check", () => {
     expect(out).toBe("");
   });
 
-  test("blocks and reprompts when the last assistant message is prose", async () => {
+  test("blocks and reprompts with the exact format-correction when the last message is prose", async () => {
     const path = writeTranscript([
       assistantEvent("I reviewed the work and it looks complete to me, nice job!"),
     ]);
     const out = await runHook(JSON.stringify({ transcript_path: path }));
     const parsed = JSON.parse(out);
     expect(parsed.decision).toBe("block");
-    expect(parsed.reason).toContain("not a parseable verdict");
+    expect(parsed.reason).toContain(CORRECTION_MARKER);
     expect(parsed.reason).toContain(`"verdict"`);
   });
 
@@ -61,9 +68,24 @@ describe("validator-stop-check", () => {
     expect(JSON.parse(out).decision).toBe("block");
   });
 
-  test("does not block again when stop_hook_active is true (loop guard)", async () => {
-    const path = writeTranscript([assistantEvent("still not valid json")]);
+  test("keeps reprompting while under the cap, even when stop_hook_active is true", async () => {
+    // stop_hook_active no longer caps the loop — the correction count does.
+    const path = writeTranscript([
+      correctionEvent(),
+      assistantEvent("still not valid json"),
+    ]);
     const out = await runHook(JSON.stringify({ transcript_path: path, stop_hook_active: true }));
+    expect(JSON.parse(out).decision).toBe("block");
+  });
+
+  test("allows stop after MAX_REPROMPTS (3) corrections have already been issued", async () => {
+    const path = writeTranscript([
+      correctionEvent(),
+      correctionEvent(),
+      correctionEvent(),
+      assistantEvent("still not valid json after three tries"),
+    ]);
+    const out = await runHook(JSON.stringify({ transcript_path: path }));
     expect(out).toBe("");
   });
 
