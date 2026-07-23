@@ -477,6 +477,51 @@ describe("runScriptCheck", () => {
 });
 
 // ---------------------------------------------------------------------------
+// runScriptProbe (exit-code contract: 0 = fire, 1 = wait, >1 = error)
+// ---------------------------------------------------------------------------
+
+import { runScriptProbe } from "./manage-reminders.ts";
+
+describe("runScriptProbe", () => {
+  test("exit 0 (condition met)", () => {
+    const p = runScriptProbe("true");
+    expect(p.exitCode).toBe(0);
+    expect(p.timedOut).toBe(false);
+  });
+  test("exit 1 (condition not met yet)", () => {
+    const p = runScriptProbe("exit 1");
+    expect(p.exitCode).toBe(1);
+    expect(p.timedOut).toBe(false);
+  });
+  test("exit >1 (broken command semantics)", () => {
+    expect(runScriptProbe("exit 3").exitCode).toBe(3);
+    expect(runScriptProbe("exit 42").exitCode).toBe(42);
+  });
+  test("command not found → exit 127", () => {
+    const p = runScriptProbe("definitely-not-a-real-command-xyz");
+    expect(p.exitCode).toBe(127);
+  });
+  test("captures stderr for error feedback", () => {
+    const p = runScriptProbe("echo oops-broken >&2; exit 2");
+    expect(p.exitCode).toBe(2);
+    expect(p.stderr).toContain("oops-broken");
+  });
+  test("captures stdout", () => {
+    const p = runScriptProbe("echo hello-out");
+    expect(p.exitCode).toBe(0);
+    expect(p.stdout).toContain("hello-out");
+  });
+  test("timeout is reported as timedOut", () => {
+    const p = runScriptProbe("sleep 5", 300);
+    expect(p.timedOut).toBe(true);
+    expect(p.exitCode).toBeNull();
+  });
+  test("wrapped command masks >1 down to 1 (documented pattern)", () => {
+    expect(runScriptProbe("bash -c 'exit 7' || exit 1").exitCode).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // claimReminder (atomic pending → fired transition)
 // ---------------------------------------------------------------------------
 

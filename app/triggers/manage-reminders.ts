@@ -313,21 +313,49 @@ export function checkEmailReply(
 }
 
 /**
- * Run a shell script (via `bash -c`) and return true if it exited 0.
- * Stdout/stderr are captured to avoid leaking into the parent log; the
- * stop signal is purely the exit code.
+ * Result of probing a check command once.
+ *
+ * Exit-code contract for --when-script-ok commands:
+ *   0   → condition met, the reminder fires
+ *   1   → condition not met yet, keep waiting
+ *   >1  → broken command (typo, missing binary, config error)
  */
-export function runScriptCheck(command: string): boolean {
+export type ScriptProbeResult = {
+  /** Exit code, or null when the process was killed (e.g. timeout SIGTERM). */
+  exitCode: number | null;
+  timedOut: boolean;
+  stderr: string;
+  stdout: string;
+};
+
+/**
+ * Run a shell command (via `bash -c`) once and report exit code + output.
+ * Used both by the check loop and by the add-time dry-run.
+ */
+export function runScriptProbe(command: string, timeoutMs = 30_000): ScriptProbeResult {
   try {
-    execSync(command, {
+    const stdout = execSync(command, {
       shell: "/bin/bash",
       stdio: "pipe",
-      timeout: 30_000, // 30s hard cap per check — protect cron from hangs
+      timeout: timeoutMs, // hard cap per check — protect cron from hangs
     });
-    return true;
-  } catch {
-    return false;
+    return { exitCode: 0, timedOut: false, stderr: "", stdout: stdout?.toString() ?? "" };
+  } catch (e: any) {
+    const timedOut = e?.code === "ETIMEDOUT" || (e?.signal === "SIGTERM" && e?.status == null);
+    return {
+      exitCode: typeof e?.status === "number" ? e.status : null,
+      timedOut,
+      stderr: e?.stderr?.toString() ?? "",
+      stdout: e?.stdout?.toString() ?? "",
+    };
   }
+}
+
+/**
+ * Convenience wrapper: true iff the command exited 0 (condition met).
+ */
+export function runScriptCheck(command: string): boolean {
+  return runScriptProbe(command).exitCode === 0;
 }
 
 /** Maximum wake attempts per reminder before a failed wake is given up. */
@@ -516,6 +544,17 @@ Trigger types (pick exactly one per reminder):
                                under 'bash -c'. Checked every --check-interval
                                (default: 60s; minimum: 60s — the check loop
                                runs once per minute).
+                               Exit-code contract:
+                                 0   condition met  → reminder fires
+                                 1   not met yet    → keep waiting
+                                 >1  broken command → error
+                               On 'add' the command is always dry-run once:
+                                 exit >1 or timeout rejects the add (with
+                                 stderr, so you can fix the command);
+                                 exit 0 warns that the reminder will fire
+                                 at the next tick (~1 min).
+                               At check time, exit >1 is logged as an error
+                               and treated as 'keep waiting'.
 
 Optional safety net:
 
@@ -692,6 +731,38 @@ switch (command) {
       triggerConfigObj = { command: scriptOk, check_interval_seconds: checkInterval };
       fireAt = "9999-12-31 23:59:59";
       if (timeoutRaw) timeoutAt = parseAt(timeoutRaw);
+
+      // Dry-run: probe the command once so a broken command fails loudly here
+      // instead of silently "waiting" forever at every check tick.
+      // Contract: exit 0 = condition met, exit 1 = not met yet, >1 = broken.
+      const probe = runScriptProbe(scriptOk);
+      if (probe.timedOut) {
+        die(
+          `Dry-run of the check command timed out after 30s.\n` +
+          `Check commands run under a hard 30s cap at every tick — make the command faster ` +
+          `(e.g. use the tool's own --timeout flag).`,
+        );
+      }
+      if (probe.exitCode !== 0 && probe.exitCode !== 1) {
+        const hint =
+          probe.exitCode === 127 ? " Exit 127 means 'command not found' — check for a typo or a missing binary on PATH."
+          : probe.exitCode === 126 ? " Exit 126 means 'permission denied / not executable' — check file permissions."
+          : "";
+        die(
+          `Dry-run of the check command failed with exit code ${probe.exitCode ?? "(killed by signal)"}.${hint}\n` +
+          `Exit-code contract for --when-script-ok: 0 = condition met (reminder fires), ` +
+          `1 = not met yet (keeps waiting), >1 = broken command.\n` +
+          (probe.stderr.trim() ? `stderr: ${probe.stderr.trim().slice(0, 500)}\n` : "") +
+          `Fix the command and re-run 'reminder add'. If the command legitimately exits >1 while ` +
+          `waiting, wrap it as '<cmd> || exit 1'.`,
+        );
+      }
+      if (probe.exitCode === 0) {
+        console.warn(
+          `Note: dry-run — the command already exits 0, so this reminder will fire at the next ` +
+          `check tick (within ~1 minute). Cancel it if that is not intended.`,
+        );
+      }
     }
 
     const triggerConfig = JSON.stringify(triggerConfigObj);
@@ -882,9 +953,19 @@ switch (command) {
       // actual current time — so a pass that slips past the lock (stale-lock
       // takeover) won't run the same command concurrently.
       db.prepare(`UPDATE reminders SET last_checked_at = ? WHERE id = ?`).run(toUtcStorage(new Date()), r.id);
-      const ok = runScriptCheck(cfg.command);
-      if (ok) {
+      // Contract: 0 = fire, 1 = keep waiting, >1 = broken command. Anything
+      // that isn't 0/1 is treated as "keep waiting" but logged loudly — the
+      // add-time dry-run should have caught permanently broken commands.
+      const probe = runScriptProbe(cfg.command);
+      if (probe.exitCode === 0) {
         due.push({ reminder: r, reason: "fired" });
+      } else if (probe.exitCode !== 1) {
+        const what = probe.timedOut ? "timed out after 30s" : `exited ${probe.exitCode ?? "via signal"}`;
+        console.warn(
+          `[${new Date().toISOString()}] Reminder #${r.id} check command ${what} ` +
+          `(contract: 0=fire, 1=wait, >1=error) — treating as 'keep waiting'.` +
+          (probe.stderr.trim() ? ` stderr: ${probe.stderr.trim().slice(0, 200)}` : ""),
+        );
       }
     }
 
