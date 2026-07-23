@@ -36,7 +36,8 @@ function createRemindersDb(): Database {
       trigger_type TEXT DEFAULT 'time',
       status TEXT DEFAULT 'pending' CHECK(status IN ('pending','fired','cancelled')),
       created_at TEXT DEFAULT (datetime('now')),
-      fired_at TEXT
+      fired_at TEXT,
+      wake_attempts INTEGER DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_reminders_status_fire ON reminders(status, fire_at);
   `);
@@ -403,9 +404,6 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 describe("parseCheckInterval", () => {
-  test("parses seconds correctly", () => {
-    expect(parseCheckInterval("30s")).toBe(30);
-  });
   test("parses minutes correctly", () => {
     expect(parseCheckInterval("1m")).toBe(60);
     expect(parseCheckInterval("5m")).toBe(300);
@@ -413,12 +411,13 @@ describe("parseCheckInterval", () => {
   test("parses hours correctly", () => {
     expect(parseCheckInterval("1h")).toBe(3_600);
   });
-  test("accepts the 10s minimum", () => {
-    expect(parseCheckInterval("10s")).toBe(10);
+  test("accepts the 60s minimum", () => {
+    expect(parseCheckInterval("60s")).toBe(60);
   });
-  test("rejects sub-10s intervals", () => {
+  test("rejects sub-60s intervals (check loop runs once per minute)", () => {
+    expect(() => parseCheckInterval("30s")).toThrow();
+    expect(() => parseCheckInterval("10s")).toThrow();
     expect(() => parseCheckInterval("5s")).toThrow();
-    expect(() => parseCheckInterval("1s")).toThrow();
   });
   test("rejects unknown unit", () => {
     expect(() => parseCheckInterval("1w")).toThrow();
@@ -474,6 +473,169 @@ describe("runScriptCheck", () => {
   });
   test("returns false when command does not exist", () => {
     expect(runScriptCheck("definitely-not-a-real-command-xyz")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimReminder (atomic pending → fired transition)
+// ---------------------------------------------------------------------------
+
+import {
+  claimReminder,
+  recordWakeOutcome,
+  acquireCheckLock,
+  releaseCheckLock,
+  MAX_WAKE_ATTEMPTS,
+} from "./manage-reminders.ts";
+import { existsSync as fsExistsSync, unlinkSync as fsUnlinkSync } from "fs";
+
+describe("claimReminder", () => {
+  test("claims a pending reminder exactly once", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    expect(claimReminder(db, id)).toBe(true);
+    const row = db.prepare("SELECT status, fired_at FROM reminders WHERE id = ?").get(id) as any;
+    expect(row.status).toBe("fired");
+    expect(row.fired_at).not.toBeNull();
+  });
+
+  test("second claim on the same reminder loses (double-fire guard)", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    expect(claimReminder(db, id)).toBe(true);
+    // Simulates an overlapping check pass evaluating the same snapshot
+    expect(claimReminder(db, id)).toBe(false);
+  });
+
+  test("cancelled reminders cannot be claimed", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, { status: "cancelled" });
+    expect(claimReminder(db, id)).toBe(false);
+    const row = db.prepare("SELECT status FROM reminders WHERE id = ?").get(id) as any;
+    expect(row.status).toBe("cancelled");
+  });
+
+  test("unknown id returns false", () => {
+    const db = createRemindersDb();
+    expect(claimReminder(db, 9999)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordWakeOutcome (retry on failed wake)
+// ---------------------------------------------------------------------------
+
+describe("recordWakeOutcome", () => {
+  test("exit 0 → delivered, reminder stays fired", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    claimReminder(db, id);
+    expect(recordWakeOutcome(db, id, 0, false)).toBe("delivered");
+    const row = db.prepare("SELECT status, wake_attempts FROM reminders WHERE id = ?").get(id) as any;
+    expect(row.status).toBe("fired");
+    expect(row.wake_attempts).toBe(0);
+  });
+
+  test("non-zero exit → retry: reverted to pending with attempt recorded", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    claimReminder(db, id);
+    expect(recordWakeOutcome(db, id, 1, false)).toBe("retry");
+    const row = db.prepare("SELECT status, fired_at, wake_attempts FROM reminders WHERE id = ?").get(id) as any;
+    expect(row.status).toBe("pending");
+    expect(row.fired_at).toBeNull();
+    expect(row.wake_attempts).toBe(1);
+  });
+
+  test("a reverted reminder can be claimed and fired again", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    claimReminder(db, id);
+    recordWakeOutcome(db, id, 1, false);
+    expect(claimReminder(db, id)).toBe(true);
+  });
+
+  test("gives up after MAX_WAKE_ATTEMPTS total attempts", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    const outcomes: string[] = [];
+    for (let i = 0; i < MAX_WAKE_ATTEMPTS; i++) {
+      claimReminder(db, id);
+      outcomes.push(recordWakeOutcome(db, id, 1, false));
+    }
+    expect(outcomes).toEqual(["retry", "retry", "gave_up"]);
+    const row = db.prepare("SELECT status, wake_attempts FROM reminders WHERE id = ?").get(id) as any;
+    expect(row.status).toBe("fired"); // stays fired — no infinite retry
+    expect(row.wake_attempts).toBe(MAX_WAKE_ATTEMPTS);
+  });
+
+  test("recurring reminders are never reverted (next occurrence covers it)", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, { recurring_interval_seconds: 3600 });
+    claimReminder(db, id);
+    expect(recordWakeOutcome(db, id, 1, true)).toBe("gave_up");
+    const row = db.prepare("SELECT status FROM reminders WHERE id = ?").get(id) as any;
+    expect(row.status).toBe("fired");
+  });
+
+  test("null exit code (killed by signal) counts as failure", () => {
+    const db = createRemindersDb();
+    const id = insertReminder(db, {});
+    claimReminder(db, id);
+    expect(recordWakeOutcome(db, id, null, false)).toBe("retry");
+  });
+
+  test("unknown id → gave_up without throwing", () => {
+    const db = createRemindersDb();
+    expect(recordWakeOutcome(db, 9999, 1, false)).toBe("gave_up");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// acquireCheckLock / releaseCheckLock (overlapping check-pass guard)
+// ---------------------------------------------------------------------------
+
+describe("check lock", () => {
+  const lockFile = join(tmpdir(), `reminder-check-test-${process.pid}.lock`);
+
+  afterEach(() => {
+    if (fsExistsSync(lockFile)) fsUnlinkSync(lockFile);
+  });
+
+  test("acquires when no lock exists", () => {
+    expect(acquireCheckLock(lockFile)).toBe(true);
+    expect(fsExistsSync(lockFile)).toBe(true);
+  });
+
+  test("refuses while a live process holds the lock", () => {
+    // First acquire writes our own (live) PID — a second acquire must refuse.
+    expect(acquireCheckLock(lockFile)).toBe(true);
+    expect(acquireCheckLock(lockFile)).toBe(false);
+  });
+
+  test("takes over a stale lock from a dead process", () => {
+    writeFileSync(lockFile, "999999999"); // PID that cannot exist
+    expect(acquireCheckLock(lockFile)).toBe(true);
+  });
+
+  test("takes over a lock with garbage content", () => {
+    writeFileSync(lockFile, "not-a-pid");
+    expect(acquireCheckLock(lockFile)).toBe(true);
+  });
+
+  test("release removes the lock only when owned by this process", () => {
+    acquireCheckLock(lockFile);
+    releaseCheckLock(lockFile);
+    expect(fsExistsSync(lockFile)).toBe(false);
+
+    // Foreign lock stays untouched
+    writeFileSync(lockFile, "999999999");
+    releaseCheckLock(lockFile);
+    expect(fsExistsSync(lockFile)).toBe(true);
+  });
+
+  test("release on a missing lockfile is a no-op", () => {
+    expect(() => releaseCheckLock(lockFile)).not.toThrow();
   });
 });
 

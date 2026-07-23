@@ -60,10 +60,10 @@ reminder add --title="Deploy ready" \
   --when-script-ok="kubectl rollout status deploy/api --timeout=10s" \
   --prompt="Deploy ist live — Tests fahren"
 
-# Faster polling (minimum interval: 10s)
+# Slower polling for cheap-but-noisy checks (minimum interval: 60s)
 reminder add --title="File landed" \
   --when-script-ok="test -s /shared/output/import.csv" \
-  --check-interval="30s" \
+  --check-interval="5m" \
   --prompt="Importdatei ist da — verarbeiten"
 
 # With timeout
@@ -78,7 +78,7 @@ The command is run under `bash -c`. Exit code 0 fires the reminder; any other ex
 ## Important defaults
 
 - **No default timeout.** Real-world events take days, not hours. If you don't set `--timeout`, the reminder waits forever (until cancelled). Set `--timeout=+14d` or similar only when you genuinely need a safety net.
-- **Default `--check-interval` is 60s** for `--when-script-ok`. Minimum is 10s.
+- **Default `--check-interval` is 60s** for `--when-script-ok`. Minimum is 60s — the check loop is driven by a once-per-minute cron, so faster polling is not possible.
 - **`--at` reminders are NOT deduplicated.** Setting two 30-minute timers is a legitimate request.
 - **`--when-reply-to` and `--when-script-ok` ARE deduplicated** by the tuple `(trigger config, prompt)`. Re-adding the same reminder returns the existing id — safe to retry in agent loops.
 
@@ -135,12 +135,13 @@ Recurring reminders are session-bound (do not persist across sessions). For cros
   - `time`: `fire_at <= now`
   - `email_reply`: any inbound email in the configured thread (optionally from the configured sender) created **after** the reminder was set
   - `script_check`: the configured command exits 0, throttled by `check_interval_seconds`
-- When a reminder fires, it routes to the originating session via `trigger.sh`, or spawns an ephemeral session if no context.
+- When a reminder fires, it routes to the originating session via `trigger.sh`, or spawns an ephemeral session if no context. If the originating trigger has since been deleted or disabled, the reminder falls back to an ephemeral session instead of being dropped.
+- If the wake process fails fast (non-zero exit), the reminder is reverted to `pending` and retried on the next tick — up to 3 attempts total (recurring reminders skip the retry; their next occurrence covers it).
 - Fired and cancelled reminders older than 30 days are cleaned up by the daily cleanup job.
 
 ## Common pitfalls (and how to avoid them)
 
 - **Setting a timeout by reflex.** Don't. Most real-world replies take days. Only add `--timeout` when you genuinely need a fallback path.
-- **Polling too fast in `--when-script-ok`.** The minimum is 10s for a reason — anything faster wastes cron-loop budget without making the trigger noticeably more responsive.
+- **Polling too fast in `--when-script-ok`.** The check loop runs once per minute, so intervals below 60s are impossible and get rejected. Pick the slowest interval that still reacts fast enough.
 - **Treating `--when-reply-to` as a guard against missed emails.** It only fires on emails received **after** the reminder is created. If the reply might already be in the inbox, check directly first.
 - **Trying to `--recurring` an event trigger.** Doesn't work — event triggers fire on edges, not intervals. Set a new reminder after each fire if you need that behavior.

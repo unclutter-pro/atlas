@@ -13,7 +13,7 @@
 import { Database } from "bun:sqlite";
 import { execSync } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, readdirSync } from "fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { openDb } from "../lib/db.ts";
 
 function die(msg: string): never {
@@ -141,13 +141,15 @@ export function parseRecurringInterval(value: string): number {
 }
 
 /**
- * Parse a check-interval string into seconds. Accepted: "30s", "1m", "5m", "1h".
- * Minimum: 10 seconds (script_check is a polling trigger, sub-10s is wasteful).
+ * Parse a check-interval string into seconds. Accepted: "1m", "5m", "1h".
+ * Minimum: 60 seconds — the check loop is driven by a once-per-minute cron,
+ * so a sub-minute interval silently degrades to ~60s anyway. Reject it loudly
+ * instead of pretending faster polling exists.
  */
 export function parseCheckInterval(value: string): number {
   const m = value.match(/^(\d+)([smhd])$/);
   if (!m) {
-    throw new Error(`Unrecognized --check-interval format: "${value}". Use "30s", "1m", "1h" (no leading +). Minimum is 10s.`);
+    throw new Error(`Unrecognized --check-interval format: "${value}". Use "1m", "5m", "1h" (no leading +). Minimum is 60s.`);
   }
   const amount = parseInt(m[1], 10);
   const unit = m[2];
@@ -156,8 +158,8 @@ export function parseCheckInterval(value: string): number {
     : unit === "m" ? amount * 60
     : unit === "h" ? amount * 3_600
     : amount * 86_400;
-  if (seconds < 10) {
-    throw new Error(`--check-interval must be at least 10 seconds (got ${seconds}s).`);
+  if (seconds < 60) {
+    throw new Error(`--check-interval must be at least 60 seconds (got ${seconds}s) — the reminder check loop runs once per minute, so faster polling is not possible.`);
   }
   return seconds;
 }
@@ -328,6 +330,94 @@ export function runScriptCheck(command: string): boolean {
   }
 }
 
+/** Maximum wake attempts per reminder before a failed wake is given up. */
+export const MAX_WAKE_ATTEMPTS = 3;
+
+/**
+ * Atomically claim a pending reminder for firing (pending → fired).
+ * Only the process that wins the transition may fire the wake; a concurrent
+ * `check` pass evaluating the same row loses the claim (returns false) and
+ * must skip it. This is the guard against double-wakes when two check passes
+ * overlap — the plain UPDATE it replaces had no status guard, so both passes
+ * would fire the same reminder.
+ */
+export function claimReminder(db: Database, id: number): boolean {
+  const res = db
+    .prepare(
+      `UPDATE reminders SET status = 'fired', fired_at = datetime('now')
+        WHERE id = ? AND status = 'pending'`,
+    )
+    .run(id);
+  return res.changes === 1;
+}
+
+/**
+ * Record the outcome of a wake attempt after the spawned trigger process
+ * exited. A non-zero exit means trigger-runner could not deliver the wake
+ * (DB missing, originating trigger gone, "lock held but socket unavailable").
+ *
+ * On failure the reminder is put back to 'pending' so the next check pass
+ * retries — up to MAX_WAKE_ATTEMPTS total attempts, then it stays 'fired'
+ * and the loss is the caller's to log. Recurring reminders are never
+ * reverted: their next occurrence is already scheduled at claim time, so a
+ * retry would fire the same prompt twice.
+ */
+export function recordWakeOutcome(
+  db: Database,
+  id: number,
+  exitCode: number | null,
+  isRecurring: boolean,
+): "delivered" | "retry" | "gave_up" {
+  if (exitCode === 0) return "delivered";
+  const row = db
+    .prepare(`SELECT wake_attempts FROM reminders WHERE id = ?`)
+    .get(id) as { wake_attempts: number | null } | undefined;
+  if (!row) return "gave_up";
+  const attempts = (row.wake_attempts ?? 0) + 1;
+  if (isRecurring || attempts >= MAX_WAKE_ATTEMPTS) {
+    db.prepare(`UPDATE reminders SET wake_attempts = ? WHERE id = ?`).run(attempts, id);
+    return "gave_up";
+  }
+  db.prepare(
+    `UPDATE reminders SET wake_attempts = ?, status = 'pending', fired_at = NULL
+      WHERE id = ? AND status = 'fired'`,
+  ).run(attempts, id);
+  return "retry";
+}
+
+/**
+ * Acquire the singleton lock for the `check` command via a PID lockfile.
+ * Cron fires `check` every minute, but a pass with slow script_checks can
+ * exceed that — overlapping passes double-run commands. Returns true if the
+ * lock was acquired. A lockfile whose PID is dead is stale and taken over.
+ */
+export function acquireCheckLock(lockFile: string): boolean {
+  if (existsSync(lockFile)) {
+    const pid = parseInt(readFileSync(lockFile, "utf8").trim(), 10);
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0);
+        return false; // live process holds the lock
+      } catch {
+        // Process dead — stale lock, take over
+      }
+    }
+  }
+  writeFileSync(lockFile, String(process.pid));
+  return true;
+}
+
+/** Release the check lock — only if this process still owns it. */
+export function releaseCheckLock(lockFile: string): void {
+  try {
+    if (readFileSync(lockFile, "utf8").trim() === String(process.pid)) {
+      unlinkSync(lockFile);
+    }
+  } catch {
+    // Already gone or unreadable — nothing to release
+  }
+}
+
 function printTable(reminders: any[], recurringOnly = false): void {
   const filtered = recurringOnly
     ? reminders.filter((r) => r.recurring_interval_seconds != null)
@@ -424,7 +514,8 @@ Trigger types (pick exactly one per reminder):
 
   --when-script-ok=<cmd>       Fire when '<cmd>' exits 0. The command is run
                                under 'bash -c'. Checked every --check-interval
-                               (default: 60s; minimum: 10s).
+                               (default: 60s; minimum: 60s — the check loop
+                               runs once per minute).
 
 Optional safety net:
 
@@ -468,7 +559,7 @@ Examples:
   # Wait until a CI/deploy script signals ready
   reminder add --title="Deploy ready" \\
     --when-script-ok="kubectl rollout status deploy/api --timeout=10s" \\
-    --check-interval="30s" --prompt="Deploy ist live — Tests fahren"
+    --check-interval="2m" --prompt="Deploy ist live — Tests fahren"
 `);
   process.exit(0);
 }
@@ -503,6 +594,7 @@ try { db.run("ALTER TABLE reminders ADD COLUMN trigger_config TEXT"); } catch {}
 try { db.run("ALTER TABLE reminders ADD COLUMN timeout_at TEXT"); } catch {}
 try { db.run("ALTER TABLE reminders ADD COLUMN idempotency_hash TEXT"); } catch {}
 try { db.run("ALTER TABLE reminders ADD COLUMN last_checked_at TEXT"); } catch {}
+try { db.run("ALTER TABLE reminders ADD COLUMN wake_attempts INTEGER DEFAULT 0"); } catch {}
 db.run(`CREATE INDEX IF NOT EXISTS idx_reminders_idempotency ON reminders(status, idempotency_hash)`);
 
 switch (command) {
@@ -712,13 +804,34 @@ switch (command) {
   }
 
   case "check": {
-    // Pull all pending reminders. Evaluate per trigger_type.
+    // Pause guard: while Atlas is paused, leave reminders pending. Firing
+    // anyway would mark them 'fired' while trigger-runner drops the wake
+    // (it exits 0 on pause) — the reminder would be silently lost.
+    if (existsSync(`${process.env.HOME}/.atlas-paused`)) {
+      console.log(`[${new Date().toISOString()}] Atlas is paused — leaving reminders pending.`);
+      break;
+    }
+
+    // Singleton guard: cron fires `check` every minute, but a pass with slow
+    // script_checks (each up to 30s, sequential) can exceed that. Overlapping
+    // passes used to run the same command concurrently and double-fire
+    // reminders — skip this tick if another pass is still evaluating.
+    const checkLockFile = "/tmp/.reminder-check.lock";
+    if (!acquireCheckLock(checkLockFile)) {
+      console.log(`[${new Date().toISOString()}] Another check pass is still running — skipping this tick.`);
+      break;
+    }
+
+    // Pull all pending reminders. Evaluate per trigger_type — in two phases,
+    // so a slow script_check can never delay a due time/email reminder.
     const pending = db.prepare(`SELECT * FROM reminders WHERE status = 'pending'`).all() as any[];
     const emailDbDir = `${process.env.HOME}/.index/email`;
 
     const nowIso = toUtcStorage(new Date());
     const due: Array<{ reminder: any; reason: "fired" | "timeout" }> = [];
+    const scriptChecks: any[] = [];
 
+    // Phase 1: cheap evaluations (time, email_reply, timeouts).
     for (const r of pending) {
       const triggerType = r.trigger_type || "time";
 
@@ -735,10 +848,9 @@ switch (command) {
         continue;
       }
 
-      let cfg: any = {};
-      try { cfg = r.trigger_config ? JSON.parse(r.trigger_config) : {}; } catch {}
-
       if (triggerType === "email_reply") {
+        let cfg: any = {};
+        try { cfg = r.trigger_config ? JSON.parse(r.trigger_config) : {}; } catch {}
         const match = checkEmailReply(cfg.thread_id, cfg.from || null, r.created_at, emailDbDir);
         if (match) {
           due.push({ reminder: r, reason: "fired" });
@@ -747,17 +859,7 @@ switch (command) {
       }
 
       if (triggerType === "script_check") {
-        const interval = cfg.check_interval_seconds || 60;
-        // Throttle: only run if last_checked_at + interval <= now
-        if (r.last_checked_at) {
-          const lastMs = new Date(r.last_checked_at.replace(" ", "T") + "Z").getTime();
-          if (Date.now() - lastMs < interval * 1000) continue;
-        }
-        const ok = runScriptCheck(cfg.command);
-        db.prepare(`UPDATE reminders SET last_checked_at = ? WHERE id = ?`).run(nowIso, r.id);
-        if (ok) {
-          due.push({ reminder: r, reason: "fired" });
-        }
+        scriptChecks.push(r);
         continue;
       }
 
@@ -765,19 +867,76 @@ switch (command) {
       console.warn(`[${new Date().toISOString()}] Reminder #${r.id} has unknown trigger_type '${triggerType}' — skipping.`);
     }
 
+    // Phase 2: script_checks — each blocks up to 30s (execSync cap).
+    for (const r of scriptChecks) {
+      let cfg: any = {};
+      try { cfg = r.trigger_config ? JSON.parse(r.trigger_config) : {}; } catch {}
+
+      const interval = cfg.check_interval_seconds || 60;
+      // Throttle: only run if last_checked_at + interval <= now
+      if (r.last_checked_at) {
+        const lastMs = new Date(r.last_checked_at.replace(" ", "T") + "Z").getTime();
+        if (Date.now() - lastMs < interval * 1000) continue;
+      }
+      // Claim the check slot BEFORE running the blocking command, with the
+      // actual current time — so a pass that slips past the lock (stale-lock
+      // takeover) won't run the same command concurrently.
+      db.prepare(`UPDATE reminders SET last_checked_at = ? WHERE id = ?`).run(toUtcStorage(new Date()), r.id);
+      const ok = runScriptCheck(cfg.command);
+      if (ok) {
+        due.push({ reminder: r, reason: "fired" });
+      }
+    }
+
     if (due.length === 0) {
+      releaseCheckLock(checkLockFile);
       console.log(`[${new Date().toISOString()}] No due reminders.`);
       break;
     }
 
     console.log(`[${new Date().toISOString()}] Found ${due.length} due reminder(s).`);
 
-    for (const { reminder, reason } of due) {
-      console.log(`[${new Date().toISOString()}] Firing reminder #${reminder.id}: "${reminder.title}" (reason=${reason})`);
+    // Watch a spawned wake process: all trigger-runner failure exits happen
+    // fast (worst case ~60s internal lock wait). If the process is still
+    // alive after the confirm window it is running a session — the wake was
+    // delivered; unref() so this cron pass isn't pinned for the session's
+    // lifetime. On a fast non-zero exit, revert the reminder to 'pending'
+    // for retry on the next tick (bounded by MAX_WAKE_ATTEMPTS).
+    const WAKE_CONFIRM_MS = 120_000;
+    const watchWake = async (proc: ReturnType<typeof Bun.spawn>, reminder: any): Promise<void> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const stillRunning = await Promise.race([
+        proc.exited.then(() => false),
+        new Promise<boolean>((res) => { timer = setTimeout(() => res(true), WAKE_CONFIRM_MS); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (stillRunning) {
+        proc.unref();
+        return;
+      }
+      const outcome = recordWakeOutcome(
+        db,
+        reminder.id,
+        proc.exitCode,
+        reminder.recurring_interval_seconds != null,
+      );
+      if (outcome === "retry") {
+        console.error(`[${new Date().toISOString()}] Reminder #${reminder.id} wake failed (exit ${proc.exitCode}) — reverted to pending, will retry next tick.`);
+      } else if (outcome === "gave_up") {
+        console.error(`[${new Date().toISOString()}] Reminder #${reminder.id} wake failed (exit ${proc.exitCode}) — retries exhausted, wake lost. Check /atlas/logs/trigger-*.log.`);
+      }
+    };
+    const wakeOutcomes: Promise<void>[] = [];
 
-      db.prepare(
-        `UPDATE reminders SET status = 'fired', fired_at = datetime('now') WHERE id = ?`
-      ).run(reminder.id);
+    for (const { reminder, reason } of due) {
+      // Atomic claim (pending → fired): only the winner fires. Guards against
+      // a concurrent check pass firing the same reminder twice.
+      if (!claimReminder(db, reminder.id)) {
+        console.log(`[${new Date().toISOString()}] Reminder #${reminder.id} already claimed by another pass — skipping.`);
+        continue;
+      }
+
+      console.log(`[${new Date().toISOString()}] Firing reminder #${reminder.id}: "${reminder.title}" (reason=${reason})`);
 
       // Re-schedule recurring reminders (only for time-trigger; enforced at add time)
       if (reminder.recurring_interval_seconds != null) {
@@ -822,41 +981,64 @@ switch (command) {
 
       const promptText = `[Reminder #${reminder.id}: "${reminder.title}"]\n\n${reminder.prompt}${timeoutNote}${recurringNote}\n\nIMPORTANT: After completing this task, write a brief note to today's journal (memory/journal/) documenting what you did and any messages you sent. This ensures other sessions (e.g. Signal) have context if the user replies.`;
 
-      let proc;
-      if (reminder.trigger_name) {
+      // Routing sanity: if the originating trigger was deleted or disabled,
+      // trigger-runner would exit without delivering (silently for disabled).
+      // Fall back to a direct ephemeral session so the prompt still reaches
+      // a session instead of being lost.
+      let routeViaTrigger = Boolean(reminder.trigger_name);
+      if (routeViaTrigger) {
+        try {
+          const t = db
+            .prepare("SELECT enabled FROM triggers WHERE name = ?")
+            .get(reminder.trigger_name) as { enabled: number } | undefined;
+          if (!t || !t.enabled) {
+            console.warn(`[${new Date().toISOString()}] Reminder #${reminder.id}: originating trigger '${reminder.trigger_name}' is ${t ? "disabled" : "gone"} — falling back to a direct ephemeral session.`);
+            routeViaTrigger = false;
+          }
+        } catch {
+          // triggers table missing — let trigger-runner decide
+        }
+      }
+
+      let argv: string[];
+      if (routeViaTrigger) {
         const sessionKey = reminder.session_key || "_default";
         console.log(`[${new Date().toISOString()}] Reminder #${reminder.id}: routing to ${reminder.trigger_name}/${sessionKey}`);
-        proc = Bun.spawn(
-          ["/atlas/app/triggers/trigger.sh", reminder.trigger_name, promptText, sessionKey],
-          {
-            env: {
-              ...process.env,
-              ATLAS_REMINDER_ID: String(reminder.id),
-              ATLAS_REMINDER_TITLE: reminder.title,
-            },
-            stdin: "ignore",
-            stdout: "inherit",
-            stderr: "inherit",
-          }
-        );
+        argv = ["/atlas/app/triggers/trigger.sh", reminder.trigger_name, promptText, sessionKey];
       } else {
-        proc = Bun.spawn(
-          ["/atlas/app/triggers/trigger-runner", "--direct", promptText, "--channel", channel],
-          {
-            env: {
-              ...process.env,
-              ATLAS_REMINDER_ID: String(reminder.id),
-              ATLAS_REMINDER_TITLE: reminder.title,
-            },
-            stdin: "ignore",
-            stdout: "inherit",
-            stderr: "inherit",
-          }
-        );
+        argv = ["/atlas/app/triggers/trigger-runner", "--direct", promptText, "--channel", channel];
+      }
+
+      let proc: ReturnType<typeof Bun.spawn>;
+      try {
+        proc = Bun.spawn(argv, {
+          env: {
+            ...process.env,
+            ATLAS_REMINDER_ID: String(reminder.id),
+            ATLAS_REMINDER_TITLE: reminder.title,
+          },
+          stdin: "ignore",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
+      } catch (err) {
+        // Spawn itself failed (e.g. missing binary) — treat like a failed
+        // wake so the reminder is retried instead of silently lost.
+        console.error(`[${new Date().toISOString()}] Reminder #${reminder.id} spawn failed: ${err}`);
+        recordWakeOutcome(db, reminder.id, 1, reminder.recurring_interval_seconds != null);
+        continue;
       }
 
       console.log(`[${new Date().toISOString()}] Reminder #${reminder.id} spawned (pid=${proc.pid})`);
+      wakeOutcomes.push(watchWake(proc, reminder));
     }
+
+    // Release the pass lock BEFORE waiting on wake outcomes: a routed wake
+    // that starts a fresh session keeps its process alive for the whole
+    // session, and the next check tick must not be blocked by that. The
+    // atomic claim + pre-run last_checked_at protect the released window.
+    releaseCheckLock(checkLockFile);
+    await Promise.all(wakeOutcomes);
     break;
   }
 
