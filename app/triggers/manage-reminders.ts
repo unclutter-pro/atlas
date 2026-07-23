@@ -551,8 +551,9 @@ Trigger types (pick exactly one per reminder):
                                On 'add' the command is always dry-run once:
                                  exit >1 or timeout rejects the add (with
                                  stderr, so you can fix the command);
-                                 exit 0 warns that the reminder will fire
-                                 at the next tick (~1 min).
+                                 exit 0 also rejects — the condition is
+                                 already met, so handle the task now or fix
+                                 the command to wait for a future state.
                                At check time, exit >1 is logged as an error
                                and treated as 'keep waiting'.
 
@@ -758,9 +759,11 @@ switch (command) {
         );
       }
       if (probe.exitCode === 0) {
-        console.warn(
-          `Note: dry-run — the command already exits 0, so this reminder will fire at the next ` +
-          `check tick (within ~1 minute). Cancel it if that is not intended.`,
+        die(
+          `Reminder NOT scheduled: the check command already exits 0 — the condition you want ` +
+          `to wait for is already met, so this reminder would fire immediately at the next tick.\n` +
+          `Either handle the task right now (no reminder needed), or fix the command so it waits ` +
+          `for the future state you actually care about.`,
         );
       }
     }

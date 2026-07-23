@@ -81,7 +81,7 @@ The command is run under `bash -c`. **Exit-code contract:**
 | `1` | condition not met yet | keep waiting |
 | `>1` | broken command (typo, missing binary, config error) | error — logged at check time, rejected at add time |
 
-**Dry-run on `add`:** the command is always executed once when you create the reminder. Exit `>1` or a 30s timeout **rejects the add** with the command's stderr, so you can fix it immediately — a typo'd command no longer waits silently forever. Exit `0` prints a note that the reminder will fire at the next tick (~1 minute); cancel it if that's not intended. This also means the check command must be safe to run at any time — it runs at every tick anyway, so it should be side-effect-free by design.
+**Dry-run on `add`:** the command is always executed once when you create the reminder. Exit `>1` or a 30s timeout **rejects the add** with the command's stderr, so you can fix it immediately — a typo'd command no longer waits silently forever. Exit `0` **also rejects the add**: the condition is already met, so there is nothing to wait for — handle the task right now instead, or fix the command so it waits for the future state you actually care about. This also means the check command must be safe to run at any time — it runs at every tick anyway, so it should be side-effect-free by design.
 
 Write check commands to match the contract: most Unix predicates (`test`, `grep -q`, `jq -e`) naturally exit 0/1. If a tool signals "not ready" with codes above 1, wrap it: `<cmd> || exit 1` — but be aware this also masks real errors from the dry-run.
 
