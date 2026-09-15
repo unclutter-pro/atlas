@@ -1347,6 +1347,27 @@ export function persistStreamChunk(
   }
 }
 
+/**
+ * Upsert the (trigger_name, session_key) → session_id mapping.
+ *
+ * Called both mid-turn (as soon as the session_id is known) and at turn end.
+ * The web-ui SSE handler resolves the session_id from this row to read stream
+ * chunks; without an early write the whole first turn of a new session streams
+ * nothing, because the row would otherwise land only after the turn finishes.
+ */
+export function upsertTriggerSession(
+  db: Database,
+  triggerName: string,
+  sessionKey: string,
+  sessionId: string,
+): void {
+  db.prepare(
+    `INSERT INTO trigger_sessions (trigger_name, session_key, session_id)
+     VALUES (?, ?, ?)
+     ON CONFLICT(trigger_name, session_key) DO UPDATE SET session_id = ?, updated_at = datetime('now')`,
+  ).run(triggerName, sessionKey, sessionId, sessionId);
+}
+
 // ---------------------------------------------------------------------------
 // 400 Upstream Error session clearing
 // ---------------------------------------------------------------------------
@@ -2231,6 +2252,15 @@ export async function main(): Promise<void> {
         // Capture session_id from any message that carries it
         if ("session_id" in msg && msg.session_id && !capturedSessionId) {
           capturedSessionId = msg.session_id as string;
+          // Persist the mapping now, not at turn end, so the web-ui SSE handler
+          // can resolve session_id and stream chunks during this first turn.
+          if (sessionMode === "persistent") {
+            try {
+              upsertTriggerSession(db, triggerName, sessionKey, capturedSessionId);
+            } catch (err) {
+              log.log(`early session upsert failed: ${err}`);
+            }
+          }
         }
         // Streaming: persist text deltas so the web-ui SSE handler can
         // forward them to the client in near-real-time. We accept the cost
@@ -2335,13 +2365,7 @@ export async function main(): Promise<void> {
 
   // --- Save session for persistent triggers ---
   if (sessionMode === "persistent" && capturedSessionId) {
-    db.prepare(
-      `
-      INSERT INTO trigger_sessions (trigger_name, session_key, session_id)
-      VALUES (?, ?, ?)
-      ON CONFLICT(trigger_name, session_key) DO UPDATE SET session_id = ?, updated_at = datetime('now')
-    `,
-    ).run(triggerName, sessionKey, capturedSessionId, capturedSessionId);
+    upsertTriggerSession(db, triggerName, sessionKey, capturedSessionId);
     log.log(`Saved session for key=${sessionKey}: ${capturedSessionId}`);
   }
 

@@ -28,6 +28,7 @@ import {
   trySocketInject,
   cleanupSocket,
   persistStreamChunk,
+  upsertTriggerSession,
   aggregateRunCost,
   modelFamily,
   MODEL_PRICING,
@@ -1206,6 +1207,52 @@ describe("persistStreamChunk", () => {
     // message_start with no session_id should not even set the uuid
     expect(state.uuid).toBeNull();
     expect(rows().length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// upsertTriggerSession — mid-turn + end-of-turn session mapping
+// ---------------------------------------------------------------------------
+
+describe("upsertTriggerSession", () => {
+  let db: Database;
+
+  beforeAll(() => {
+    db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE trigger_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trigger_name TEXT NOT NULL,
+        session_key TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(trigger_name, session_key)
+      );
+    `);
+  });
+
+  afterAll(() => db.close());
+  afterEach(() => db.exec("DELETE FROM trigger_sessions"));
+
+  function row(key: string) {
+    return db
+      .prepare("SELECT session_id FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?")
+      .get("web-chat", key) as { session_id: string } | null;
+  }
+
+  test("inserts the mapping so the SSE handler can resolve it mid-turn", () => {
+    upsertTriggerSession(db, "web-chat", "key-1", "sess-abc");
+    expect(row("key-1")?.session_id).toBe("sess-abc");
+  });
+
+  test("second call updates session_id in place (no duplicate row)", () => {
+    upsertTriggerSession(db, "web-chat", "key-1", "sess-old");
+    upsertTriggerSession(db, "web-chat", "key-1", "sess-new");
+    expect(row("key-1")?.session_id).toBe("sess-new");
+    const count = db
+      .prepare("SELECT COUNT(*) AS n FROM trigger_sessions WHERE session_key = ?")
+      .get("key-1") as { n: number };
+    expect(count.n).toBe(1);
   });
 });
 
