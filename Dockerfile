@@ -110,9 +110,12 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_ARCH}.tar.gz" \
   | tar -xz -C /usr/local/bin rtk \
   && chmod +x /usr/local/bin/rtk \
-  # --- Homebrew — installed directly into agent home dir for persistence ---
+  # --- Homebrew — installed directly into agent home dir for persistence.
+  # Pinned to a release tag: brew dropped support for installing off the
+  # master branch tarball. ---
+  && HOMEBREW_VERSION="7.0.1" \
   && mkdir -p /home/agent/.homebrew \
-  && curl -fsSL https://github.com/Homebrew/brew/tarball/master \
+  && curl -fsSL "https://github.com/Homebrew/brew/archive/refs/tags/${HOMEBREW_VERSION}.tar.gz" \
   | tar xz --strip-components 1 -C /home/agent/.homebrew \
   && /home/agent/.homebrew/bin/brew --version
 
