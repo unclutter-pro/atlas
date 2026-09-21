@@ -1,10 +1,12 @@
 ---
 name: docx
-description: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: any mention of 'Word doc', 'word document', '.docx', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation."
+description: Create or edit Word documents, work with templates, comments and tracked changes, or inspect Word-specific structure. For plain text extraction or summarization, use document-parse.
 license: Proprietary. LICENSE.txt has complete terms
 ---
 
 # DOCX creation, editing, and analysis
+
+Resolve `scripts/`, `assets/` and other bundled paths relative to this skill's directory, not the project working directory. Pass absolute input/output paths to helpers; keep generated files in the project or `~/output/`.
 
 ## Overview
 
@@ -15,7 +17,8 @@ A .docx file is a ZIP archive containing XML files.
 | Task | Approach |
 |------|----------|
 | Standard business doc (letter, report, memo, invoice) | Start from a ready-made template in `assets/templates/` — see Templates below |
-| Read/analyze content | `pandoc` or unpack for raw XML |
+| Plain text or summary | Use `document-parse` |
+| Tracked changes or document structure | `pandoc --track-changes=all` or unpack for raw XML |
 | Create a custom document | Use `docx-js` — see Creating New Documents below |
 | Edit existing document | Unpack → edit XML → repack — see Editing Existing Documents below |
 

@@ -5,6 +5,8 @@ description: "Use this skill for any PDF authoring or post-processing task that 
 
 # PDF Generation Skill
 
+Resolve `scripts/`, `assets/` and other bundled paths relative to this skill's directory, not the project working directory. Pass absolute input/output paths to helpers; keep generated files in the project or `~/output/`.
+
 Produces professional, brand-consistent PDFs with **Typst** as the primary engine. Optimized for fast iteration: write `.typ` source, run one `build-pdf` command, get a polished PDF.
 
 ## When to use this skill
@@ -25,7 +27,7 @@ Produces professional, brand-consistent PDFs with **Typst** as the primary engin
 
 1. `python scripts/check_fillable_fields.py <file.pdf>` — does the PDF have AcroForm fields?
 2. **Has fillable fields** → `scripts/extract_form_field_info.py` to inspect, then `scripts/fill_fillable_fields.py` to fill.
-3. **No fillable fields** (flat scan or rendered form) → fall back to the visual estimation path in [references/forms.md](references/forms.md).
+3. **No fillable fields** → run `scripts/extract_form_structure.py` first. Use its label/line coordinates when available; fall back to visual estimation only for scans or unusable structure. Follow [references/forms.md](references/forms.md).
 
 ## When NOT to use this skill
 
@@ -56,7 +58,7 @@ build-pdf memo \
 build-pdf path/to/custom.typ output/custom.pdf
 ```
 
-The `build-pdf` script lives in `scripts/build-pdf` of this skill.
+`build-pdf` and `invoice-zugferd` are installed on PATH. Their implementations live in this skill's `scripts/` directory; user overrides in `~/.claude/skills/pdf/scripts/` take precedence.
 
 ## The four bundled templates
 

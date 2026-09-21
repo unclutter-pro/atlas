@@ -185,7 +185,7 @@ Patterns per chart type in [references/charts.md](../references/charts.md).
   caption: [Teamfoto Q2 2026.],
 )
 ```
-Path is relative to the `.typ` file. The `build-pdf` script sets `--root "$(pwd)"` so files in the current working directory resolve.
+Path is relative to the `.typ` file. The `build-pdf` script sets `--root /` so files in the current working directory resolve.
 
 ### Headers + footers with page numbers
 ```typst

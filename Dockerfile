@@ -37,7 +37,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   supervisor \
   nginx \
   sqlite3 \
-  python3 python3-pip python-is-python3 \
+  python3 python3-pip python3-venv python-is-python3 \
   openssh-client \
   ca-certificates \
   unzip xz-utils sudo \
@@ -98,7 +98,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && ln -sf "$(which agent-browser)" /usr/local/bin/browser \
   && npm cache clean --force \
   # --- Python packages (messaging addons + office skills: defusedxml/lxml power docx/pptx/xlsx unpack·pack·validate) ---
-  && pip install --break-system-packages pyyaml html2text factur-x lxml defusedxml \
+  && pip install --break-system-packages pyyaml html2text factur-x lxml defusedxml openpyxl pandas pillow pdf2image pdfplumber \
   # --- Claude Code CLI ---
   && npm install -g @anthropic-ai/claude-code@2.1.220 \
   && claude --version \
@@ -154,6 +154,7 @@ COPY app/ /atlas/app/
 
 # Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/
+COPY app/defaults/skill-support/ /etc/claude-code/.claude/skill-support/
 COPY app/defaults/agents/ /etc/claude-code/.claude/agents/
 COPY .claude/settings.json /atlas/app/.claude/settings.json
 COPY supervisord.conf /etc/supervisor/conf.d/atlas.conf

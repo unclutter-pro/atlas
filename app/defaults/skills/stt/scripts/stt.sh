@@ -78,7 +78,7 @@ if [[ "$file" =~ ^https?:// ]]; then
   tmpfile=$(mktemp --suffix=.audio)
   trap "rm -f '$tmpfile'" EXIT
   echo "Downloading $file..." >&2
-  curl -sL -o "$tmpfile" "$file" || die "Failed to download $file"
+  curl -fsSL -o "$tmpfile" "$file" || die "Failed to download $file"
   file="$tmpfile"
 fi
 
@@ -87,6 +87,7 @@ fi
 # Convert to WAV (16kHz mono)
 wavfile=$(mktemp --suffix=.wav)
 cleanup_files=("$wavfile")
+[[ -n "${tmpfile:-}" ]] && cleanup_files+=("$tmpfile")
 trap 'rm -f "${cleanup_files[@]}"' EXIT
 
 ffmpeg -i "$file" -ar 16000 -ac 1 -y "$wavfile" 2>/dev/null \
@@ -102,7 +103,7 @@ transcribe_chunk() {
   local extra_args=""
   [[ -n "$language" ]] && extra_args="-F language=$language"
 
-  response=$(curl -s -X POST "$STT_URL" \
+  response=$(curl -fsS -X POST "$STT_URL" \
     -F "file=@${chunk_file}" \
     -F "response_format=json" \
     $extra_args 2>&1) || die "STT API request failed"
@@ -111,14 +112,16 @@ transcribe_chunk() {
 import json, sys
 try:
     data = json.load(sys.stdin)
-    print(data.get('text', ''))
+    if not isinstance(data.get('text'), str):
+        raise ValueError('STT response has no text field')
+    print(data['text'])
 except:
     sys.exit(1)
 " 2>/dev/null || die "Failed to parse STT response: $response"
 }
 
 # Short audio: single request
-if (( $(echo "$duration < $CHUNK_SIZE" | bc -l 2>/dev/null || echo 1) )); then
+if python3 -c "import sys; sys.exit(not (float(sys.argv[1]) < int(sys.argv[2])))" "$duration" "$CHUNK_SIZE"; then
   transcribe_chunk "$wavfile"
   exit 0
 fi
@@ -128,7 +131,7 @@ echo "Audio is ${duration}s — splitting into ${CHUNK_SIZE}s chunks..." >&2
 full_text=""
 start=0
 
-while (( $(echo "$start < $duration" | bc -l) )); do
+while python3 -c "import sys; sys.exit(not (float(sys.argv[1]) < float(sys.argv[2])))" "$start" "$duration"; do
   chunk=$(mktemp --suffix=.wav)
   cleanup_files+=("$chunk")
 
@@ -140,7 +143,7 @@ while (( $(echo "$start < $duration" | bc -l) )); do
     full_text+="$chunk_text"
   fi
 
-  start=$(echo "$start + $CHUNK_SIZE - $OVERLAP" | bc -l)
+  start=$((start + CHUNK_SIZE - OVERLAP))
 done
 
 echo "$full_text"

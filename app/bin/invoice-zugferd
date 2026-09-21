@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for script in "$HOME/.claude/skills/pdf/scripts/invoice-zugferd" \
+              "/etc/claude-code/.claude/skills/pdf/scripts/invoice-zugferd" \
+              "$APP_DIR/defaults/skills/pdf/scripts/invoice-zugferd"; do
+  if [[ -f "$script" ]]; then
+    exec python3 "$script" "$@"
+  fi
+done
+echo "error: invoice-zugferd helper not found" >&2
+exit 1
