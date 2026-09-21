@@ -9,10 +9,17 @@ services:
       - ./volume:/home/agent
       - ./logs:/atlas/logs
     environment:
+      # Container's own zone (supercronic, logs, `date` inside the container
+      # default to this). Atlas resolves ITS zone (web-ui day boundaries, cron
+      # scheduling, agent sessions) from config.yml `timezone:` / ATLAS_TIMEZONE
+      # first, falling back to this TZ — set ATLAS_TIMEZONE below instead of
+      # changing this if only Atlas (not the rest of the container) should use
+      # a different zone.
       - TZ=Europe/Berlin
       # --- Core ---
       # - ATLAS_AGENT_NAME=Atlas          # Display name (alias: AGENT_NAME)
       # - ATLAS_AGENT_EMAIL=              # Agent email address
+      # - ATLAS_TIMEZONE=                 # IANA zone (e.g. Europe/Berlin); empty = use TZ above, then UTC
       # - ANTHROPIC_API_KEY=sk-ant-...    # API key auth (alternative to OAuth)
       # - ATLAS_API_KEY=                  # Protect /api/v1/* endpoints with this key
       #

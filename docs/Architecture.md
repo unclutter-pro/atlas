@@ -30,7 +30,7 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 | Component | Port | Purpose | Documentation |
 |-----------|------|---------|---------------|
 | **nginx** | 8080 | Reverse proxy to web-ui | [web-ui.md](web-ui.md) |
-| **web-ui** | 3000 | Hono.js + HTMX dashboard | [web-ui.md](web-ui.md) |
+| **web-ui** | 3000 | Bun.serve + React dashboard and chat (Hono.js only for `/api/v1`, webhooks) | [web-ui.md](web-ui.md) |
 | **supercronic** | — | Cron job runner | [Triggers.md](Triggers.md) |
 
 ## Data Flow
@@ -40,6 +40,8 @@ Atlas is a single-container system that turns Claude Code into a persistent, eve
 3. **Trigger handles** — Processes the event, responds directly or delegates
 4. **Delegation** — For complex work: spawns subagents via `Agent(...)`
 5. **Review** — Trigger reviews subagent results before relaying to the user
+
+Web chat replies reach the browser without polling. The `web-chat` runner writes streamed text to `web_chat_stream_chunks` and pings the web-ui over the Unix socket `~/.index/web-ui.sock` (turn start and end, new chunks, new transcript lines). The web-ui then reads only what changed and pushes it to every open chat tab over SSE. See [web-ui.md](web-ui.md#how-live-updates-work).
 
 ## Session Types
 

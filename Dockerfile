@@ -11,10 +11,15 @@ WORKDIR /build
 COPY app/triggers/package.json app/triggers/bun.lock* ./
 RUN bun install --frozen-lockfile
 
-# Copy source files: trigger-runner + lib imports (config.ts, db.ts)
+# Copy source files: trigger-runner + lib imports (config.ts, db.ts, timezone.ts,
+# zoned-time.ts, trigger-socket.ts for socket/lock paths, web-ui-notify.ts for chat pings)
 COPY app/triggers/trigger-runner.ts ./triggers/
 COPY app/lib/config.ts ./lib/
 COPY app/lib/db.ts ./lib/
+COPY app/lib/timezone.ts ./lib/
+COPY app/lib/zoned-time.ts ./lib/
+COPY app/lib/trigger-socket.ts ./lib/
+COPY app/lib/web-ui-notify.ts ./lib/
 
 # Compile to native binary (auto-detect architecture)
 RUN ARCH=$(uname -m) && \
@@ -24,7 +29,29 @@ RUN ARCH=$(uname -m) && \
   bun build --compile --target=${BUN_TARGET} trigger-runner.ts --outfile trigger-runner
 
 # ============================================================
-# Stage 2: Main application image
+# Stage 2: Compile web-ui (Bun.serve + bundled React frontend) to a native binary
+# ============================================================
+FROM oven/bun:1 AS web-ui-builder
+
+WORKDIR /build
+
+# web-ui imports ../lib/*, which resolves js-yaml from lib/node_modules
+COPY app/lib/package.json app/lib/bun.lock* ./lib/
+RUN cd lib && bun install --frozen-lockfile
+COPY app/web-ui/package.json app/web-ui/bun.lock* ./web-ui/
+RUN cd web-ui && bun install --frozen-lockfile
+
+COPY app/lib/*.ts ./lib/
+COPY app/web-ui/ ./web-ui/
+
+RUN ARCH=$(uname -m) && \
+  if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then BUN_TARGET="bun-linux-arm64"; \
+  else BUN_TARGET="bun-linux-x64"; fi && \
+  cd web-ui && \
+  bun run build --target=${BUN_TARGET}
+
+# ============================================================
+# Stage 3: Main application image
 # ============================================================
 FROM ubuntu:24.04
 
@@ -162,17 +189,20 @@ COPY app/nginx.conf /etc/nginx/sites-available/atlas
 # Copy compiled trigger-runner native binary from build stage
 COPY --from=trigger-builder /build/triggers/trigger-runner /atlas/app/triggers/trigger-runner
 
+# Copy compiled web-ui native binary (server + bundled React frontend)
+COPY --from=web-ui-builder /build/web-ui/web-ui /atlas/app/web-ui/web-ui
+
 # Set permissions, install bun deps, configure nginx/supervisor (single layer)
 RUN chmod +x /atlas/app/entrypoint.sh \
   && chmod +x /atlas/app/init.sh \
   && chmod +x /atlas/app/hooks/*.sh \
   && chmod +x /atlas/app/triggers/cron/*.sh \
   && chmod +x /atlas/app/triggers/trigger-runner \
+  && chmod +x /atlas/app/web-ui/web-ui \
   && chmod +x /atlas/app/bin/* \
   && cd /atlas/app/lib && bun install \
   && cd /atlas/app/triggers && bun install \
   && cd /atlas/app/integrations/whatsapp && bun install \
-  && cd /atlas/app/web-ui && bun install \
   # Drop bun's install cache — runtime reads node_modules directly, the
   # cache is only consumed during `bun install` at build time. Removing
   # it shaves ~600 MB off the image AND deletes the root-owned files

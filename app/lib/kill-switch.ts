@@ -12,6 +12,7 @@
 import { existsSync, writeFileSync, unlinkSync, readFileSync } from "fs";
 import { join } from "path";
 import type { Database } from "bun:sqlite";
+import { getLockPath, isPidAlive, readLockPid } from "./trigger-socket";
 
 const PAUSED_MARKER = ".atlas-paused";
 
@@ -111,17 +112,18 @@ export function resumeAtlas(db: Database, home: string): void {
  * - Marks active trigger_runs as completed
  * - Then pauses Atlas
  */
-export function stopAllSessions(db: Database, home: string): { killed: number } {
+export function stopAllSessions(db: Database, home: string): { killed: number; closed: number } {
   let killed = 0;
 
   // Find active trigger runs
   const activeRuns = db.query(
-    "SELECT id, session_id FROM trigger_runs WHERE completed_at IS NULL"
-  ).all() as Array<{ id: number; session_id: string | null }>;
+    "SELECT id, trigger_name, session_key, session_id FROM trigger_runs WHERE completed_at IS NULL"
+  ).all() as Array<{ id: number; trigger_name: string; session_key: string | null; session_id: string | null }>;
 
   for (const run of activeRuns) {
-    if (run.session_id) {
-      killSessionBySocketPid(run.session_id);
+    // Runs without a live process (no session yet, or the runner already
+    // died) are still closed below; only real kills are counted.
+    if (killRunnerByLock(run.trigger_name, run.session_key)) {
       killed++;
     }
     // Mark as completed
@@ -134,7 +136,7 @@ export function stopAllSessions(db: Database, home: string): { killed: number } 
   // Now pause
   pauseAtlas(db, home);
 
-  return { killed };
+  return { killed, closed: activeRuns.length };
 }
 
 /**
@@ -160,22 +162,20 @@ export function getControlStatus(db: Database, home: string): {
 // ---------------------------------------------------------------------------
 
 /**
- * Kill a session by finding the PID that owns its IPC socket.
+ * Kill a trigger-runner through the PID in its dedup lock file (written by the
+ * runner itself). The command line is checked first so a stale lock whose PID
+ * was reused never hits an unrelated process.
  */
-function killSessionBySocketPid(sessionId: string): void {
-  const socketPath = `/tmp/claudec-${sessionId}.sock`;
-  if (!existsSync(socketPath)) return;
-
+function killRunnerByLock(triggerName: string, sessionKey: string | null): boolean {
+  if (!triggerName || !sessionKey) return false;
+  const pid = readLockPid(getLockPath(triggerName, sessionKey));
+  if (!pid || pid === process.pid || !isPidAlive(pid)) return false;
   try {
-    const result = Bun.spawnSync(["lsof", "-t", socketPath]);
-    const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
-    for (const pidStr of pids) {
-      const pid = parseInt(pidStr, 10);
-      if (!isNaN(pid)) {
-        try { process.kill(pid, "SIGTERM"); } catch {}
-      }
-    }
-  } catch {}
-
-  try { unlinkSync(socketPath); } catch {}
+    const cmd = Bun.spawnSync(["ps", "-o", "command=", "-p", String(pid)]).stdout.toString();
+    if (!cmd.includes("trigger-runner")) return false;
+    process.kill(pid, "SIGTERM");
+    return true;
+  } catch {
+    return false;
+  }
 }

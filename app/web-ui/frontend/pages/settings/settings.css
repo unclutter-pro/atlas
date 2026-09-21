@@ -1,0 +1,52 @@
+/* Settings area. Classes are prefixed .settings- */
+
+.settings-path { font-family: var(--font); color: var(--text-muted); }
+
+/* Config value sources */
+.settings-source { min-width: 64px; text-align: center; }
+.settings-source-env { color: var(--running); background: var(--running-soft); border-color: rgba(86, 168, 245, 0.35); }
+.settings-source-runtime { color: var(--warn); background: var(--warn-soft); border-color: rgba(227, 163, 59, 0.35); }
+.settings-source-file { color: var(--accent); background: var(--accent-soft); border-color: rgba(124, 110, 240, 0.35); }
+.settings-source-default { color: var(--text-faint); background: transparent; }
+
+/* File editors */
+.settings-editor-title { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.settings-unsaved { color: var(--warn); background: var(--warn-soft); border-color: rgba(227, 163, 59, 0.35); }
+.settings-editor-meta { display: flex; flex-wrap: wrap; gap: var(--sp-3); margin-bottom: var(--sp-2); }
+.settings-editor-error { justify-content: space-between; align-items: center; }
+.settings-textarea { font-size: var(--fs-md); line-height: 1.55; tab-size: 2; min-height: 240px; }
+.settings-preview { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-3) var(--sp-4); min-height: 240px; max-height: 70vh; overflow: auto; }
+.settings-personality { align-items: start; }
+.settings-personality > .card, .settings-integrations > .card { margin-top: 0; }
+.settings-tags { gap: 4px; }
+
+.settings-issues { list-style: none; margin-top: var(--sp-3); display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-md); }
+.settings-issues li { display: flex; gap: var(--sp-2); align-items: baseline; flex-wrap: wrap; }
+.settings-issues code { color: var(--text-strong); }
+.settings-issue-kind { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600; }
+.settings-editor .alert { margin: var(--sp-3) 0 0; }
+.settings-editor .alert.settings-editor-error { margin: 0 0 var(--sp-2); }
+
+/* Configuration */
+.settings-subtabs .tabs { margin-bottom: var(--sp-4); }
+.settings-subtabs .tab { padding: 6px 12px; font-size: var(--fs-sm); }
+.settings-config-table td { vertical-align: top; }
+.settings-config-section td { background: var(--bg-sunken); color: var(--text-muted); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; padding-top: 10px; }
+.settings-config-value { overflow-wrap: anywhere; }
+.settings-plugins { display: flex; flex-wrap: wrap; gap: 6px; }
+.settings-plugin-on { color: var(--ok); background: var(--ok-soft); border-color: rgba(76, 175, 80, 0.35); }
+.settings-plugin-off { color: var(--text-faint); background: transparent; }
+
+/* Integrations */
+.settings-integrations { gap: var(--sp-4); margin-bottom: var(--sp-5); }
+.settings-integration-title { display: inline-flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-lg); }
+.settings-integration-body { align-items: start; }
+.settings-integration-keys td { padding: 4px 8px; border: none; }
+.settings-integration-keys td:first-child { padding-left: 0; white-space: nowrap; }
+.settings-integration-keys td:last-child { padding-right: 0; }
+.settings-trigger-off { opacity: 0.55; text-decoration: line-through; }
+
+/* Secrets */
+.settings-secret-name { font-weight: 600; }
+.settings-row-actions { display: inline-flex; gap: var(--sp-1); justify-content: flex-end; }
+.settings-secret-form { margin-bottom: var(--sp-4); max-width: 640px; }

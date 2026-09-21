@@ -12,12 +12,14 @@ If a trigger-runner is already active for that key (PID alive), the new invocati
 
 ## Persistent Session IPC
 
-For persistent triggers, the trigger-runner tries to inject new messages into a running session via the Claude Code IPC socket before spawning a new process:
+For persistent triggers, the trigger-runner tries to hand new messages to the runner that already owns the session before spawning a new process:
 
 1. Look up the existing session ID in `trigger_sessions` DB
-2. Check if the socket exists at `/tmp/claudec-<session_id>.sock`
-3. Check JSONL file activity (mtime) to detect stale sessions
-4. Route based on session state (see below)
+2. Check JSONL file activity (mtime) to detect stale sessions
+3. If the session is live, send the message to that runner's control socket, `/tmp/.trigger-<name>-<key>.sock`; it is processed after the current turn
+4. Otherwise acquire the lock and resume (see below)
+
+A running runner listens on that control socket and holds the lock file `/tmp/.trigger-<name>-<key>.flock` with its PID. `app/lib/trigger-socket.ts` builds both paths: characters other than letters, digits and `_` in the key become `_` plus a short hash of the original key (so `a-b` and `a_b` never share a runner), and long keys are hashed. The runner uses them to accept messages between turns. The web-ui uses them to interrupt a chat turn ("Stop turn") and to check whether a chat's runner is still alive, and the kill switch uses the PID to stop runners.
 
 ## Session State Machine
 

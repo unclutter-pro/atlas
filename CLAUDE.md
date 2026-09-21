@@ -24,7 +24,7 @@ Trigger Event → trigger.sh → trigger-runner (native binary) → Trigger Sess
 
 - **Runtime**: Bun (TypeScript, no build)
 - **Database**: SQLite (bun:sqlite)
-- **Web**: Hono.js + HTMX
+- **Web**: Bun.serve + React, compiled with `bun build --compile` (Hono.js only for /api/v1 and webhooks, see docs/web-ui.md)
 - **Process Manager**: supervisord
 - **Container**: Ubuntu 24.04
 

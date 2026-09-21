@@ -22,7 +22,6 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { Database } from "bun:sqlite";
-import { createHash } from "crypto";
 import {
   existsSync,
   readFileSync,
@@ -33,12 +32,24 @@ import {
   statSync,
 } from "fs";
 import os from "node:os";
-import { createConnection, createServer } from "net";
+import { createServer } from "net";
 import type { Server } from "net";
 import { join, dirname } from "path";
 import yaml from "js-yaml";
 import { resolveConfig } from "../lib/config.ts";
+import { applyProcessTimeZone } from "../lib/timezone.ts";
 import { openDb as openSharedDb } from "../lib/db.ts";
+import {
+  getLockPath,
+  getSocketPath,
+  trySocketInject,
+  type SocketAck,
+  type SocketMessage,
+} from "../lib/trigger-socket.ts";
+import { createWebUiNotifier, type ChatNotifyKind, type WebUiNotifier } from "../lib/web-ui-notify.ts";
+
+// Moved to lib/trigger-socket.ts; re-exported for existing importers and tests.
+export { getSocketPath, trySocketInject, type SocketAck, type SocketMessage };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -193,19 +204,6 @@ export type PushOptions = {
   priority?: "now" | "next" | "later";
 };
 
-/** Socket message protocol: newline-delimited JSON */
-export type SocketMessage = {
-  message: string;
-  channel: string;
-  sessionKey: string;
-  control?: "interrupt"; // NEW: send instead of injecting message
-};
-
-export type SocketAck = {
-  ok: boolean;
-  error?: string;
-};
-
 /**
  * Create an async message channel backed by a simple queue + promise resolver pattern.
  * Returns an AsyncGenerator that yields SDKUserMessages and a push function for injection.
@@ -300,23 +298,6 @@ export function createMessageChannel(
 }
 
 /**
- * Compute the socket path for a given trigger name + session key.
- */
-export function getSocketPath(triggerName: string, sessionKey: string): string {
-  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
-  const candidate = `/tmp/.trigger-${triggerName}-${safeKey}.sock`;
-  // Unix domain sockets have a 108-char path limit; hash long keys to stay under
-  if (candidate.length > 104) {
-    const hash = createHash("sha256")
-      .update(`${triggerName}-${sessionKey}`)
-      .digest("hex")
-      .slice(0, 16);
-    return `/tmp/.trigger-${triggerName}-${hash}.sock`;
-  }
-  return candidate;
-}
-
-/**
  * Start a Unix domain socket server that accepts incoming messages and pushes
  * them into the message channel. Protocol: newline-delimited JSON.
  *
@@ -375,49 +356,6 @@ export function startSocketServer(
 
   server.listen(socketPath);
   return server;
-}
-
-/**
- * Try to inject a message into a running session via the custom Unix domain socket.
- * If control is set, sends a control message instead of injecting a message.
- * Returns true if the operation succeeded, false otherwise.
- */
-export async function trySocketInject(
-  socketPath: string,
-  message: string,
-  channel: string,
-  sessionKey: string,
-  control?: "interrupt",
-): Promise<boolean> {
-  if (!existsSync(socketPath)) return false;
-
-  return new Promise<boolean>((resolve) => {
-    const client = createConnection(socketPath, () => {
-      const payload: SocketMessage = control
-        ? { message: "", channel, sessionKey, control }
-        : { message, channel, sessionKey };
-      client.write(JSON.stringify(payload) + "\n");
-    });
-
-    let buffer = "";
-    client.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const newlineIdx = buffer.indexOf("\n");
-      if (newlineIdx === -1) return;
-      try {
-        const ack = JSON.parse(buffer.slice(0, newlineIdx)) as SocketAck;
-        resolve(ack.ok === true);
-      } catch {
-        resolve(false);
-      }
-    });
-
-    client.on("error", () => resolve(false));
-    client.setTimeout(5000, () => {
-      client.destroy();
-      resolve(false);
-    });
-  });
 }
 
 /**
@@ -1305,14 +1243,14 @@ export interface StreamChunkState {
  * — those go through the regular JSONL → assistant_message path.
  *
  * Exported for unit testing; the production caller is the for-await loop in
- * the persistent web-chat session.
+ * the persistent web-chat session. Returns true when a row was inserted.
  */
 export function persistStreamChunk(
   msg: { type: string; event?: unknown; session_id?: string },
   state: StreamChunkState,
   db: Database = openSharedDb(),
-): void {
-  if (msg.type !== "stream_event") return;
+): boolean {
+  if (msg.type !== "stream_event") return false;
   const event = msg.event as
     | {
         type?: string;
@@ -1320,14 +1258,14 @@ export function persistStreamChunk(
         delta?: { type?: string; text?: string };
       }
     | undefined;
-  if (!event || typeof event !== "object") return;
-  if (!msg.session_id) return;
+  if (!event || typeof event !== "object") return false;
+  if (!msg.session_id) return false;
 
   // message_start: begin a new turn. Use the Anthropic message id as the
   // stable handle the client will use to stitch chunks → final message.
   if (event.type === "message_start" && event.message?.id) {
     state.setUuid(event.message.id);
-    return;
+    return false;
   }
 
   // content_block_delta: append the text fragment to the current turn.
@@ -1338,14 +1276,42 @@ export function persistStreamChunk(
     && event.delta.text.length > 0
   ) {
     const uuid = state.uuidRef();
-    if (!uuid) return; // no message_start yet — shouldn't happen, skip safely
+    if (!uuid) return false; // no message_start yet — shouldn't happen, skip safely
     const index = state.nextIndex();
     db.prepare(
       `INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta)
        VALUES (?, ?, ?, ?)`,
     ).run(msg.session_id, uuid, index, event.delta.text);
+    return true;
   }
+  return false;
 }
+
+/**
+ * Drop a session's stream chunks at the start of a turn. The web-ui only
+ * needs the running turn's deltas (earlier turns are in the JSONL), so this
+ * keeps the table small. AUTOINCREMENT ids stay monotonic, which the web-ui's
+ * "id > last seen" cursor relies on.
+ */
+export function pruneStreamChunks(db: Database, sessionId: string): void {
+  db.prepare("DELETE FROM web_chat_stream_chunks WHERE session_id = ?").run(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Web-ui notifications (web channel only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Factory for the runner → web-ui pinger (lib/web-ui-notify.ts). Tests swap it
+ * to capture the ping sequence. Pings are hints and never affect control flow.
+ */
+export const runnerDeps: {
+  createNotifier: () => WebUiNotifier;
+  query: typeof query;
+} = {
+  createNotifier: () => createWebUiNotifier(),
+  query,
+};
 
 /**
  * Upsert the (trigger_name, session_key) → session_id mapping.
@@ -1583,6 +1549,12 @@ export async function runDirect(
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
+  // Resolve the Atlas time zone once and export it as TZ for this whole
+  // process, so journal dates, any `date`-dependent tool the agent runs, and
+  // the Claude Code session it spawns (which inherits this env) all agree
+  // with the web-ui and supercronic (sync-crontab's CRON_TZ) on "today".
+  applyProcessTimeZone(HOME);
+
   // --- Pause guard: skip execution if Atlas is paused ---
   if (existsSync(join(HOME, ".atlas-paused"))) {
     console.log(
@@ -1832,13 +1804,7 @@ export async function main(): Promise<void> {
 
   // --- Acquire flock-style dedup lock ---
   // We use a simple lockfile approach: write our PID, check if process is alive
-  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
-  const flockCandidate = `/tmp/.trigger-${triggerName}-${safeKey}.flock`;
-  // Keep flock paths consistent with socket paths when keys are long
-  const flockFile =
-    flockCandidate.length > 108
-      ? `/tmp/.trigger-${triggerName}-${createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16)}.flock`
-      : flockCandidate;
+  const flockFile = getLockPath(triggerName, sessionKey);
 
   // Acquire lock: check existing PID, wait up to 60s
   const lockAcquireStart = Date.now();
@@ -2069,6 +2035,28 @@ export async function main(): Promise<void> {
   // anyway, so there's no benefit to the extra event volume.
   const wantsStreaming = channel === "web";
 
+  // Live chat: tell the web-ui when a turn starts/ends and when chunks or
+  // transcript lines land, so it re-reads instead of polling.
+  const notifier = channel === "web" ? runnerDeps.createNotifier() : null;
+  const notify = (kind: ChatNotifyKind, extra?: { isError?: boolean; interrupted?: boolean }) => {
+    if (!notifier) return;
+    try {
+      notifier.ping({ trigger: triggerName, sessionKey, sessionId: capturedSessionId ?? existingSession, kind, ...extra });
+    } catch {}
+  };
+  const beginTurn = () => {
+    if (!notifier) return;
+    const sid = capturedSessionId ?? existingSession;
+    if (sid) {
+      try {
+        pruneStreamChunks(db, sid);
+      } catch (err) {
+        log.log(`stream-chunk prune failed: ${err}`);
+      }
+    }
+    notify("turn_start");
+  };
+
   const runQuery = async (resumeId?: string) => {
     // Mid-turn steering queue. Signal messages that arrive during an active
     // turn are pushed here instead of into msgChannel. The PostToolBatch hook
@@ -2151,6 +2139,7 @@ export async function main(): Promise<void> {
     // Push the initial prompt as the first message + flash typing for turn 1
     msgChannel.push(prompt);
     inTurn = true;
+    beginTurn();
     sendTypingOnce();
 
     // Use a mutable reference so the socket server control handler can call q.interrupt()
@@ -2177,6 +2166,7 @@ export async function main(): Promise<void> {
           // Between turns: trigger a new turn.
           msgChannel.push(text);
           inTurn = true;
+          beginTurn();
         }
         // Each new injected message gets a typing flash.
         sendTypingOnce();
@@ -2186,6 +2176,9 @@ export async function main(): Promise<void> {
           try {
             await q.interrupt();
             log.log("Received /stop — query interrupted");
+            // The SDK may not emit a result after an interrupt; the web-ui
+            // treats a second turn_end (from the result) as a no-op.
+            notify("turn_end", { interrupted: true });
             // Send a short Signal reply to inform the user the session stopped
             if (channel === "signal") {
               try {
@@ -2203,7 +2196,7 @@ export async function main(): Promise<void> {
       log,
     );
 
-    q = query({ prompt: msgChannel.generator, options });
+    q = runnerDeps.query({ prompt: msgChannel.generator, options });
 
     const timeoutHandle = triggerTimeout
       ? setTimeout(() => {
@@ -2229,6 +2222,7 @@ export async function main(): Promise<void> {
           capturedSessionId = msg.session_id ?? null;
           isError = msg.subtype !== "success";
           inTurn = false;
+          notify("turn_end", { isError });
           const turnText = "result" in msg ? (msg as { result?: string }).result : undefined;
           if (turnText) log.log(`Turn result: ${turnText}`);
 
@@ -2245,6 +2239,7 @@ export async function main(): Promise<void> {
               msgChannel.push(text);
             }
             inTurn = true;
+            beginTurn();
           }
 
           continue;
@@ -2261,7 +2256,18 @@ export async function main(): Promise<void> {
               log.log(`early session upsert failed: ${err}`);
             }
           }
+          // Same for the run row: the web-ui (live transcript, stuck detection)
+          // and the kill switch need the session_id while the run is active.
+          if (runId !== null) {
+            try {
+              db.prepare("UPDATE trigger_runs SET session_id = ? WHERE id = ?").run(capturedSessionId, runId);
+            } catch (err) {
+              log.log(`early run session_id update failed: ${err}`);
+            }
+          }
+          notify("session");
         }
+        if (msg.type === "assistant" || msg.type === "user") notify("message");
         // Streaming: persist text deltas so the web-ui SSE handler can
         // forward them to the client in near-real-time. We accept the cost
         // of one INSERT per delta (typically a few characters) because the
@@ -2277,7 +2283,7 @@ export async function main(): Promise<void> {
               ?? capturedSessionId
               ?? undefined;
             if (sid) {
-              persistStreamChunk(
+              const inserted = persistStreamChunk(
                 { type: msg.type, event: (msg as unknown as { event?: unknown }).event, session_id: sid },
                 {
                   setUuid: (u) => { streamChunkUuid = u; streamChunkIndex = 0; },
@@ -2286,6 +2292,7 @@ export async function main(): Promise<void> {
                 },
                 db,
               );
+              if (inserted) notify("chunk");
             }
           } catch (err) {
             // Don't let a malformed stream event tear down the whole turn.
@@ -2447,15 +2454,19 @@ export async function main(): Promise<void> {
   }
 
   // --- Mark run completed ---
-  if (runId !== null && capturedSessionId !== null) {
+  // Always close the run, even without a session_id — otherwise it would be
+  // reported as running forever.
+  if (runId !== null) {
     try {
       db.prepare(
-        "UPDATE trigger_runs SET session_id = ?, completed_at = datetime('now') WHERE id = ?",
+        "UPDATE trigger_runs SET session_id = COALESCE(?, session_id), completed_at = datetime('now') WHERE id = ?",
       ).run(capturedSessionId, runId);
     } catch {
       // Non-fatal
     }
   }
+  notify("run_end");
+  await notifier?.flush(300);
 
   releaseLock();
   log.log(`Trigger done: ${triggerName} (key=${sessionKey})`);

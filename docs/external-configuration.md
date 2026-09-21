@@ -31,7 +31,9 @@ All config.yml values can be overridden via `ATLAS_*` environment variables.
 |---|---|---|---|
 | `ATLAS_AGENT_NAME` | `agent.name` | `"Atlas"` | Agent display name. Alias: `AGENT_NAME` |
 | `ATLAS_AGENT_EMAIL` | `agent.email` | `""` | Agent email address |
+| `ATLAS_TIMEZONE` | `timezone` | `""` | IANA zone (e.g. `"Europe/Berlin"`) for day boundaries (web-ui), cron scheduling and agent sessions. Empty ⇒ detected from the container (`TZ` env, `/etc/timezone`, `/etc/localtime`), then UTC. See [docs/web-ui.md](web-ui.md#time-zone). |
 | `ATLAS_API_KEY` | — | `""` | API key to protect `/api/v1/*` endpoints |
+| `ATLAS_WEB_UI_ALLOWED_HOSTS` | `web_ui.allowed_hosts` | `[]` | Extra hostnames the web UI answers to (comma-separated; `*.example.com` matches subdomains, `*` turns the check off). localhost, IP addresses, single-label names (`atlas`) and `*.local` always work. Needed when you open the UI through a real domain, e.g. a Tailscale or reverse-proxy name. See [docs/web-ui.md](web-ui.md#security). |
 | `ANTHROPIC_API_KEY` | — | — | Claude API key (alternative to OAuth) |
 
 ### Models

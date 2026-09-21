@@ -9,6 +9,10 @@ tmp/
 node_modules/
 bun.lockb
 
+# Compiled binaries
+app/web-ui/web-ui
+app/web-ui/*.map
+
 # Runtime
 *.db
 *.db-wal

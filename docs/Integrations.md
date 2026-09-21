@@ -57,17 +57,17 @@ Email (IMAP) ──▸ email poll
 
 ## IPC Socket Injection
 
-When a message arrives while a trigger session is already running for the same contact/thread, `trigger.sh` injects it directly into the running session via Claude Code's IPC socket:
+When a message arrives while a trigger session is already running for the same contact/thread, the new trigger-runner hands it to the runner that owns the session over that runner's control socket:
 
 ```
-Session running (claude -p --resume <id>)
-  → IPC socket exists at /tmp/claudec-<session_id>.sock
-  → trigger.sh sends: {"action":"send","text":"<message>","submit":true}
+Runner active for (trigger, key)
+  → control socket at /tmp/.trigger-<name>-<key>.sock (see docs/watcher.md)
+  → new runner sends: {"message":"<message>","channel":"signal","sessionKey":"<key>"}
   → Message is queued in the session, processed after current turn
   → No new process, no restart
 ```
 
-If the socket doesn't exist (session not running), `trigger.sh` spawns a new `claude -p` process as usual.
+If no runner answers (session not running), the new runner takes the lock and resumes the session itself.
 
 This works identically for Signal (per contact), Email (per thread), and any future integration.
 
