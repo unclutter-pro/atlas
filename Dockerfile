@@ -75,7 +75,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   && ln -sf /usr/local/bin/bun /usr/local/bin/bunx \
   && rm -rf /tmp/bun.zip /tmp/bun-extract \
   # --- Supercronic ---
-  && SUPERCRONIC_URL="https://github.com/aptible/supercronic/releases/download/v0.2.48/supercronic-linux-${ARCH}" \
+  && SUPERCRONIC_URL="https://github.com/aptible/supercronic/releases/download/v0.2.49/supercronic-linux-${ARCH}" \
   && curl -fsSL "$SUPERCRONIC_URL" -o /usr/local/bin/supercronic \
   && chmod +x /usr/local/bin/supercronic \
   # --- Typst ---
