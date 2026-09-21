@@ -1,130 +1,47 @@
 ---
 name: video-edit
-description: "Use this skill to CUT, TRIM, CLEAN, EDIT existing video footage. Triggers: 'schneide das Video', 'edit/cut/trim this video', 'remove silence/fillers', 'concat videos', 'add subtitles', 'edit these into a launch video', 'make a recap from these clips', any task that takes existing video file(s) as input and produces a polished edited output. Audio-first approach: transcribe → identify cuts on word boundaries → FFmpeg-based EDL render → self-evaluate cut points. Do NOT use for: (1) creating animated videos from scratch — use the `video` skill (Remotion). (2) understanding/classifying video content (describe scenes, extract timestamps for visual events, classify) — use a multimodal LLM directly. (3) raw single-command FFmpeg ops where you already know the exact filter chain — just run FFmpeg directly."
+description: "Edit existing footage into a finished video: choose takes, cut speech or silence, grade, add overlays and subtitles. Uses timestamped transcripts and bundled FFmpeg helpers. Use video for Remotion animation authoring."
+license: MIT. See LICENSE.txt for the bundled browser-use/video-use helpers.
 ---
 
-# Video Editing Skill
+# Video editing
 
-Audio-first AI-driven editing of existing video footage. Inspired by [browser-use/video-use](https://github.com/browser-use/video-use). The premise: **read transcripts, don't dump frames** — keeps token cost manageable and lets the LLM reason on speech boundaries, fillers, and silence.
+Use the bundled scripts instead of rebuilding transcription, timeline previews or EDL rendering. Resolve `scripts/` from this skill's directory. Keep original footage unchanged and all generated files under `<footage>/edit/`.
 
-## When to use
+The helpers come from [browser-use/video-use](https://github.com/browser-use/video-use), not Remotion. See [upstream.md](references/upstream.md) for the pinned revision and Atlas adaptations.
 
-- You have one or more raw video files and want a clean cut version.
-- Remove "umm / uh / false starts" or long pauses.
-- Concat multiple takes into a single narrative.
-- Add subtitles burned in or as SRT sidecar.
-- Light color correction per segment.
-- Generate B-roll-inserts at silence gaps from existing clip pool.
+## Setup
 
-## Core workflow
+FFmpeg and ffprobe are installed in Atlas. Create a Python environment in the workspace using `dependencies`, then install this skill's `scripts/requirements.txt`. Use that environment's Python for the examples below.
 
-### 1. Inventory + transcribe
+Word-level transcription uses ElevenLabs Scribe. The helper reads `ELEVENLABS_API_KEY` or `ELEVENLABS_API_KEY_FILE`, without printing the credential. Use an authorized, configured provider; if none is available, explain that word-level editing needs timestamped transcripts. Existing compatible transcripts can be used without uploading footage. The built-in `stt` command returns plain text only and cannot supply cut positions or subtitles.
 
-```bash
-# Inventory: list each source clip with duration, fps, codec
-for f in *.mp4 *.mov; do
-  ffprobe -v error -show_format -show_streams "$f" -of json
-done > inventory.json
+## Workflow
 
-# Transcribe with word-level timestamps. Options:
-#   - The Atlas built-in `stt` skill (CPU-based, no API key needed)
-#   - ElevenLabs Scribe (best-in-class for diarization + word timestamps)
-#   - OpenAI Whisper API (cheap, word-level via verbose_json format)
-stt --language de input.mp4 > transcript.txt
-```
+1. Inspect source duration, dimensions, frame rate, orientation and audio tracks with `ffprobe`. Use the user's target and existing project context to choose the edit. Ask only for missing choices that materially change it.
+2. Transcribe speech-bearing sources and read the packed transcript:
 
-The choice depends on what you need:
-- **Just text + rough timing**: `stt` skill (free, runs locally).
-- **Per-word timestamps + diarization**: ElevenLabs Scribe API.
-- **Per-word timestamps, no diarization**: OpenAI Whisper with `response_format=verbose_json` and `timestamp_granularities=["word"]`.
+   ```bash
+   python /absolute/skill/scripts/transcribe.py /footage/take.mp4 --language de
+   python /absolute/skill/scripts/pack_transcripts.py --edit-dir /footage/edit
+   ```
 
-### 2. Pack transcripts to `takes_packed.md`
+   For multiple takes use `transcribe_batch.py /footage`. Use `--audio-track 1` when the microphone is on the second audio track. Cached transcripts are reused only when the source bytes and transcription options match.
+3. Write `edit/edl.json` using the schema in [ffmpeg-edl-render.md](references/ffmpeg-edl-render.md). Choose speech cuts from actual word boundaries, with enough padding to avoid clipped syllables. For silent footage, choose cuts from visual events; do not invent speech timestamps.
+4. Render and inspect a draft:
 
-Combine all transcripts into a single human-readable markdown file (~5–15 KB). Schema:
+   ```bash
+   python /absolute/skill/scripts/render.py /footage/edit/edl.json -o /footage/edit/preview.mp4 --draft
+   python /absolute/skill/scripts/timeline_view.py /footage/edit/preview.mp4 0 3 -o /footage/edit/opening.png
+   ```
 
-```markdown
-# clip_01.mp4  (12.4 s, 1080p30, h264)
-[00:00.00] Hallo, mein Name ist Max,  ◀ speaker 1
-[00:01.34]   (umm)                    ◀ filler
-[00:01.89] und ich zeige euch heute,  ◀ speaker 1
-...
-```
+5. Check the rendered cut boundaries, opening, ending and representative middle sections. Inspect subtitle timing, overlay alignment, orientation, audio continuity and expected duration. Correct observed defects and rerender, up to three passes; report any remaining limitation.
+6. Render the final output without `--draft`. Use `--build-subtitles` only when compatible word transcripts exist. Deliver the video and retain the EDL/transcripts for revisions.
 
-Why pack into markdown? The LLM reads this file as primary source of truth — frames are too expensive (1080p30 × 60s = 1800 frames × ~258 tokens each ≈ 460k tokens). Markdown is ~5k.
+## Rendering constraints
 
-### 3. LLM proposes EDL (Edit Decision List)
-
-Prompt the LLM with `takes_packed.md` + user goal ("edit these into a 60-second launch video"). Expected output:
-
-```json
-[
-  {"src": "clip_01.mp4", "in": 0.00, "out": 1.30,  "fade_in_ms": 0,  "fade_out_ms": 30},
-  {"src": "clip_01.mp4", "in": 1.89, "out": 12.40, "fade_in_ms": 30, "fade_out_ms": 30},
-  {"src": "clip_03.mp4", "in": 2.10, "out": 8.50,  "fade_in_ms": 30, "fade_out_ms": 30, "subtitle": "Was wir gebaut haben"}
-]
-```
-
-EDL cuts MUST land on word-boundaries from the transcript — never mid-word.
-
-### 4. Render EDL via FFmpeg
-
-```bash
-ffmpeg -f concat -safe 0 -i playlist.txt \
-       -vf "subtitles=subs.srt:force_style='FontSize=20'" \
-       -c:v libx264 -preset slow -crf 18 \
-       -c:a aac -b:a 192k \
-       final.mp4
-```
-
-For per-segment color grade or 30ms audio fades at every cut, see [references/ffmpeg-edl-render.md](references/ffmpeg-edl-render.md).
-
-### 5. Self-evaluate
-
-After render, the LLM should visually + auditively check each cut point. Generate small composite (3 frames before + 3 frames after the cut):
-
-```bash
-# 6 frames around timestamp $t
-ffmpeg -ss $((t-0.1)) -i final.mp4 -vframes 6 -vf "fps=30" cut_check_$t_%d.png
-```
-
-If a cut looks visually jarring (large jump-cut without B-roll cover) or audio pops, adjust the EDL and re-render. Cap at 3 self-eval iterations.
-
-## Environment
-
-Required:
-- `ffmpeg` ≥ 6.0
-- A transcription path (built-in `stt` skill, or ElevenLabs/OpenAI API key)
-
-Optional:
-- `yt-dlp` for online video sources
-
-## Output convention
-
-Put edits in `<source_dir>/edit/`:
-
-```
-<source_dir>/
-├── clip_01.mp4
-├── clip_02.mp4
-└── edit/
-    ├── takes_packed.md       # transcripts
-    ├── edl.json              # cut decisions
-    ├── playlist.txt          # FFmpeg concat-demuxer input
-    ├── subs.srt              # subtitles
-    └── final.mp4             # the deliverable
-```
-
-## Common pitfalls
-
-1. **Mid-word cuts** — audio sounds clipped, fix EDL to use only `word_end` timestamps.
-2. **Frame-dump anti-pattern** — extracting all frames for the LLM blows token budget. Read transcript instead.
-3. **Subtitle font collision** — use `force_style='FontName=Arial'` to override system defaults.
-4. **Concat demuxer needs same codec** — re-encode mismatched clips first with `-c:v libx264 -c:a aac`.
-5. **30ms fades on every cut** mask micro-pops. Standard for production cuts.
-
-## See also
-
-- `video` skill — to CREATE animated content from scratch (Remotion)
-- `stt` skill — for raw transcription
-- [references/ffmpeg-edl-render.md](references/ffmpeg-edl-render.md) — full FFmpeg EDL-render recipes
-- [browser-use/video-use](https://github.com/browser-use/video-use) — reference implementation, MIT license
+- Audio/video must stay synchronized. The renderer extracts and normalizes segments, concatenates them, composites overlays, then burns subtitles last.
+- Captions use output-timeline offsets after cuts, not source timestamps.
+- The renderer preserves the first source's frame rate unless `--fps` is supplied. It handles rotation metadata and HDR-to-SDR conversion.
+- The bundled renderer expects audio-bearing clips and a consistent output orientation. Normalize mixed orientations or silent sources explicitly with FFmpeg before using it, or use a custom composition with `video`. Do not silently add crops or change the aspect ratio.
+- For a simple known trim or format conversion, direct FFmpeg is sufficient. Load `video` only when authoring a Remotion composition or overlay.

@@ -45,7 +45,7 @@ Use reminders proactively when the user mentions follow-ups, deadlines, or thing
 </reminders>
 
 <recurring>
-Also, you can set cronjobs/webhooks for scheduling task-handlers in separate new (clear) sessions. When having the same schedule (e.g. every morning at 7am) use a cronjobs. Dynamic events (e.g. Stripe payment notification) should make use of webhooks. You can find more on webhooks and cronjobs on the `trigger` skill.
+Also, you can set cronjobs/webhooks for scheduling task-handlers in separate new (clear) sessions. When having the same schedule (e.g. every morning at 7am) use a cronjobs. Dynamic events (e.g. Stripe payment notification) should make use of webhooks. You can find more on webhooks and cronjobs on the `triggers` skill.
 </recurring>
 
 You shouldn't explicitly mention it to the user when scheduling a reminder/cronjob/webhook. Just schedule it and inform them about the high-level action you will take in the future.

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for script in "$HOME/.claude/skills/pdf/scripts/build-pdf" \
+              "/etc/claude-code/.claude/skills/pdf/scripts/build-pdf" \
+              "$APP_DIR/defaults/skills/pdf/scripts/build-pdf"; do
+  if [[ -f "$script" ]]; then
+    exec bash "$script" "$@"
+  fi
+done
+echo "error: build-pdf helper not found" >&2
+exit 1

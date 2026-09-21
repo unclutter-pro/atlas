@@ -1,6 +1,6 @@
 ---
 name: triggers
-description: How to create and manage triggers via the CLI. Covers cron, webhook, manual, Signal, WhatsApp and Email integration.
+description: How to create and manage triggers via the CLI. Use for durable cron schedules, incoming webhooks, manual jobs, or messaging integration setup. Use reminders for one-shot follow-ups.
 ---
 
 # Triggers
@@ -138,7 +138,7 @@ The filter receives the event payload as JSON on stdin. Exit 0 = fire, non-zero 
 ```bash
 #!/bin/bash
 # ~/triggers/github-deploy/filter.sh
-REF=$(cat | jq -r '.body.ref // empty')
+REF=$(cat | jq -r '(.body // .).ref // empty')
 [ "$REF" = "refs/heads/main" ] && exit 0
 exit 1
 ```
@@ -152,18 +152,13 @@ DOW=$(date +%u)  # 1=Monday, 7=Sunday
 exit 1
 ```
 
-**Validate webhook signature (e.g. GitHub):**
-```bash
-#!/bin/bash
-# ~/triggers/github-hook/filter.sh
-INPUT=$(cat)
-SIG=$(echo "$INPUT" | jq -r '.headers["x-hub-signature-256"] // empty')
-BODY=$(echo "$INPUT" | jq -r '.body | tostring')
-SECRET="your-webhook-secret"
-EXPECTED="sha256=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | cut -d' ' -f2)"
-[ "$SIG" = "$EXPECTED" ] && exit 0
-exit 1
-```
+### Authentication
+
+For relay webhooks, set a secret with `trigger create --type=webhook --secret=...` and configure the sender's `X-Webhook-Secret` header. Atlas verifies it before executing the trigger. Keep the secret out of prompt files and logs.
+
+For GitHub HMAC signatures, use the direct HTTPS endpoint `/api/webhook/<name>` behind the deployment's ingress and set the trigger secret to GitHub's webhook secret. The HTTP handler verifies `X-Hub-Signature-256` against the original request bytes. The SSE relay supplies parsed JSON, so it cannot verify that signature and rejects signed events on secret-protected triggers. Do not reconstruct a request body with `jq` for HMAC verification.
+
+`filter.sh` is for business predicates after authentication, not for reimplementing signatures. It runs once in the trigger runner. Relay payloads have `body`, `headers`, `query`, and `timestamp`; direct HTTP JSON payloads are the body itself. For a GitHub branch filter supporting both routes, use `jq -r '(.body // .).ref // empty'`.
 
 ## Webhook Relay Configuration
 
@@ -228,360 +223,16 @@ supervisorctl status myservice
 
 ---
 
-## Signal Integration Setup
+## Messaging integration setup
 
-Signal uses `signal-cli` in **daemon mode** — a persistent process that pushes messages in real-time via a UNIX socket. This is lower-latency and more reliable than cron polling.
+Read only the setup guide for the requested integration:
 
-**Install signal-cli** (add to `workspace/user-extensions.sh` so it survives rebuilds):
-```bash
-SIGNAL_VERSION="0.13.10"  # check https://github.com/AsamK/signal-cli/releases for latest
-ARCH=$(dpkg --print-architecture)
-curl -fsSL "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_VERSION}/signal-cli-${SIGNAL_VERSION}-Linux-${ARCH}.tar.gz" \
-  | tar -xz -C /usr/local
-ln -sf /usr/local/signal-cli-${SIGNAL_VERSION}/bin/signal-cli /usr/local/bin/signal-cli
-```
+- [Signal](references/signal-setup.md): signal-cli registration, daemon and listener.
+- [WhatsApp](references/whatsapp-setup.md): device pairing and daemon.
+- [Telegram](references/telegram-setup.md): bot token and polling daemon.
+- [Email](references/email-setup.md): IMAP/SMTP configuration and provisioning checks.
 
-**One-time registration** (run once manually inside the container, not in user-extensions.sh):
-```bash
-signal-cli -a +491701234567 register
-# If a captcha is required:
-#   1. Visit https://signalcaptchas.org/registration/generate and complete it
-#   2. Copy the URL (format: signalcaptcha://<token>)
-#   3. Re-run: signal-cli -a +491701234567 register --captcha <token>
-signal-cli -a +491701234567 verify 123-456  # code from SMS
-```
-
-**Step 1: Configure `workspace/config.yml`**
-
-```yaml
-signal:
-  number: "+491701234567"
-  whitelist: []   # empty = accept all contacts
-```
-
-**Step 2: Create the trigger**
-
-```bash
-trigger create \
-  --name=signal-chat \
-  --type=webhook \
-  --session-mode=persistent \
-  --channel=signal \
-  --description="Signal messenger conversations"
-```
-
-Write `~/triggers/signal-chat/prompt.md`:
-```
-<message from="{{sender}}">
-{{payload}}
-</message>
-
-Please respond directly using `signal send "{{sender}}" "..."`.
-```
-
-**Step 3: Add supervisor services**
-
-Create `~/supervisor.d/signal.conf` (replace number with your own):
-```ini
-[program:signal-daemon]
-command=python3 /atlas/app/integrations/signal/signal-daemon-start.py
-environment=SIGNAL_NUMBER="+491701234567"
-autostart=true
-autorestart=true
-stdout_logfile=/atlas/logs/signal-daemon.log
-stderr_logfile=/atlas/logs/signal-daemon-error.log
-
-[program:signal-listen]
-command=/atlas/app/bin/signal listen
-autostart=true
-autorestart=true
-stdout_logfile=/atlas/logs/signal-listen.log
-stderr_logfile=/atlas/logs/signal-listen-error.log
-stdout_logfile_maxbytes=10MB
-stdout_logfile_backups=3
-stderr_logfile_maxbytes=1MB
-stderr_logfile_backups=1
-```
-
-Activate:
-```bash
-supervisorctl reread && supervisorctl update
-```
-
-The listener connects to the socket and calls `signal incoming` for each message, which stores it in the inbox and fires the trigger. Each sender gets their own persistent session automatically.
-
-**CLI tools available in trigger sessions:**
-
-```bash
-signal send +491701234567 "Hello!"
-signal contacts
-signal history +491701234567
-```
-
-## WhatsApp Integration Setup
-
-WhatsApp uses [Baileys](https://github.com/WhiskeySockets/Baileys) — an unofficial WhatsApp Web API that connects via WebSocket. A single daemon process handles both incoming messages and outgoing sends.
-
-> **Warning:** Baileys is unofficial. WhatsApp can ban accounts using third-party clients. Use a **dedicated phone number**, not your main one. Avoid bulk messaging.
-
-**Step 1: Configure `workspace/config.yml`** (optional)
-
-```yaml
-whatsapp:
-  whitelist: []   # empty = accept all; or ["+491701234567", "+491709876543"]
-  history_turns: 20
-```
-
-No phone number config needed — Baileys derives it from the linked device session.
-
-**Step 2: Create the trigger**
-
-The `whatsapp-chat` trigger is auto-created by `init.sh`. If it's missing:
-
-```bash
-trigger create \
-  --name=whatsapp-chat \
-  --type=webhook \
-  --session-mode=persistent \
-  --channel=whatsapp \
-  --description="WhatsApp messenger conversations"
-```
-
-Write `~/triggers/whatsapp-chat/prompt.md`:
-```
-<message from="{{sender}}">
-{{payload}}
-</message>
-
-Please respond directly using `whatsapp send "{{sender}}" "..."`.
-```
-
-**Step 3: Add supervisor service**
-
-Create `~/supervisor.d/whatsapp.conf`:
-```ini
-[program:whatsapp-daemon]
-command=bun run /atlas/app/integrations/whatsapp/whatsapp-daemon.ts
-autostart=true
-autorestart=true
-stdout_logfile=/atlas/logs/whatsapp-daemon.log
-stderr_logfile=/atlas/logs/whatsapp-daemon-error.log
-stdout_logfile_maxbytes=10MB
-stdout_logfile_backups=3
-stderr_logfile_maxbytes=1MB
-stderr_logfile_backups=1
-```
-
-Activate:
-```bash
-supervisorctl reread && supervisorctl update
-```
-
-**Step 4: Pair via QR code**
-
-On first start, the daemon generates a QR code and saves it as an image:
-
-```bash
-# Check status and get QR code path
-whatsapp status
-# → Status: waiting_for_scan
-# → QR Code: ~/.local/share/whatsapp/qr-code.png
-```
-
-**Send the QR code image directly to the user** via their current channel (Signal, email, dashboard). Tell them:
-"Öffne WhatsApp → Einstellungen → Verknüpfte Geräte → Gerät hinzufügen, und scanne den QR-Code."
-
-The QR code expires after ~60 seconds — the daemon auto-generates a new one if it times out.
-
-Auth credentials persist to `~/.local/share/whatsapp/auth/` — subsequent restarts reconnect automatically. If the linked device is revoked (phone offline 14+ days), delete the auth directory and re-scan.
-
-**Architecture:**
-
-Unlike Signal (which needs two processes — signal-cli daemon + listener), WhatsApp uses a **single daemon** (`whatsapp-daemon.ts`) that:
-
-1. Connects to WhatsApp via Baileys WebSocket
-2. Listens for incoming messages → spawns `whatsapp incoming` per message
-3. Exposes a UNIX socket (`/tmp/whatsapp.sock`) for outgoing sends (JSON-RPC, same protocol as signal-cli)
-
-Voice messages are automatically downloaded and transcribed via the same STT pipeline as Signal. Outgoing messages are rate-limited (1.5s between sends) to reduce ban risk.
-
-**CLI tools available in trigger sessions:**
-
-```bash
-whatsapp send "+491701234567" "Hello!"
-whatsapp send "+491701234567" "See attached" --attach /path/to/file.pdf
-whatsapp contacts
-whatsapp history "+491701234567"
-```
-
-**Data storage:**
-
-| Item | Location |
-|------|----------|
-| Auth credentials | `~/.local/share/whatsapp/auth/` |
-| Downloaded attachments | `~/.local/share/whatsapp/attachments/` |
-| Contact/message DB | `~/.index/whatsapp/whatsapp.db` |
-| Daemon logs | `/atlas/logs/whatsapp-daemon.log` |
-| Send socket | `/tmp/whatsapp.sock` |
-
-## Telegram Integration Setup
-
-Telegram uses a **Bot API** approach — simpler than Signal/WhatsApp but NOT end-to-end encrypted.
-
-**Step 1: Create a bot via BotFather**
-
-Guide the user through this (or do it for them if they share the token):
-1. Open Telegram → search @BotFather → send `/newbot`
-2. Choose a name and username (must end with "bot")
-3. Copy the token — share it via a **secure channel** (NOT Telegram itself)
-
-**Step 2: Configure `~/config.yml`**
-
-```yaml
-telegram:
-  bot_token: "123456:ABC-DEF..."
-```
-
-**Step 3: Create the trigger**
-
-```bash
-trigger create \
-  --name=telegram-chat \
-  --type=manual \
-  --session-mode=persistent \
-  --channel=telegram \
-  --enabled
-```
-
-Write `~/triggers/telegram-chat/prompt.md`:
-```markdown
-{{payload}}
-
-Please respond directly using `telegram send "{{sender}}" "..."`.
-```
-
-**Step 4: Add supervisor service**
-
-Create `~/supervisor.d/telegram.conf`:
-```ini
-[program:telegram-daemon]
-command=python3 -u /atlas/app/integrations/telegram/telegram-daemon.py
-autostart=true
-autorestart=true
-stdout_logfile=/atlas/logs/telegram-daemon.log
-stderr_logfile=/atlas/logs/telegram-daemon-error.log
-stdout_logfile_maxbytes=10MB
-stderr_logfile_maxbytes=1MB
-```
-
-Then: `supervisorctl reread && supervisorctl update`
-
-**Security note:** Telegram bots are NOT end-to-end encrypted. Never share passwords, API keys, or sensitive data via Telegram. Recommend Signal or Dashboard chat for sensitive information.
-
-**CLI tools:**
-
-```bash
-telegram send "<chat_id>" "Hello!"
-telegram send "<chat_id>" "See attached" --attach /path/to/file.pdf
-telegram contacts
-telegram history "<chat_id>"
-telegram status
-telegram setup   # Print setup instructions
-```
-
-**Data storage:**
-
-| Item | Location |
-|------|----------|
-| Contact/message DB | `~/.index/telegram/telegram.db` |
-| Downloaded attachments | `~/.local/share/telegram/attachments/` |
-| Daemon logs | `/atlas/logs/telegram-daemon.log` |
-
-## Email Integration Setup
-
-**Step 1: Configure `workspace/config.yml`**
-
-```yaml
-email:
-  imap_host: "imap.gmail.com"
-  imap_port: 993
-  smtp_host: "smtp.gmail.com"
-  smtp_port: 587
-  username: "atlas@example.com"
-  password_file: "/home/agent/secrets/email-password"
-  folder: "INBOX"
-  whitelist: []   # empty = accept all; or ["alice@example.com", "example.org"]
-  mark_read: true
-```
-
-**Step 2: Store password**
-
-```bash
-echo "your-app-password" > /home/agent/secrets/email-password
-chmod 600 /home/agent/secrets/email-password
-```
-
-For Gmail: use an App Password, not your main password.
-
-**Step 3: Create the trigger**
-
-```bash
-trigger create \
-  --name=email-handler \
-  --type=webhook \
-  --session-mode=persistent \
-  --channel=email \
-  --description="Email conversations (IMAP)"
-```
-
-Then write `~/triggers/email-handler/prompt.md`:
-```
-New email received:
-
-{{payload}}
-
-The payload contains inbox_message_id and thread_id.
-Reply directly via CLI: email reply <thread_id> "message"
-Escalate complex tasks by delegating via Agent.
-```
-
-**Step 4: Add polling**
-
-Option A — supervisord (recommended):
-
-Create `~/supervisor.d/email-poller.conf`:
-```ini
-[program:email-poller]
-command=/atlas/app/bin/email poll
-autostart=true
-autorestart=true
-stdout_logfile=/atlas/logs/email-poller.log
-stderr_logfile=/atlas/logs/email-poller-error.log
-stdout_logfile_maxbytes=10MB
-stdout_logfile_backups=3
-stderr_logfile_maxbytes=1MB
-stderr_logfile_backups=1
-```
-
-Then: `supervisorctl reread && supervisorctl update`
-
-Option B — crontab:
-
-Edit `~/crontab` and add **above** the marker:
-```
-*/2 * * * *  email poll --once
-```
-
-Thread tracking uses `In-Reply-To`/`References` headers — replies in the same thread share one persistent session.
-
-**CLI tools available in trigger sessions:**
-
-```bash
-email reply <thread_id> "Reply body"
-email send recipient@example.com "Subject" "Body text"
-email threads
-email thread <thread_id>
-```
+For ordinary email operations, use the `email` skill. For a one-shot follow-up or waiting on a reply/CI, use `reminders`; use cron triggers for durable recurring schedules.
 
 ## Crontab Structure
 
