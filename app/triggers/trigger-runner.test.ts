@@ -30,6 +30,7 @@ import {
   persistStreamChunk,
   upsertTriggerSession,
   aggregateRunCost,
+  resolveClaudeProjectDir,
   modelFamily,
   MODEL_PRICING,
   is400UpstreamError,
@@ -440,6 +441,44 @@ models:
     const model = resolveModel("", "trigger");
     expect(model).toBe("opus");
     rmSync(badDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveClaudeProjectDir
+// ---------------------------------------------------------------------------
+
+describe("resolveClaudeProjectDir", () => {
+  let orig: string | undefined;
+
+  beforeEach(() => {
+    orig = process.env.CLAUDE_PROJECT_DIR;
+    delete process.env.CLAUDE_PROJECT_DIR;
+  });
+
+  afterEach(() => {
+    if (orig !== undefined) {
+      process.env.CLAUDE_PROJECT_DIR = orig;
+    } else {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    }
+  });
+
+  test("keeps the leading dash produced by the root slash", () => {
+    expect(resolveClaudeProjectDir("/home/agent")).toBe("-home-agent");
+  });
+
+  test("dashes every path separator", () => {
+    expect(resolveClaudeProjectDir("/tmp/foo/bar")).toBe("-tmp-foo-bar");
+  });
+
+  test("CLAUDE_PROJECT_DIR wins over the derived name", () => {
+    process.env.CLAUDE_PROJECT_DIR = "pinned-project";
+    expect(resolveClaudeProjectDir("/home/agent")).toBe("pinned-project");
+  });
+
+  test("falls back to process.cwd() when no cwd is given", () => {
+    expect(resolveClaudeProjectDir()).toBe(process.cwd().replace(/\//g, "-"));
   });
 });
 
@@ -1330,6 +1369,30 @@ describe("aggregateRunCost", () => {
     mkdirSync(subagentsDir, { recursive: true });
     return { projectDir, parentJsonl, subagentsDir };
   }
+
+  // The production path never sets CLAUDE_PROJECT_DIR — the name is derived
+  // from the session's cwd. Every other test here pins the env var and so
+  // skips that derivation entirely.
+  test("finds transcripts via the derived project dir when CLAUDE_PROJECT_DIR is unset", () => {
+    const sessionId = "agg-derived-dir";
+    const origProjDir = process.env.CLAUDE_PROJECT_DIR;
+    delete process.env.CLAUDE_PROJECT_DIR;
+
+    // Directory name spelled out, not derived via the function under test.
+    const base = join(tmp, ".claude", "projects", tmp.replace(/\//g, "-"));
+    mkdirSync(base, { recursive: true });
+    writeFileSync(
+      join(base, `${sessionId}.jsonl`),
+      makeEntry({ id: "msg_derived", timestamp: "2026-01-01T10:00:10Z", inputTokens: 1000, outputTokens: 500 }),
+    );
+
+    const result = aggregateRunCost(sessionId, "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z", tmp);
+    if (origProjDir !== undefined) process.env.CLAUDE_PROJECT_DIR = origProjDir;
+
+    expect(result.inputTokens).toBe(1000);
+    expect(result.outputTokens).toBe(500);
+    expect(result.costUsd).toBeGreaterThan(0);
+  });
 
   test("returns zeros when no JSONL files exist", () => {
     const origProjDir = process.env.CLAUDE_PROJECT_DIR;
