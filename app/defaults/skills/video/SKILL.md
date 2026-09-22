@@ -1,60 +1,28 @@
 ---
 name: video
-description: "Use this skill to CREATE / GENERATE / PRODUCE animated videos, motion graphics, screencasts, product demos, explainer videos, intros, and brand videos from scratch. Triggers: 'erstelle ein Video', 'mache ein Video', 'create a video', 'animate', 'screencast', 'demo video', 'explainer', 'motion graphics', 'intro video', 'produce MP4/WebM with animation', plus mention of Remotion. Covers the full creation workflow: composition, animations, captions, voiceover (ElevenLabs/TTS), background music, sound effects, transparency. Primary tool: React Remotion. Do NOT use for: (1) editing/cutting existing video footage — use the `video-edit` skill. (2) understanding/analyzing existing video content (timestamps, descriptions, classification) — use a multimodal LLM directly via your normal Bash tools. (3) simple file conversion or transcoding — use raw FFmpeg."
+description: Create or edit Remotion videos, animations and compositions, render them, or build Remotion players. For cutting existing footage with FFmpeg, use video-edit.
 ---
 
-## When to use
+# Remotion video
 
-Use this skills whenever you are dealing with Remotion code to obtain the domain-specific knowledge.
+Use the project's installed Remotion version and preserve user edits. Install dependencies locally with the project's package manager. Load only the reference for the current task:
 
-## Captions
+- [Create a project or composition](references/remotion-create/REFERENCE.md).
+- [React markup, media, animation and sound effects](references/remotion-markup/REFERENCE.md).
+- [Captions and transcription](references/remotion-captions/REFERENCE.md).
+- [Rendering and transparency](references/remotion-render/REFERENCE.md).
+- [Media metadata and transformations](references/remotion-multimedia/REFERENCE.md).
+- [Maps](references/remotion-maps/REFERENCE.md).
+- [Interactive Studio editing](references/remotion-interactivity/REFERENCE.md).
+- [Launch Studio](references/remotion-studio/REFERENCE.md).
+- [Player and server rendering](references/remotion-saas/REFERENCE.md).
+- [API documentation](references/remotion-docs/REFERENCE.md).
+- [Version upgrades](references/remotion-upgrade/REFERENCE.md), only when an upgrade is requested or required by the task.
 
-When dealing with captions or subtitles, load the [./rules/subtitles.md](./rules/subtitles.md) file for more information.
+These references track upstream 4.0.526. For an older project, verify new APIs against its installed version before using them. Do not upgrade an unrelated project or replace the user's chosen engine merely to follow a reference. Existing design conventions and the user's authorization take precedence over upstream examples and workflow preferences.
 
-## Using FFmpeg
+For sound effects, read [sfx.md](references/remotion-markup/sfx.md). For editable source clips in Remotion Studio, read [video-editing.md](references/remotion-markup/video-editing.md). For a plain FFmpeg cut, use `video-edit` instead.
 
-For some video operations, such as trimming videos or detecting silence, FFmpeg should be used. Load the [./rules/ffmpeg.md](./rules/ffmpeg.md) file for more information.
+## Upstream
 
-## Audio visualization
-
-When needing to visualize audio (spectrum bars, waveforms, bass-reactive effects), load the [./rules/audio-visualization.md](./rules/audio-visualization.md) file for more information.
-
-## Sound effects
-
-When needing to use sound effects, load the [./rules/sound-effects.md](./rules/sound-effects.md) file for more information.
-
-## How to use
-
-Read individual rule files for detailed explanations and code examples:
-
-- [rules/3d.md](rules/3d.md) - 3D content in Remotion using Three.js and React Three Fiber
-- [rules/animations.md](rules/animations.md) - Fundamental animation skills for Remotion
-- [rules/assets.md](rules/assets.md) - Importing images, videos, audio, and fonts into Remotion
-- [rules/audio.md](rules/audio.md) - Using audio and sound in Remotion - importing, trimming, volume, speed, pitch
-- [rules/calculate-metadata.md](rules/calculate-metadata.md) - Dynamically set composition duration, dimensions, and props
-- [rules/can-decode.md](rules/can-decode.md) - Check if a video can be decoded by the browser using Mediabunny
-- [rules/charts.md](rules/charts.md) - Chart and data visualization patterns for Remotion (bar, pie, line, stock charts)
-- [rules/compositions.md](rules/compositions.md) - Defining compositions, stills, folders, default props and dynamic metadata
-- [rules/extract-frames.md](rules/extract-frames.md) - Extract frames from videos at specific timestamps using Mediabunny
-- [rules/fonts.md](rules/fonts.md) - Loading Google Fonts and local fonts in Remotion
-- [rules/get-audio-duration.md](rules/get-audio-duration.md) - Getting the duration of an audio file in seconds with Mediabunny
-- [rules/get-video-dimensions.md](rules/get-video-dimensions.md) - Getting the width and height of a video file with Mediabunny
-- [rules/get-video-duration.md](rules/get-video-duration.md) - Getting the duration of a video file in seconds with Mediabunny
-- [rules/gifs.md](rules/gifs.md) - Displaying GIFs synchronized with Remotion's timeline
-- [rules/images.md](rules/images.md) - Embedding images in Remotion using the Img component
-- [rules/light-leaks.md](rules/light-leaks.md) - Light leak overlay effects using @remotion/light-leaks
-- [rules/lottie.md](rules/lottie.md) - Embedding Lottie animations in Remotion
-- [rules/measuring-dom-nodes.md](rules/measuring-dom-nodes.md) - Measuring DOM element dimensions in Remotion
-- [rules/measuring-text.md](rules/measuring-text.md) - Measuring text dimensions, fitting text to containers, and checking overflow
-- [rules/sequencing.md](rules/sequencing.md) - Sequencing patterns for Remotion - delay, trim, limit duration of items
-- [rules/tailwind.md](rules/tailwind.md) - Using TailwindCSS in Remotion
-- [rules/text-animations.md](rules/text-animations.md) - Typography and text animation patterns for Remotion
-- [rules/timing.md](rules/timing.md) - Interpolation curves in Remotion - linear, easing, spring animations
-- [rules/transitions.md](rules/transitions.md) - Scene transition patterns for Remotion
-- [rules/transparent-videos.md](rules/transparent-videos.md) - Rendering out a video with transparency
-- [rules/trimming.md](rules/trimming.md) - Trimming patterns for Remotion - cut the beginning or end of animations
-- [rules/videos.md](rules/videos.md) - Embedding videos in Remotion - trimming, volume, speed, looping, pitch
-- [rules/parameters.md](rules/parameters.md) - Make a video parametrizable by adding a Zod schema
-- [rules/maps.md](rules/maps.md) - Add a map using Mapbox and animate it
-- [rules/voiceover.md](rules/voiceover.md) - Adding AI-generated voiceover to Remotion compositions using ElevenLabs TTS
-- [rules/background-music.md](rules/background-music.md) - Background music with audio ducking for voiceover
+Reference snapshot: [remotion-dev/skills at bbb139d5ba3709b1ffeb27184e9579c681230a08](https://github.com/remotion-dev/skills/tree/bbb139d5ba3709b1ffeb27184e9579c681230a08/skills/remotion-best-practices), reviewed 2026-09-21. The upstream monolithic rules were replaced by task-specific references. Atlas adapts parent links to this directory layout and shares the maps reference instead of copying it into markup a second time. Keep the Atlas entrypoint when refreshing the snapshot and check local links after updating.

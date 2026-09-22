@@ -1,15 +1,12 @@
-#!/bin/bash
-# Speech-to-Text — transcribe audio files via Whisper-compatible API
-# Delegates to the stt skill script, or uses inline implementation if skill not installed.
-
-SKILL_SCRIPT="$HOME/skills/stt/scripts/stt.sh"
-DEFAULT_SCRIPT="/atlas/app/defaults/skills/stt/scripts/stt.sh"
-
-if [[ -x "$SKILL_SCRIPT" ]]; then
-  exec "$SKILL_SCRIPT" "$@"
-elif [[ -x "$DEFAULT_SCRIPT" ]]; then
-  exec "$DEFAULT_SCRIPT" "$@"
-else
-  echo "ERROR: stt skill script not found" >&2
-  exit 1
-fi
+#!/usr/bin/env bash
+set -euo pipefail
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for script in "$HOME/.claude/skills/stt/scripts/stt.sh" \
+              "/etc/claude-code/.claude/skills/stt/scripts/stt.sh" \
+              "$APP_DIR/defaults/skills/stt/scripts/stt.sh"; do
+  if [[ -f "$script" ]]; then
+    exec bash "$script" "$@"
+  fi
+done
+echo "error: stt helper not found" >&2
+exit 1

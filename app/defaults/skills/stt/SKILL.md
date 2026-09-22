@@ -24,6 +24,8 @@ stt https://example.com/recording.mp3
 
 wav, mp3, ogg, m4a, aac, flac, webm, mp4 (audio track)
 
+Output is plain text only: no segment times, word timestamps or speaker labels. For cuts/subtitles that need timestamps, use the `video-edit` transcription workflow.
+
 ## Direct API Usage
 
 The STT endpoint is Whisper-compatible (OpenAI `/v1/audio/transcriptions` format):
@@ -43,7 +45,7 @@ The URL is resolved from: `ATLAS_STT_URL` env → `STT_URL` env → `config.yml`
 
 - Long files (>2 min) are split into 120s chunks with 5s overlap — minor artifacts at chunk boundaries are possible
 - Accuracy depends on audio quality; background noise reduces quality significantly
-- The model runs on CPU (int8 quantized) — expect ~5-15s processing per minute of audio
+- Model, precision and latency depend on the configured endpoint. The bundled sidecar uses FP16 Parakeet on CPU.
 - Single-speaker optimized; multi-speaker conversations may lose speaker attribution
 - No diarization (speaker identification) — only raw text output
 

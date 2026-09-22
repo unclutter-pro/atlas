@@ -1,11 +1,13 @@
 ---
 name: document-parse
-description: "Use this skill to READ / EXTRACT / PARSE / OCR existing documents — pull text and structure out of PDF, DOCX, PPTX, XLSX, EPUB, HTML, images (JPG/PNG/TIFF/WebP), scanned-document PDFs, or any unstructured file. Triggers: 'parse this PDF', 'extract text', 'OCR this image', 'text aus scan', 'lies das Dokument', 'convert PDF to markdown', 'erkenne Text', 'transcribe document', 'spatial layout extraction', plus any time the user provides a file and asks what's inside. Runs LiteParse locally — Tesseract.js OCR built-in, optional external OCR server (EasyOCR / PaddleOCR) for higher accuracy. Output is clean markdown ready for downstream LLM processing. Do NOT use for: (1) CREATING a new PDF from scratch — use the `pdf` skill. (2) Filling forms in an existing PDF — see `pdf` skill `forms.md`. (3) Pure speech-to-text from audio/video — use the `stt` skill."
+description: Extract text or OCR from documents and images for reading or summarization. Use format-specific skills when formulas, tracked changes, speaker notes, or editing must be preserved.
 ---
 
 # Document to Text
 
 Parse unstructured documents (PDF, DOCX, PPTX, XLSX, images, and more) locally with LiteParse (fast local OCR).
+
+For spreadsheets that require calculation or exact cell values, use `xlsx`. For Word revisions/comments use `docx`; for slide notes or layout use `pptx`. LiteParse is for reading text, not a lossless representation of those formats. Its default output is plain text; JSON adds layout coordinates.
 
 ## Parse a Single File
 

@@ -618,7 +618,7 @@ describe("Session scoping", () => {
 describe("Hook integration (unit level)", () => {
   // Resolve the app directory that contains the NEW task management files.
   // Check for a task-session.sh (new file) to distinguish container vs dev.
-  const REPO_APP_DIR = "/home/agent/projects/atlas/app";
+  const REPO_APP_DIR = new URL("..", import.meta.url).pathname;
   function resolveAppDir(): string {
     const { existsSync } = require("fs");
     // In production container, /atlas/app has task-session.sh
