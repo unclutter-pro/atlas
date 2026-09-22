@@ -248,12 +248,12 @@ export function loadUsage(f: UsageFilter, timeZone = "UTC"): UsageResponse {
 
   const byTrigger = (
     db
-      .query(`SELECT m.trigger_name AS trigger, ${TYPE_EXPR} AS type, ${AGG} ${FROM} ${w.sql} GROUP BY m.trigger_name, type ORDER BY cost DESC, runs DESC`)
+      .query(`SELECT m.trigger_name AS trigger, ${TYPE_EXPR} AS type, ${AGG} ${FROM} ${w.sql} GROUP BY m.trigger_name, ${TYPE_EXPR} ORDER BY cost DESC, runs DESC`)
       .all(...w.values) as Array<AggRow & { trigger: string | null; type: UsageType }>
   ).map((r) => ({ trigger: r.trigger, type: r.type, ...breakdown(r, totals.costUsd) }));
 
   const byType = (
-    db.query(`SELECT ${TYPE_EXPR} AS type, ${AGG} ${FROM} ${w.sql} GROUP BY type ORDER BY cost DESC, runs DESC`).all(...w.values) as Array<
+    db.query(`SELECT ${TYPE_EXPR} AS type, ${AGG} ${FROM} ${w.sql} GROUP BY ${TYPE_EXPR} ORDER BY cost DESC, runs DESC`).all(...w.values) as Array<
       AggRow & { type: UsageType }
     >
   ).map((r) => ({ type: r.type, ...breakdown(r, totals.costUsd) }));

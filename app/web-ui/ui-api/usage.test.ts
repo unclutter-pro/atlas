@@ -113,6 +113,15 @@ describe("GET /ui/api/usage", () => {
     expect(typed.totals.runs).toBe(all.byType.find((r) => r.type === top.type)!.runs);
   });
 
+  test("every byType bucket matches its own type filter", async () => {
+    const all = await getUsage("?range=90d");
+    expect(all.byType.length).toBeGreaterThan(0);
+    for (const bucket of all.byType) {
+      const typed = await getUsage(`?range=90d&type=${bucket.type}`);
+      expect({ type: bucket.type, runs: typed.totals.runs }).toEqual({ type: bucket.type, runs: bucket.runs });
+    }
+  });
+
   test.each(["?range=nope", "?from=2026-13-01", "?type=nope", "?from=2026-09-10&to=2026-09-01"])("%s returns a JSON 400", async (qs) => {
     const res = await get(`/ui/api/usage${qs}`);
     expect(res.status).toBe(400);

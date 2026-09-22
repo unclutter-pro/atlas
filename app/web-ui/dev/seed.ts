@@ -296,6 +296,15 @@ for (let i = 0; i < 3; i++) {
   insMetric.run("direct", uuid(), null, isoTime(start), isoTime(start + dur), dur, 12000, 3400, 88000, 9000, Number(between(0.2, 1.4).toFixed(4)), 14, 0, sqlTime(start + dur));
 }
 
+// Runs of a trigger that was deleted afterwards: the LEFT JOIN in ui-api/usage
+// finds no row, so these classify as "other" while sharing a NULL triggers.type
+// with the direct sessions above.
+for (let i = 0; i < 2; i++) {
+  const start = NOW - Math.floor(between(1, 8)) * DAY;
+  const dur = Math.floor(between(60_000, 900_000));
+  insMetric.run("trigger", uuid(), "retired-digest", isoTime(start), isoTime(start + dur), dur, 9000, 2100, 44000, 6000, Number(between(0.1, 0.8).toFixed(4)), 9, 0, sqlTime(start + dur));
+}
+
 // Messages injected into an already-running session (no run of their own)
 insMessage.get("signal", "+491701234567", "Also: add the Hetzner invoice to the accounting folder", sqlTime(NOW - 20_000), "+491701234567");
 insMessage.get("whatsapp", "+4915112345678", "Are we still on for lunch tomorrow?", sqlTime(NOW - 3 * HOUR), "+4915112345678");

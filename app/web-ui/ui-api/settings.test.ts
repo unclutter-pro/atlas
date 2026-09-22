@@ -16,6 +16,12 @@ import { validateConfigYaml } from "./settings/validate";
 let server: ReturnType<typeof Bun.serve>;
 let H: string;
 const originalHome = process.env.HOME;
+// Host processes (this very agent's own runtime) may set the legacy
+// ATLAS_AGENT_NAME alias AGENT_NAME. Left in place, it outranks config.yml
+// in resolveConfig()'s env layer (lib/config.ts) and breaks the "file" source
+// assertion below regardless of what CONFIG says. Isolate it like HOME.
+const originalAgentName = process.env.AGENT_NAME;
+const originalAtlasAgentName = process.env.ATLAS_AGENT_NAME;
 
 const url = (p: string) => new URL(`/ui/api/settings${p}`, server.url);
 const get = async <T>(p: string) => {
@@ -38,6 +44,8 @@ beforeAll(() => {
   getDb(); // open the run's DB before HOME moves (DB_PATH is fixed at import)
   H = mkdtempSync(join(tmpdir(), "atlas-settings-test-"));
   process.env.HOME = H;
+  delete process.env.AGENT_NAME;
+  delete process.env.ATLAS_AGENT_NAME;
   mkdirSync(join(H, "secrets"));
   writeFileSync(join(H, "config.yml"), CONFIG);
   writeFileSync(join(H, ".atlas-runtime-config.json"), JSON.stringify({ models: { cron: "haiku" } }));
@@ -50,6 +58,10 @@ beforeAll(() => {
 afterAll(() => {
   server.stop(true);
   process.env.HOME = originalHome;
+  if (originalAgentName === undefined) delete process.env.AGENT_NAME;
+  else process.env.AGENT_NAME = originalAgentName;
+  if (originalAtlasAgentName === undefined) delete process.env.ATLAS_AGENT_NAME;
+  else process.env.ATLAS_AGENT_NAME = originalAtlasAgentName;
   rmSync(H, { recursive: true, force: true });
 });
 
