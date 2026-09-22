@@ -508,12 +508,11 @@ fi
 # ── Phase 11: Resume interrupted trigger sessions ──
 echo "[$(date)] Phase 11: Resuming interrupted triggers"
 if [ -f "$DB" ]; then
-  # Get interrupted runs (started but never completed)
+  # Claim interrupted runs atomically: concurrent boots each get a disjoint set,
+  # so a run is recovered exactly once.
   INTERRUPTED=$(sqlite3 -json "$DB" \
-    "SELECT id, trigger_name, session_key, session_mode, session_id, payload FROM trigger_runs WHERE completed_at IS NULL;" 2>/dev/null || echo "[]")
-
-  # Mark all as completed to prevent double-recovery
-  sqlite3 "$DB" "UPDATE trigger_runs SET completed_at=datetime('now') WHERE completed_at IS NULL;" 2>/dev/null || true
+    "UPDATE trigger_runs SET completed_at=datetime('now') WHERE completed_at IS NULL RETURNING id, trigger_name, session_key, session_mode, session_id, payload;" 2>/dev/null || echo "[]")
+  INTERRUPTED="${INTERRUPTED:-[]}"
 
   echo "$INTERRUPTED" | python3 -c "
 import json, sys, subprocess, os
