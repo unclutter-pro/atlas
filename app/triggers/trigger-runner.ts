@@ -927,14 +927,18 @@ export function modelFamily(model: string): keyof typeof MODEL_PRICING {
 }
 
 /**
- * Resolve the Claude project directory name for the current working directory.
- * Claude Code derives this by replacing every '/' with '-' and stripping the
- * leading '-'. This matches the directory naming used by Claude Code itself.
+ * Resolve the Claude project directory name for a working directory.
+ * Claude Code derives this by replacing every '/' with '-', so the leading
+ * slash becomes a leading '-' ("/home/agent" -> "-home-agent").
+ *
+ * @param cwd - Directory the session runs in. Trigger sessions are started
+ *   with `cwd: HOME`, so callers resolving their transcripts pass that same
+ *   value rather than relying on the runner's own process.cwd().
  */
-export function resolveClaudeProjectDir(): string {
+export function resolveClaudeProjectDir(cwd?: string): string {
   const projectDir =
     process.env.CLAUDE_PROJECT_DIR ??
-    process.cwd().replace(/\//g, "-").replace(/^-/, "");
+    (cwd ?? process.cwd()).replace(/\//g, "-");
   return projectDir;
 }
 
@@ -971,7 +975,7 @@ export function aggregateRunCost(
 
   try {
     const base = homeDir ?? HOME;
-    const projectDir = resolveClaudeProjectDir();
+    const projectDir = resolveClaudeProjectDir(base);
     const projectBase = `${base}/.claude/projects/${projectDir}`;
 
     // Build time window
