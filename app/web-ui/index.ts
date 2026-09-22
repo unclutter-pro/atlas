@@ -2583,7 +2583,7 @@ api.get("/config", (c) => {
 
 api.get("/config/:section", (c) => {
   const section = c.req.param("section");
-  const config = resolveConfig(WS) as Record<string, any>;
+  const config = redactConfig(resolveConfig(WS));
   if (!(section in config)) {
     return c.json({ error: "Not found", message: `Unknown config section: ${section}` }, 404);
   }
