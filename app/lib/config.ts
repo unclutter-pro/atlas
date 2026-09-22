@@ -31,6 +31,8 @@ export interface ModelsConfig {
   dreaming: string;
   subagent_review: string;
   hooks: string;
+  /** Extra user-defined keys, addressable via a trigger's `model_key`. */
+  [key: string]: string;
 }
 
 export interface MemoryConfig {
@@ -360,6 +362,33 @@ export function resolveConfig(home?: string): AtlasConfig {
   // Resolve workspace.projects_dir default
   if (!config.workspace.projects_dir) {
     config.workspace.projects_dir = join(homeDir, "projects");
+  }
+
+  // Custom models.<key> entries are user-defined and therefore not env-mapped,
+  // but a trigger's model_key can address any of them. Merge them in so they
+  // survive; the env-mapped keys above keep their resolved precedence.
+  const envMappedPaths = new Set(ENV_MAPPINGS.map((m) => m.path));
+  const mergeCustomModels = (parsed: Record<string, any> | null | undefined, source: ConfigSource) => {
+    if (!parsed?.models || typeof parsed.models !== "object") return;
+    const models = config.models as unknown as Record<string, string>;
+    for (const [key, value] of Object.entries(parsed.models)) {
+      if (typeof value !== "string" || envMappedPaths.has(`models.${key}`)) continue;
+      models[key] = value;
+      sources.set(`models.${key}`, source);
+    }
+  };
+
+  if (existsSync(configPath)) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      mergeCustomModels(yaml.load(raw) as Record<string, any> | null, "file");
+    } catch { /* already handled above */ }
+  }
+  if (existsSync(runtimePath)) {
+    try {
+      const raw = readFileSync(runtimePath, "utf-8");
+      mergeCustomModels(JSON.parse(raw) as Record<string, any>, "runtime");
+    } catch { /* already handled above */ }
   }
 
   // Resolve plugins config (merge from config.yml and runtime, not env-mapped)
