@@ -66,11 +66,12 @@ reminder add --title="File landed" \
   --check-interval="5m" \
   --prompt="Importdatei ist da — verarbeiten"
 
-# With timeout
+# Pin the repository and run ID; turn the conclusion into exit 0/1.
+# A CLI failure exits 2 so it is distinguishable from an unfinished run.
 reminder add --title="CI green" \
-  --when-script-ok="gh run view --json conclusion -q '.conclusion==\"success\"'" \
+  --when-script-ok='result=$(gh run view 123456 --repo owner/repo --json conclusion) || exit 2; printf "%s" "$result" | jq -e ".conclusion == \"success\"" >/dev/null' \
   --check-interval="2m" --timeout="+2h" \
-  --prompt="CI ist grün — Release-Notes raus"
+  --prompt="Check whether CI succeeded or the timeout expired before continuing the release"
 ```
 
 The command is run under `bash -c`. **Exit-code contract:**

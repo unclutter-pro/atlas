@@ -1,0 +1,39 @@
+name: skills
+on:
+  pull_request:
+    paths:
+      - 'app/defaults/**'
+      - 'app/bin/**'
+      - 'app/lib/webhook-auth*'
+      - 'app/triggers/**'
+      - 'app/web-ui/webhook*'
+      - 'app/web-ui/index.ts'
+      - 'scripts/check-skills.py'
+      - 'scripts/test_skill_helpers.py'
+      - '.github/workflows/skills.yml'
+      - 'Dockerfile'
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: oven-sh/setup-bun@v2
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install pyyaml -r app/defaults/skills/video-edit/scripts/requirements.txt
+      - run: python scripts/check-skills.py
+      - run: python scripts/test_skill_helpers.py
+      - run: python -m unittest discover -s app/defaults/skills/video-edit/tests -v
+      - run: bun install --frozen-lockfile
+        working-directory: app/lib
+      - run: bun install --frozen-lockfile
+        working-directory: app/triggers
+      - run: bun install --frozen-lockfile
+        working-directory: app/web-ui
+      - run: bun run typecheck
+        working-directory: app/triggers
+      - run: bun test app/lib/webhook-auth.test.ts app/triggers/webhook-sse-listener.test.ts app/triggers/manage-reminders.test.ts app/triggers/manage-tasks.test.ts app/triggers/trigger-runner.test.ts app/web-ui/webhook.test.ts

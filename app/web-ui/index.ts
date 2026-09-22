@@ -19,6 +19,7 @@ import {
 } from "fs";
 import { join } from "path";
 import { getDb } from "../lib/atlas-db";
+import { createWebhookHandler } from "./webhook";
 import { apiKeyAuth } from "../lib/api-auth";
 import { crossSiteRejection, HttpError } from "./ui-api/shared/http";
 import {
@@ -106,52 +107,12 @@ app.get("/healthz", (c) => {
 });
 
 // ============ WEBHOOK API ============
-app.post("/api/webhook/:name", async (c) => {
-  const name = c.req.param("name");
-  const t = db
-    .prepare("SELECT * FROM triggers WHERE name = ? AND type = 'webhook'")
-    .get(name) as any;
-
-  if (!t) {
-    return c.json({ error: "Webhook not found" }, 404);
-  }
-
-  if (!t.enabled) {
-    return c.json({ error: "Webhook disabled" }, 403);
-  }
-
-  // Validate secret if configured
-  if (t.webhook_secret) {
-    const secret = c.req.header("X-Webhook-Secret") || c.req.query("secret");
-    if (secret !== t.webhook_secret) {
-      return c.json({ error: "Invalid secret" }, 401);
-    }
-  }
-
-  // Read payload
-  let payload = "";
-  try {
-    const ct = c.req.header("content-type") || "";
-    if (ct.includes("application/json")) {
-      payload = JSON.stringify(await c.req.json(), null, 2);
-    } else if (ct.includes("form")) {
-      payload = JSON.stringify(await c.req.parseBody(), null, 2);
-    } else {
-      payload = await c.req.text();
-    }
-  } catch {
-    payload = "(could not parse payload)";
-  }
-
-  // Fire through trigger.sh for consistent behavior (session_mode, prompts, IPC)
-  spawnTrigger([t.name, payload]);
-
-  return c.json({
-    ok: true,
-    trigger: name,
-    message: "Webhook received, Claude will process it",
-  });
-});
+app.post("/api/webhook/:name", createWebhookHandler({
+  getTrigger: (name) => db.prepare("SELECT * FROM triggers WHERE name = ? AND type = 'webhook'").get(name) as any,
+  fireTrigger: (name, payload) => {
+    spawnTrigger([name, payload]);
+  },
+}));
 
 // =============================================================================
 // External Configuration API (v1)

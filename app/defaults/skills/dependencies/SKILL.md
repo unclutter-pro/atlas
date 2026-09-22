@@ -1,39 +1,44 @@
 ---
 name: dependencies
-description: Use when installing system packages, Python libs, or JS/TS modules persistent. Use when you need a tool or library that isn't pre-installed, or when the user asks to install something.
+description: Install missing system tools, Python packages, or JavaScript dependencies persistently in the Atlas workspace.
 ---
 
-# Installing Dependencies
+# Dependencies
 
-You have **no root or sudo access**. Everything outside `~/` (`/home/agent/`) is lost on container restart. Use the tools below to install what you need.
+Check whether the command or package already exists before installing it. Keep project dependencies and their lockfiles with the project under `~/projects/`.
 
-| What | How | Example |
-|------|-----|---------|
-| System packages | `brew install <pkg>` | `brew install imagemagick` |
-| Python packages | `pip install <pkg>` | `pip install requests` |
+## System tools
 
-Search for Homebrew packages: `brew search <name>` or https://formulae.brew.sh
+Use `brew install <package>`. Homebrew lives in `~/.homebrew`, which persists with the home volume. Find package names with `brew search <name>`.
 
-Remove a Homebrew package: `brew uninstall <package>`
+Atlas normally runs without elevation. Docker Compose permits sudo as a fallback; Kubernetes blocks privilege escalation. Prefer Homebrew in both environments. System changes outside the home volume survive a process restart but are lost when the container is replaced.
 
-## Survive Restarts
+## Python
 
-Packages installed via Homebrew persist across restarts (stored in `/home/linuxbrew/.linuxbrew/`). Python packages installed via pip outside the home directory may be lost — use `pip install --user <pkg>` or add install commands to `~/user-extensions.sh`:
+Create a project environment instead of modifying Ubuntu's externally managed Python:
 
 ```bash
-#!/bin/bash
-pip install requests
+python3 -m venv ~/projects/my-project/.venv
+~/projects/my-project/.venv/bin/python -m pip install requests
+~/projects/my-project/.venv/bin/python script.py
 ```
 
-This script runs automatically on every container start.
+Record dependencies in the project's requirements or package metadata. Recreate the environment from that file if an image update changes Python's version.
 
-## Gotchas
+## JavaScript and TypeScript
 
-- **Never use `apt-get` or `sudo`** — you don't have access. Use `brew install` instead.
-- Homebrew package names usually match what you expect (e.g. `brew install python3`, `brew install ffmpeg`).
-- First `brew install` may be slow (updates tap). Use `HOMEBREW_NO_AUTO_UPDATE=1 brew install <pkg>` to skip.
-- No Docker daemon available — you cannot run `docker` commands.
+Install in the project directory with its existing package manager:
 
-## Pre-installed
+```bash
+cd ~/projects/my-project
+npm install docx
+# For a Bun project, use bun add docx instead.
+```
 
-Bun, Node.js, Python, git, sqlite3, curl, wget, jq, ripgrep, ffmpeg, pandoc, typst, chromium, browser (headless web CLI — see browser skill)
+Use project-local executables via `npm exec -- <command>` or `bun run <script>`. Keep the lockfile. Avoid global installs into root-owned system paths.
+
+## Startup provisioning
+
+`~/user-extensions.sh` runs on every container start as the agent user. Use it only for idempotent setup that cannot be kept in the home volume. Do not reinstall persistent project packages on every startup.
+
+The image already includes Bun, Node.js, Python, git, sqlite3, curl, jq, ripgrep, FFmpeg, pandoc, Typst, LibreOffice, ImageMagick, Poppler, LiteParse (`lit`), and `browser`. Check `command -v <tool>` before adding dependencies. There is no Docker daemon inside Atlas.

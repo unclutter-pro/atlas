@@ -16,8 +16,8 @@
  *   stderr_logfile=/atlas/logs/webhook-sse-error.log
  */
 
-import { Database } from "bun:sqlite";
-import { existsSync, readFileSync, appendFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
+import { authenticateWebhook } from "../lib/webhook-auth.ts";
 import { openDb } from "../lib/db.ts";
 const LOG_PATH = "/atlas/logs/webhook-sse.log";
 const TRIGGER_SH = "/atlas/app/triggers/trigger.sh";
@@ -54,6 +54,7 @@ interface WebhookTrigger {
   name: string;
   webhook_channel: string;
   enabled: number;
+  webhook_secret: string | null;
   session_mode: string;
 }
 
@@ -62,7 +63,7 @@ function getWebhookTriggers(): WebhookTrigger[] {
     const db = openDb({ readonly: true });
     const rows = db
       .prepare(
-        "SELECT name, webhook_channel, enabled, session_mode FROM triggers WHERE type = 'webhook' AND enabled = 1 AND webhook_channel IS NOT NULL AND webhook_channel != ''"
+        "SELECT name, webhook_channel, enabled, session_mode, webhook_secret FROM triggers WHERE type = 'webhook' AND enabled = 1 AND webhook_channel IS NOT NULL AND webhook_channel != ''"
       )
       .all() as WebhookTrigger[];
     db.close();
@@ -70,39 +71,6 @@ function getWebhookTriggers(): WebhookTrigger[] {
   } catch (err) {
     log(`ERROR reading triggers from DB: ${err}`);
     return [];
-  }
-}
-
-// ------- Middleware filter -------
-
-/**
- * Run the filter script for a trigger if it exists.
- * Pipes the event JSON to stdin.
- * Returns true if the trigger should fire (filter passes or no filter).
- * Returns false if the filter exits non-zero (skip this event).
- */
-async function runMiddlewareFilter(
-  triggerName: string,
-  eventJson: string
-): Promise<boolean> {
-  const filterPath = `${HOME}/triggers/${triggerName}/filter.sh`;
-  if (!existsSync(filterPath)) return true; // No filter — pass
-
-  try {
-    const proc = Bun.spawn(["bash", filterPath], {
-      stdin: new TextEncoder().encode(eventJson),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const exitCode = await proc.exited;
-    if (exitCode !== 0) {
-      log(`Trigger '${triggerName}': filtered by middleware (exit=${exitCode})`);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    log(`ERROR running filter for '${triggerName}': ${err} — allowing event`);
-    return true; // Fail open: if filter crashes, allow the event
   }
 }
 
@@ -256,7 +224,11 @@ async function connectToChannel(
   log(`SSE listener stopped for trigger '${triggerName}'`);
 }
 
-async function handleSseEvent(triggerName: string, event: SmeeEvent): Promise<void> {
+export async function handleSseEvent(
+  triggerName: string,
+  event: SmeeEvent,
+  dependencies = { getWebhookTriggers, fireTrigger },
+): Promise<void> {
   log(`SSE event received for trigger '${triggerName}' (timestamp=${event.timestamp})`);
 
   // smee.io flattens HTTP headers into top-level keys alongside body/query/timestamp.
@@ -269,6 +241,18 @@ async function handleSseEvent(triggerName: string, event: SmeeEvent): Promise<vo
     }
   }
 
+  // Read current policy for every event: secret rotations and disables apply immediately.
+  const trigger = dependencies.getWebhookTriggers().find((row) => row.name === triggerName);
+  if (!trigger || !authenticateWebhook(trigger.webhook_secret, {
+    header: headers["x-webhook-secret"],
+    githubSignature: headers["x-hub-signature-256"],
+  })) {
+    log(`Trigger '${triggerName}': rejected webhook authentication`);
+    return;
+  }
+
+  // Authentication headers are not part of the agent's task context.
+  delete headers["x-webhook-secret"];
   const payloadJson = JSON.stringify({
     body: event.body,
     headers,
@@ -276,12 +260,11 @@ async function handleSseEvent(triggerName: string, event: SmeeEvent): Promise<vo
     timestamp: event.timestamp,
   });
 
-  // Run middleware filter if present
-  const shouldFire = await runMiddlewareFilter(triggerName, payloadJson);
-  if (!shouldFire) return;
+  // trigger-runner executes filter.sh once, after authentication. The relay only
+  // supplies parsed JSON, so GitHub HMAC webhooks must use the direct HTTP route.
 
   // Use _default session key for webhooks (can be customized via filter.sh output in future)
-  await fireTrigger(triggerName, payloadJson, "_default");
+  await dependencies.fireTrigger(triggerName, payloadJson, "_default");
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -370,7 +353,7 @@ async function main(): Promise<void> {
   log("Webhook SSE listener running");
 }
 
-main().catch((err) => {
+if (import.meta.main) main().catch((err) => {
   log(`FATAL: ${err}`);
   process.exit(1);
 });
