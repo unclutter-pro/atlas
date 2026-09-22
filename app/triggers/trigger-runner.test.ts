@@ -28,6 +28,7 @@ import {
   trySocketInject,
   cleanupSocket,
   persistStreamChunk,
+  pruneStreamChunks,
   upsertTriggerSession,
   aggregateRunCost,
   resolveClaudeProjectDir,
@@ -819,12 +820,14 @@ describe("checkCorruptedSession", () => {
 describe("getSocketPath", () => {
   test("returns expected path format", () => {
     const path = getSocketPath("signal-chat", "+491234");
-    expect(path).toBe("/tmp/.trigger-signal-chat-_491234.sock");
+    // Replaced characters get a short hash of the original key, so "+491234" and "_491234" stay apart.
+    expect(path).toMatch(/^\/tmp\/\.trigger-signal-chat-_491234\.[0-9a-f]{8}\.sock$/);
+    expect(path).not.toBe(getSocketPath("signal-chat", "_491234"));
   });
 
   test("sanitizes special characters in session key", () => {
     const path = getSocketPath("email-handler", "thread/4821@mail.com");
-    expect(path).toBe("/tmp/.trigger-email-handler-thread_4821_mail_com.sock");
+    expect(path).toMatch(/^\/tmp\/\.trigger-email-handler-thread_4821_mail_com\.[0-9a-f]{8}\.sock$/);
   });
 
   test("handles _default key", () => {
@@ -1247,6 +1250,143 @@ describe("persistStreamChunk", () => {
     expect(state.uuid).toBeNull();
     expect(rows().length).toBe(0);
   });
+});
+
+// ---------------------------------------------------------------------------
+// persistStreamChunk return value + pruneStreamChunks (web-ui notify support)
+// ---------------------------------------------------------------------------
+
+describe("stream chunk bookkeeping for web-ui pings", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE web_chat_stream_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message_uuid TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content_delta TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+  });
+
+  afterEach(() => db.close());
+
+  test("persistStreamChunk returns true only when it inserted a row", () => {
+    let uuid: string | null = null;
+    let i = 0;
+    const s: StreamChunkState = { setUuid: (u) => { uuid = u; i = 0; }, uuidRef: () => uuid, nextIndex: () => i++ };
+    const ev = (event: unknown) => ({ type: "stream_event", session_id: "sess-1", event });
+    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "text_delta", text: "orphan" } }), s, db)).toBe(false);
+    expect(persistStreamChunk(ev({ type: "message_start", message: { id: "m1" } }), s, db)).toBe(false);
+    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "text_delta", text: "A" } }), s, db)).toBe(true);
+    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "text_delta", text: "" } }), s, db)).toBe(false);
+    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } }), s, db)).toBe(false);
+    expect(persistStreamChunk({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "B" } } }, s, db)).toBe(false);
+    expect(persistStreamChunk({ type: "assistant", session_id: "sess-1" }, s, db)).toBe(false);
+  });
+
+  test("pruneStreamChunks drops one session's rows and ids stay monotonic", () => {
+    const ins = db.prepare("INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta) VALUES (?, ?, ?, ?)");
+    ins.run("s1", "m1", 0, "a");
+    ins.run("s1", "m1", 1, "b");
+    ins.run("s2", "m9", 0, "keep");
+    const maxBefore = (db.query("SELECT MAX(id) AS m FROM web_chat_stream_chunks").get() as { m: number }).m;
+    pruneStreamChunks(db, "s1");
+    expect(db.query("SELECT session_id FROM web_chat_stream_chunks").all()).toEqual([{ session_id: "s2" }]);
+    ins.run("s1", "m2", 0, "c");
+    const next = (db.query("SELECT id FROM web_chat_stream_chunks WHERE message_uuid = 'm2'").get() as { id: number }).id;
+    expect(next).toBeGreaterThan(maxBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runner → web-ui ping sequence (main() in a subprocess with a mocked SDK)
+// ---------------------------------------------------------------------------
+
+describe("web-ui notify pings from main()", () => {
+  test("a web turn pings turn_start, session, chunk/message, turn_end, run_end and prunes old chunks", async () => {
+    const home = makeTempDir();
+    const sockDir = mkdtempSync(join(tmpdir(), "atlas-notify-"));
+    const sock = join(sockDir, "web-ui.sock");
+    const key = `notify-test-${Date.now()}`;
+    const sid = "sess-notify-1";
+    const pings: { kind: string; sessionKey: string; sessionId: string | null; isError?: boolean }[] = [];
+    const server = Bun.serve({
+      unix: sock,
+      fetch: async (req) => {
+        pings.push((await req.json()) as (typeof pings)[number]);
+        return new Response(null, { status: 204 });
+      },
+    });
+    const driver = join(home, "driver.ts");
+    writeFileSync(
+      driver,
+      `
+import { mkdirSync, writeFileSync } from "fs";
+import { getDb } from ${JSON.stringify(join(import.meta.dir, "../lib/atlas-db.ts"))};
+import { main, runnerDeps } from ${JSON.stringify(join(import.meta.dir, "trigger-runner.ts"))};
+const SID = ${JSON.stringify(sid)};
+const KEY = ${JSON.stringify(key)};
+const db = getDb();
+db.prepare("INSERT INTO triggers (name, type, channel, prompt, session_mode) VALUES ('web-chat', 'manual', 'web', '{{payload}}', 'persistent')").run();
+// An existing session (resumed) with chunks from an earlier turn.
+db.prepare("INSERT INTO trigger_sessions (trigger_name, session_key, session_id) VALUES ('web-chat', ?, ?)").run(KEY, SID);
+db.prepare("INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta) VALUES (?, 'old', 0, 'stale')").run(SID);
+mkdirSync(process.env.HOME + "/.claude/projects/p", { recursive: true });
+writeFileSync(process.env.HOME + "/.claude/projects/p/" + SID + ".jsonl", JSON.stringify({ type: "assistant", message: { content: [] } }) + "\\n");
+runnerDeps.query = (() => {
+  async function* gen() {
+    yield { type: "system", subtype: "init", session_id: SID };
+    yield { type: "stream_event", session_id: SID, event: { type: "message_start", message: { id: "msg_1" } } };
+    for (const t of ["Hel", "lo"]) yield { type: "stream_event", session_id: SID, event: { type: "content_block_delta", delta: { type: "text_delta", text: t } } };
+    await Bun.sleep(80);
+    yield { type: "assistant", session_id: SID, message: { id: "msg_1", role: "assistant", content: [{ type: "text", text: "Hello" }] } };
+    yield { type: "result", subtype: "success", session_id: SID, result: "Hello", num_turns: 1 };
+  }
+  return Object.assign(gen(), { interrupt: async () => {}, close: () => {} });
+}) as any;
+process.argv = [process.argv[0], "trigger-runner.ts", "web-chat", JSON.stringify({ message: "hi" }), KEY];
+await main();
+const rows = db.query("SELECT message_uuid, content_delta FROM web_chat_stream_chunks WHERE session_id = ? ORDER BY id").all(SID);
+console.log("CHUNKS=" + JSON.stringify(rows));
+process.exit(0);
+`,
+    );
+    try {
+      const proc = Bun.spawn(["bun", driver], {
+        env: { ...process.env, HOME: home, ATLAS_WEB_UI_NOTIFY_SOCKET: sock, CLAUDECODE: "" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const code = await proc.exited;
+      const out = await new Response(proc.stdout).text();
+      if (code !== 0) throw new Error(`driver failed (${code}): ${out}\n${await new Response(proc.stderr).text()}`);
+
+      const kinds = pings.map((p) => p.kind);
+      expect(kinds[0]).toBe("turn_start");
+      expect(kinds.slice(-2)).toEqual(["turn_end", "run_end"]);
+      expect(kinds).toContain("session");
+      expect(kinds.indexOf("session")).toBeLessThan(kinds.indexOf("turn_end"));
+      expect(kinds.filter((k) => k === "chunk" || k === "message").length).toBeGreaterThanOrEqual(1);
+      expect(kinds.indexOf("chunk")).toBeGreaterThan(0);
+      expect(pings.every((p) => p.sessionKey === key)).toBe(true);
+      expect(pings.find((p) => p.kind === "turn_end")).toMatchObject({ sessionId: sid, isError: false });
+      // The turn_start prune removed the previous turn's chunks; this turn's stay.
+      const rows = JSON.parse(out.match(/CHUNKS=(.*)/)![1]!);
+      expect(rows).toEqual([
+        { message_uuid: "msg_1", content_delta: "Hel" },
+        { message_uuid: "msg_1", content_delta: "lo" },
+      ]);
+    } finally {
+      server.stop(true);
+      rmSync(home, { recursive: true, force: true });
+      rmSync(sockDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------

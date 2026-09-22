@@ -67,6 +67,11 @@ export interface DailyCleanupConfig {
 export interface WebUiConfig {
   port: number;
   bind: string;
+  /**
+   * Hostnames the web UI answers to besides localhost and IP literals
+   * (DNS-rebinding guard). "*.example.com" matches subdomains, "*" disables the check.
+   */
+  allowed_hosts: string[];
 }
 
 export interface FailureHandlingConfig {
@@ -102,6 +107,15 @@ export interface WorkspaceConfig {
 }
 
 export interface AtlasConfig {
+  /**
+   * IANA time zone ("Europe/Berlin", "America/New_York") used for day
+   * boundaries (web-ui), cron scheduling (supercronic, via sync-crontab's
+   * CRON_TZ) and agent sessions (journal dates). Empty ⇒ detect from the
+   * container runtime (TZ env, /etc/timezone, /etc/localtime), then UTC.
+   * Resolve with resolveTimezone() in lib/timezone.ts, not this field
+   * directly — it validates the value and applies the fallback chain.
+   */
+  timezone: string;
   agent: AgentConfig;
   models: ModelsConfig;
   memory: MemoryConfig;
@@ -124,6 +138,7 @@ export type ConfigSource = "env" | "runtime" | "file" | "default";
 // ---------------------------------------------------------------------------
 
 const DEFAULTS: AtlasConfig = {
+  timezone: "",
   agent: { name: "Atlas", email: "" },
   models: { main: "sonnet", trigger: "opus", cron: "sonnet", dreaming: "opus", subagent_review: "sonnet", hooks: "haiku" },
   memory: { load_memory_md: true, load_journal_days: 7 },
@@ -134,7 +149,7 @@ const DEFAULTS: AtlasConfig = {
     folder: "INBOX", whitelist: [], mark_read: true,
   },
   daily_cleanup: { enabled: true, retention_days: 30, metrics_retention_days: 90 },
-  web_ui: { port: 8080, bind: "127.0.0.1" },
+  web_ui: { port: 8080, bind: "127.0.0.1", allowed_hosts: [] },
   failure_handling: {
     notification_command: "", backoff_initial_seconds: 30,
     backoff_max_seconds: 900, notification_threshold_minutes: 30,
@@ -177,6 +192,7 @@ type EnvMapping = {
 };
 
 const ENV_MAPPINGS: EnvMapping[] = [
+  { env: "ATLAS_TIMEZONE", path: "timezone", type: "string" },
   { env: "ATLAS_AGENT_NAME", aliases: ["AGENT_NAME"], path: "agent.name", type: "string" },
   { env: "ATLAS_AGENT_EMAIL", path: "agent.email", type: "string" },
   { env: "ATLAS_MODEL_MAIN", path: "models.main", type: "string" },
@@ -205,6 +221,7 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_DAILY_CLEANUP_METRICS_RETENTION_DAYS", path: "daily_cleanup.metrics_retention_days", type: "number" },
   { env: "ATLAS_WEB_UI_PORT", path: "web_ui.port", type: "number" },
   { env: "ATLAS_WEB_UI_BIND", path: "web_ui.bind", type: "string" },
+  { env: "ATLAS_WEB_UI_ALLOWED_HOSTS", path: "web_ui.allowed_hosts", type: "string[]" },
   { env: "ATLAS_FAILURE_NOTIFICATION_COMMAND", path: "failure_handling.notification_command", type: "string" },
   { env: "ATLAS_FAILURE_BACKOFF_INITIAL", path: "failure_handling.backoff_initial_seconds", type: "number" },
   { env: "ATLAS_FAILURE_BACKOFF_MAX", path: "failure_handling.backoff_max_seconds", type: "number" },
@@ -281,6 +298,22 @@ let lastSources: Map<string, ConfigSource> = new Map();
  */
 export function getConfigSource(path: string): ConfigSource {
   return lastSources.get(path) ?? "default";
+}
+
+/**
+ * Built-in defaults (a copy), before config.yml, runtime overrides and env.
+ * Unlike resolveConfig(), this does not touch the recorded sources.
+ */
+export function getConfigDefaults(): AtlasConfig {
+  return structuredClone(DEFAULTS);
+}
+
+/**
+ * Environment variable that overrides a config key, e.g. "models.cron" →
+ * "ATLAS_MODEL_CRON". Undefined when the key has no env mapping.
+ */
+export function getEnvVarName(path: string): string | undefined {
+  return ENV_MAPPINGS.find((m) => m.path === path)?.env;
 }
 
 /**

@@ -110,17 +110,19 @@ On-demand triggers. Fire via the web-ui "Run" button or by asking Claude.
 
 ### Via Web-UI
 
-1. Navigate to `/triggers`
-2. Click **+ New Trigger**
+1. Open **Automations** (`/automations`)
+2. Click **New trigger** (`/automations?create=1`)
 3. Fill in the form:
    - **Name:** Lowercase slug (e.g. `github-check`)
    - **Type:** Cron, Webhook, or Manual
-   - **Schedule:** Cron expression (for cron triggers)
+   - **Schedule:** Numeric 5-field cron expression (for cron triggers; names and `@daily`-style macros are rejected because the crontab sync drops them). The form previews the next runs.
    - **Session Mode:** `ephemeral` (default) or `persistent`
    - **Webhook Secret:** Optional auth token (for webhooks)
    - **Channel:** Inbox channel for generated messages (default: `internal`)
    - **Prompt:** What the trigger session should do. Use `{{payload}}` for webhook data.
-4. Click **Create Trigger**
+4. Click **Create trigger**
+
+Each trigger has its own page (`/automations/<name>`) with its prompt, schedule, webhook URL, run history and cost, plus Edit, Enable/Disable, Run now and Delete.
 
 ### Via MCP
 
@@ -135,15 +137,12 @@ On-demand triggers. Fire via the web-ui "Run" button or by asking Claude.
 }
 ```
 
-### Via curl
+### Via CLI (inside the container)
 
 ```bash
-curl -X POST http://localhost:8080/triggers \
-  -d "name=my-trigger" \
-  -d "type=manual" \
-  -d "session_mode=ephemeral" \
-  -d "description=Test trigger" \
-  -d "prompt=Hello, this is a test trigger."
+bun /atlas/app/triggers/manage.ts create --name=my-trigger --type=manual \
+  --session-mode=ephemeral --description="Test trigger"
+# The prompt lives in ~/triggers/my-trigger/prompt.md
 ```
 
 ## Webhook Integration
@@ -321,12 +320,15 @@ python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --max-tokens 300
 
 ### Web-UI
 
-The `/triggers` page provides full CRUD:
-- **List** all triggers with type, status, session mode, schedule/URL, last run, run count
-- **Toggle** enable/disable (HTMX live update)
-- **Run** any trigger manually (even cron triggers)
-- **Edit** description, schedule, prompt, secret, channel, session mode
+**Automations** (`/automations`) provides full CRUD:
+- **List** triggers grouped into Scheduled, Webhooks and Manual, with next run, last outcome, run count and 7-day cost
+- **Toggle** enable/disable inline
+- **Run** any enabled trigger manually (even cron triggers; refused while Atlas is paused)
+- **Edit** description, schedule, prompt, secret, channel, session mode, model
 - **Delete** with confirmation
+- **Reminders** tab (`/automations?view=reminders`): pending reminders with Cancel, then history
+
+Every run links to its detail page in **Activity** (`/activity/<run id>`).
 
 ### MCP Tools
 
@@ -364,8 +366,8 @@ When cron triggers are created, updated, or deleted, the crontab is automaticall
 ┌───────────┐         ┌──────────────────┐         ┌──────────────┐
 │ External   │  POST   │    Web-UI        │  button  │  Claude      │
 │ Service    │────────▸│  /api/webhook/   │◂────────│  MCP: trigger│
-└───────────┘         │  /triggers/:id/  │         │  _create     │
-                      │  run             │         └──────────────┘
+└───────────┘         │  Automations     │         │  _create     │
+                      │  "Run now"       │         └──────────────┘
                       └────────┬─────────┘
                                │
                                ▼

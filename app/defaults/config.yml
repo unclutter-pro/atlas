@@ -1,6 +1,13 @@
 # Agent Configuration
 # Editable by Claude and via the Web-UI
 
+# Time zone for day boundaries (web-ui), cron scheduling (supercronic) and
+# agent sessions (journal dates). Empty/unset = detect from the container
+# (TZ env, /etc/timezone, /etc/localtime), then UTC. Override with
+# ATLAS_TIMEZONE env var. Only needed when it should differ from the
+# container's own TZ (see docker-compose.yml).
+# timezone: "Europe/Berlin"
+
 agent:
   name: "Atlas" # Display name for the agent (used in UI, logs, prompts). Override with ATLAS_AGENT_NAME env var.
   email: "" # Agent email address (optional, for integrations)
@@ -65,6 +72,9 @@ team:
 web_ui:
   port: 8080
   bind: "127.0.0.1"
+  # Hostnames besides localhost, IP addresses, single-label names and *.local
+  # that may reach the UI (DNS-rebinding guard), e.g. a Tailscale name:
+  # allowed_hosts: ["atlas.example.ts.net"]
 
 failure_handling:
   notification_command: "" # Shell command run once after threshold (e.g. "signal send '+1...' 'API unavailable'")

@@ -69,7 +69,7 @@ Atlas runs entirely in a single Docker container managed by supervisord:
 | Component | Port | Purpose |
 |-----------|------|---------|
 | **nginx** | 8080 | Reverse proxy to web-ui |
-| **web-ui** | 3000 | Hono.js + HTMX dashboard |
+| **web-ui** | 3000 | Bun.serve + React dashboard (Hono.js only for Chat, `/api/v1`, webhooks) |
 | **watcher** | — | inotifywait loop, resumes Claude on `.wake` |
 | **supercronic** | — | Cron job runner |
 
@@ -112,7 +112,7 @@ atlas/
 │   │   ├── pre-compact-auto.sh   # Memory flush before compaction
 │   │   └── subagent-stop.sh      # Quality gate for team results
 │   ├── atlas-mcp/                # Database module (schema, migrations)
-│   ├── web-ui/                   # Hono.js + HTMX dashboard
+│   ├── web-ui/                   # Bun.serve + React dashboard
 │   ├── triggers/                 # Trigger runner scripts
 │   │   ├── trigger.sh            # Generic trigger runner
 │   │   ├── sync-crontab.ts       # Crontab auto-generation from DB
@@ -144,7 +144,7 @@ See [docs/directory-structure.md](docs/directory-structure.md) for complete layo
 
 ### IDENTITY.md
 
-Defines who Atlas is — personality, language, capabilities, restrictions. Edit via web-ui at `/settings` or directly in the workspace.
+Defines who Atlas is — personality, language, capabilities, restrictions. Edit via web-ui at `/settings/personality` or directly in the workspace.
 
 ### config.yml
 
