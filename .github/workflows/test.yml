@@ -1,0 +1,38 @@
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+        working-directory: app/lib
+      - run: bun install --frozen-lockfile
+        working-directory: app/triggers
+      - run: bun install --frozen-lockfile
+        working-directory: app/web-ui
+
+      - run: bun test
+        working-directory: app/lib
+      - run: bun test
+        working-directory: app/triggers
+      - run: bun test
+        working-directory: app/web-ui
+
+      - run: bun run typecheck
+        working-directory: app/triggers
+
+      # The release image compiles this binary; a build error would otherwise
+      # only surface on a version tag.
+      - run: bun build --compile trigger-runner.ts --outfile /tmp/trigger-runner
+        working-directory: app/triggers
