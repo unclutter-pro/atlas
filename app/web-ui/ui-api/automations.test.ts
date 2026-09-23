@@ -177,9 +177,8 @@ describe.skipIf(!seeded)("/ui/api/automations endpoints", () => {
     expect((await res.json()).error).toContain("paused");
     rmSync(join(HOME, ".atlas-paused"));
 
-    // Outside the container trigger.sh is missing; inside it fires (202).
     res = await send("POST", `/ui/api/automations/triggers/${NAME}/run`, { payload: "x" });
-    expect([202, 503]).toContain(res.status);
+    expect(res.status).toBe(503);
 
     res = await send("DELETE", `/ui/api/automations/triggers/${NAME}`);
     expect(res.status).toBe(200);

@@ -251,7 +251,7 @@ export interface SendChatMessageRequest {
 /** 201 */
 export interface SendChatMessageResponse {
   item: ChatUserItem;
-  /** False when trigger.sh could not be started (e.g. outside the container): the message is saved but no agent will answer. */
+  /** False when trigger.sh was not started: the message is saved but no agent will answer. */
   triggered: boolean;
 }
 

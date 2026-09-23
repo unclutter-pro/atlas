@@ -61,10 +61,30 @@ export function elapsedMs(start: string | null | undefined, end?: string | null)
   return (b ? Date.parse(b) : Date.now()) - Date.parse(a);
 }
 
-/** Best-effort fire-and-forget spawn; returns false when the binary/script is missing (e.g. outside the container). */
+/**
+ * True under `bun test`, which sets NODE_ENV=test. The compiled web-ui pins
+ * NODE_ENV to "production" at build time, so this folds to false there.
+ */
+export function isTestRun(): boolean {
+  return process.env.NODE_ENV === "test";
+}
+
+/** Best-effort fire-and-forget spawn; returns false when the binary/script is missing or a test run suppresses it. */
 export function trySpawn(cmd: string[]): boolean {
+  if (isTestRun()) return false;
   try {
     Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Blocking variant of trySpawn, for scripts a request must await. */
+export function trySpawnSync(cmd: string[]): boolean {
+  if (isTestRun()) return false;
+  try {
+    Bun.spawnSync(cmd, { stdout: "ignore", stderr: "ignore" });
     return true;
   } catch {
     return false;
@@ -76,7 +96,7 @@ export function syncCrontab(): void {
   if (existsSync(paths.syncCrontab)) trySpawn(["bun", "run", paths.syncCrontab]);
 }
 
-/** Fire a trigger through trigger.sh (same path as cron/webhooks). Returns false when trigger.sh is unavailable. */
+/** Fire a trigger through trigger.sh (same path as cron/webhooks). Returns false when nothing was started. */
 export function fireTrigger(name: string, payload?: string, sessionKey?: string): boolean {
   if (!existsSync(paths.triggerSh)) return false;
   const args = [paths.triggerSh, name];

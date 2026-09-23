@@ -183,7 +183,7 @@ describe.skipIf(!seeded)("/ui/api/chat", () => {
     const sent = await body<SendChatMessageResponse>(res);
     expect(sent.item).toMatchObject({ kind: "user", text: "hello", clientId: "c-1", attachments: [] });
     expect(sent.item.id).toBe(`u:${sent.item.messageId}`);
-    expect(sent.triggered).toBe(false); // no trigger.sh outside the container
+    expect(sent.triggered).toBe(false); // the test runner suppresses trigger.sh
 
     getDb().prepare("UPDATE chat_sessions SET archived_at = datetime('now') WHERE session_key = ?").run(chat.key);
     writeFileSync(join(home(), ".atlas-paused"), "test");
