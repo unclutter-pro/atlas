@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from "fs";
 import yaml from "js-yaml";
 import { getConfigSources, getEnvVarName, redactConfig, resolveConfig, type ConfigSource } from "../../lib/config";
-import { getDb, home, paths, syncCrontab, toIso } from "./shared/env";
+import { getDb, home, isTestRun, paths, syncCrontab, toIso } from "./shared/env";
 import { badRequest, handler, json, readJson, type ApiRoutes } from "./shared/http";
 import { getIntegrationHealth, getServiceHealth, supervisorStatus, type IntegrationHealth, type IntegrationKey, type ServiceHealth } from "./shared/integrations";
 import {
@@ -254,12 +254,12 @@ function configuration(): ConfigurationResponse {
 /** Same side effects as the legacy PATCH /api/v1/config: regenerate Claude settings, then the crontab. */
 function applyConfig(): ConfigSaveResponse["applied"] {
   let claudeSettings = false;
-  if (existsSync(GENERATE_SETTINGS)) {
+  if (!isTestRun() && existsSync(GENERATE_SETTINGS)) {
     try {
       claudeSettings = Bun.spawnSync(["bun", "run", GENERATE_SETTINGS], { stdout: "ignore", stderr: "pipe", timeout: 30_000 }).exitCode === 0;
     } catch {}
   }
-  const crontab = existsSync(paths.syncCrontab);
+  const crontab = !isTestRun() && existsSync(paths.syncCrontab);
   syncCrontab();
   return { claudeSettings, crontab };
 }

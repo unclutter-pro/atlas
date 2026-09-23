@@ -9,7 +9,7 @@ import { join } from "path";
 import { attachmentUrl, saveAttachment, type Attachment } from "../../../lib/attachments";
 import { isAtlasPaused } from "../../../lib/kill-switch";
 import { getLockPath, getSocketPath, isPidAlive, readLockPid, trySocketInject } from "../../../lib/trigger-socket";
-import { fireTrigger, getDb, home, toIso } from "../shared/env";
+import { fireTrigger, getDb, home, isTestRun, toIso } from "../shared/env";
 import { HttpError } from "../shared/http";
 import { toChatAttachment, userItem } from "./conversation";
 import { currentRunState, getHub, notifyLocal } from "./hub";
@@ -226,6 +226,8 @@ export async function resetSession(sessionKey: string): Promise<{ farewellSent: 
       farewellSent = true;
     } else if (isPidAlive(readLockPid(getLockPath(CHAT_TRIGGER, sessionKey)))) {
       // Runner alive but unreachable — skip the farewell rather than race it.
+    } else if (isTestRun()) {
+      // A test run must never start a billable session.
     } else {
       // Session not running — resume it with farewell
       try {

@@ -110,7 +110,7 @@ bun run build                       # compile ./web-ui binary (delete it afterwa
 
 The seed contains 11 triggers of all three types, about 50 trigger runs over 10 days (some running, some failed) with transcripts and session metrics, inbound messages on four channels, reminders, a failing usage webhook, memory and journal files, IDENTITY.md, SOUL.md, config.yml, a runtime override, secrets and supervisor configs. `ATLAS_SUPERVISORCTL_STATUS_FILE` substitutes a file for `supervisorctl status` output, so integration health shows real states outside the container (in the seed, the email poller is FATAL).
 
-Scripts under `/atlas/...` exist only in the container. Server code starts them through guarded helpers (`fireTrigger`, `syncCrontab` in `ui-api/shared/env.ts`, `spawnTrigger` in `index.ts`), which log or return false locally instead of failing the request.
+Scripts under `/atlas/...` exist only in the container. Server code starts them through the guarded helpers in `ui-api/shared/env.ts` (`trySpawn`, `trySpawnSync`, `fireTrigger`, `syncCrontab`), which return false instead of failing the request when the script is missing. They also return false under `bun test`: inside the container the scripts do exist, and a test run must never start a billable agent session. The compiled binary pins `NODE_ENV` to `production`, so the guard folds away in production.
 
 ### Adding to an area
 

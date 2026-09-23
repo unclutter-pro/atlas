@@ -40,30 +40,11 @@ import { notifyAllChats } from "./ui-api/chat/hub";
 import { resolveConfig, redactConfig, getConfigSources } from "../lib/config";
 import { pauseAtlas, resumeAtlas, stopAllSessions, getControlStatus, isAtlasPaused } from "../lib/kill-switch";
 import { getAttachment, attachmentDiskPath, attachmentExists, attachmentUrl } from "../lib/attachments";
+import { fireTrigger, paths, syncCrontab, trySpawnSync } from "./ui-api/shared/env";
 
 // --- Config ---
 const WS = process.env.HOME!;
 const IDENTITY = `${WS}/IDENTITY.md`;
-
-const TRIGGER_SH = "/atlas/app/triggers/trigger.sh";
-
-/** Fire trigger.sh detached. The script only exists in the container, so a
- *  missing binary is logged instead of failing the request. */
-function spawnTrigger(args: string[]): boolean {
-  try {
-    Bun.spawn([TRIGGER_SH, ...args], { stdout: "ignore", stderr: "ignore" });
-    return true;
-  } catch (err) {
-    console.warn(`trigger.sh ${args[0]} not started: ${(err as Error).message}`);
-    return false;
-  }
-}
-
-function syncCrontab(): void {
-  try {
-    Bun.spawnSync(["bun", "run", "/atlas/app/triggers/sync-crontab.ts"]);
-  } catch {}
-}
 
 const db = getDb();
 
@@ -110,7 +91,7 @@ app.get("/healthz", (c) => {
 app.post("/api/webhook/:name", createWebhookHandler({
   getTrigger: (name) => db.prepare("SELECT * FROM triggers WHERE name = ? AND type = 'webhook'").get(name) as any,
   fireTrigger: (name, payload) => {
-    spawnTrigger([name, payload]);
+    fireTrigger(name, payload);
   },
 }));
 
@@ -236,10 +217,7 @@ api.patch("/config", async (c) => {
     );
   }
 
-  // Regenerate settings
-  try {
-    Bun.spawnSync(["bun", "run", "/atlas/app/hooks/generate-settings.ts"]);
-  } catch {}
+  trySpawnSync(["bun", "run", "/atlas/app/hooks/generate-settings.ts"]);
   syncCrontab();
 
   const config = resolveConfig(WS);
@@ -434,10 +412,9 @@ api.post("/triggers/:name/run", (c) => {
     return c.json({ error: "Atlas is paused", message: "Resume Atlas before firing triggers" }, 409);
   }
 
-  const triggerScript = "/atlas/app/triggers/trigger.sh";
-  Bun.spawn(["bash", triggerScript, trigger.name, "", "_manual"], {
-    stdout: "ignore", stderr: "ignore",
-  });
+  if (!fireTrigger(trigger.name, "", "_manual")) {
+    return c.json({ error: "Not fired", message: `${paths.triggerSh} is not available here` }, 503);
+  }
   return c.json({ ok: true, name, message: "Trigger fired" });
 });
 

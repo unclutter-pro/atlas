@@ -76,7 +76,7 @@ export const hubTiming = {
 };
 
 export const hubDeps = {
-  /** Whether a send can start a runner at all. Outside the container trigger.sh is missing, so no "starting". */
+  /** Whether a send can start a runner at all. Without trigger.sh there is no "starting". */
   runnerAvailable: () => existsSync(paths.triggerSh),
 };
 
