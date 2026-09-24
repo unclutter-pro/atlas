@@ -16,11 +16,10 @@
  * IPC socket. No new process is spawned.
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  SDKResultMessage,
-  SDKUserMessage,
-} from "@anthropic-ai/claude-agent-sdk";
+import { createAtlasHarness } from "./harness/registry.ts";
+import { createMessageChannel, type PushOptions } from "./harness/claude/message-channel.ts";
+import { aggregateRunCost, type AggregatedUsage } from "./harness/claude/legacy-usage.ts";
+import type { ConversationResult, Conversation, QueryFactory } from "./harness/claude/compatibility.ts";
 import { Database } from "bun:sqlite";
 import {
   existsSync,
@@ -105,79 +104,11 @@ const DB_PATH = `${HOME}/.index/atlas.db`;
 const CLAUDE_JSON = `${HOME}/.claude.json`;
 const WORKSPACE = HOME;
 
-// Resolve path to Claude Code executable for the SDK.
-// In compiled Bun binaries, import.meta.url points to a virtual FS (/$bunfs/...),
-// so the SDK cannot auto-resolve cli.js. We resolve it explicitly here.
-function resolveClaudeCodePath(): string | undefined {
-  // 1. SDK's bundled cli.js (older SDK versions ship this)
-  const sdkCli = `${APP_DIR}/triggers/node_modules/@anthropic-ai/claude-agent-sdk/cli.js`;
-  if (existsSync(sdkCli)) return sdkCli;
-  // 2. Native binary installed globally (check common paths)
-  for (const bin of ["/usr/local/bin/claude", "/usr/bin/claude"]) {
-    if (existsSync(bin)) return bin;
-  }
-  // 3. Let the SDK resolve it (works when not compiled)
-  return undefined;
-}
-
-const CLAUDE_CODE_PATH = resolveClaudeCodePath();
-
 // ---------------------------------------------------------------------------
 // Tool policy
 // ---------------------------------------------------------------------------
 
-/**
- * Built-in Claude Code tools we never want a trigger session to see or use.
- *
- * settings.json `permissions.deny` only blocks execution — the model is still
- * told the tool exists, which leaks into the system prompt. `disallowedTools`
- * on the SDK query options removes the tool from the disclosure entirely.
- *
- * Keep in sync with the deny list in app/hooks/generate-settings.ts.
- */
-const DISALLOWED_BUILTIN_TOOLS = [
-  // Cron management — exposed via dedicated trigger commands, not LLM tools
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  // Scheduling - we have reminder cli for that
-  "ScheduleWakeup",
-  // Plan mode is a Claude Code interactive UX concept; trigger sessions are headless
-  "EnterPlanMode",
-  "ExitPlanMode",
-  // Worktrees are managed by the harness, not by the agent
-  "EnterWorktree",
-  "ExitWorktree",
-  // Atlas tracks tasks via its own CLI, never via Claude Code's built-ins
-  "TodoWrite",
-  "TaskCreate",
-  "TaskUpdate",
-  "TaskList",
-  "TaskGet",
-  // No interactive user-question loop in trigger sessions
-  "AskUserQuestion",
-  // Teams feature disabled — agent runs without teammate coordination
-  "TeamCreate",
-  "TeamDelete",
-  "SendMessage",
-];
-
-/**
- * Tools disallowed for the validator session.
- * The validator is read-only — it may inspect files but must not write anything,
- * spawn agents, or access task/goal/reminder state.
- */
-export const DISALLOWED_VALIDATOR_TOOLS = [
-  ...DISALLOWED_BUILTIN_TOOLS,
-  // Write tools — validator is strictly read-only
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  // MCP tools — no external access
-  "mcp__*",
-  // Agent spawning
-  "Agent",
-];
+export { DISALLOWED_VALIDATOR_TOOLS } from "./harness/claude/policy.ts";
 
 // ---------------------------------------------------------------------------
 // Message Channel (AsyncIterable + IPC socket for message injection)
@@ -189,113 +120,7 @@ const IDLE_TIMEOUT_MS = parseInt(
   10,
 );
 
-/**
- * Options for pushing a user message into the channel.
- *
- * - `shouldQuery: false` — SDK v0.2.110+: append the message to the transcript
- *   without triggering a new assistant turn. The message merges into the
- *   current turn's next LLM call. Use for mid-turn steering (the agent
- *   reacts to new info without restarting work).
- * - `priority` — present in SDK type but undocumented. We set `'now'` as a
- *   hint for mid-turn steering.
- */
-export type PushOptions = {
-  shouldQuery?: boolean;
-  priority?: "now" | "next" | "later";
-};
-
-/**
- * Create an async message channel backed by a simple queue + promise resolver pattern.
- * Returns an AsyncGenerator that yields SDKUserMessages and a push function for injection.
- * The generator will return (end) after idleTimeoutMs of inactivity.
- */
-export function createMessageChannel(
-  sessionId: string,
-  idleTimeoutMs = IDLE_TIMEOUT_MS,
-) {
-  type Waiter = { resolve: (msg: SDKUserMessage) => void };
-  const waiters: Waiter[] = [];
-  const pending: SDKUserMessage[] = [];
-  let closed = false;
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  let idleReject: (() => void) | null = null;
-
-  function resetIdleTimer() {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      closed = true;
-      // Wake any waiting consumer so it can exit
-      if (idleReject) idleReject();
-    }, idleTimeoutMs);
-  }
-
-  function buildUserMessage(
-    text: string,
-    opts?: PushOptions,
-  ): SDKUserMessage {
-    const msg: SDKUserMessage = {
-      type: "user",
-      message: { role: "user", content: text },
-      parent_tool_use_id: null,
-      session_id: sessionId,
-    };
-    // shouldQuery: false → append context without triggering a new assistant
-    // turn (SDK v0.2.110+). Used for mid-turn steering: the message merges
-    // into the current turn's next LLM call, so the agent reacts to the new
-    // info without restarting work.
-    if (opts?.shouldQuery !== undefined) {
-      (msg as unknown as { shouldQuery: boolean }).shouldQuery = opts.shouldQuery;
-    }
-    // priority: 'now' | 'next' | 'later' — present in SDK type but undocumented.
-    // Setting 'now' for mid-turn steering as a hint; SDK may or may not honor.
-    if (opts?.priority !== undefined) {
-      (msg as unknown as { priority: PushOptions["priority"] }).priority = opts.priority;
-    }
-    return msg;
-  }
-
-  async function* generator(): AsyncGenerator<SDKUserMessage> {
-    resetIdleTimer();
-    while (!closed) {
-      if (pending.length > 0) {
-        resetIdleTimer();
-        yield pending.shift()!;
-      } else {
-        try {
-          const msg = await new Promise<SDKUserMessage>((resolve, reject) => {
-            idleReject = reject;
-            waiters.push({ resolve });
-          });
-          resetIdleTimer();
-          yield msg;
-        } catch {
-          // Idle timeout triggered — exit generator
-          break;
-        }
-      }
-    }
-    if (idleTimer) clearTimeout(idleTimer);
-  }
-
-  function push(text: string, opts?: PushOptions) {
-    const msg = buildUserMessage(text, opts);
-    if (waiters.length > 0) {
-      const waiter = waiters.shift()!;
-      idleReject = null;
-      waiter.resolve(msg);
-    } else {
-      pending.push(msg);
-    }
-  }
-
-  function close() {
-    closed = true;
-    if (idleTimer) clearTimeout(idleTimer);
-    if (idleReject) idleReject();
-  }
-
-  return { generator: generator(), push, close, buildUserMessage };
-}
+export { createMessageChannel, type PushOptions } from "./harness/claude/message-channel.ts";
 
 /**
  * Start a Unix domain socket server that accepts incoming messages and pushes
@@ -846,177 +671,7 @@ export function recordMetrics(db: Database, data: MetricsData): void {
 // JSONL cost aggregation
 // ---------------------------------------------------------------------------
 
-/** Pricing per 1M tokens for each model family. */
-export const MODEL_PRICING: Record<
-  string,
-  { in: number; out: number; cacheRead: number; cacheCreate: number }
-> = {
-  opus:    { in: 15.0,  out: 75.0,  cacheRead: 1.50,  cacheCreate: 18.75 },
-  sonnet:  { in: 3.0,   out: 15.0,  cacheRead: 0.30,  cacheCreate: 3.75 },
-  haiku:   { in: 1.0,   out: 5.0,   cacheRead: 0.10,  cacheCreate: 1.25 },
-};
-
-/** Determine pricing tier from a model string (e.g. "claude-sonnet-4-5"). */
-export function modelFamily(model: string): keyof typeof MODEL_PRICING {
-  const m = model.toLowerCase();
-  if (m.includes("opus")) return "opus";
-  if (m.includes("haiku")) return "haiku";
-  return "sonnet"; // default
-}
-
-/**
- * Resolve the Claude project directory name for a working directory.
- * Claude Code derives this by replacing every '/' with '-', so the leading
- * slash becomes a leading '-' ("/home/agent" -> "-home-agent").
- *
- * @param cwd - Directory the session runs in. Trigger sessions are started
- *   with `cwd: HOME`, so callers resolving their transcripts pass that same
- *   value rather than relying on the runner's own process.cwd().
- */
-export function resolveClaudeProjectDir(cwd?: string): string {
-  const projectDir =
-    process.env.CLAUDE_PROJECT_DIR ??
-    (cwd ?? process.cwd()).replace(/\//g, "-");
-  return projectDir;
-}
-
-export type AggregatedUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  costUsd: number;
-};
-
-/**
- * Aggregate cost+tokens for a trigger run by scanning the parent session JSONL
- * plus all subagent JSONL files, filtering by timestamp window and deduping
- * by message.id. Uses Anthropic API list pricing per model family.
- *
- * Window: [startedAt, endedAt + 60s buffer] — buffer accommodates async tool_results.
- *
- * Returns zero-valued result if files missing or parse fails (never throws).
- */
-export function aggregateRunCost(
-  parentSessionId: string,
-  startedAt: string,
-  endedAt: string,
-  homeDir?: string,
-): AggregatedUsage {
-  const zero: AggregatedUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    costUsd: 0,
-  };
-
-  try {
-    const base = homeDir ?? HOME;
-    const projectDir = resolveClaudeProjectDir(base);
-    const projectBase = `${base}/.claude/projects/${projectDir}`;
-
-    // Build time window
-    const windowStart = new Date(startedAt).getTime();
-    const windowEnd = new Date(endedAt).getTime() + 60_000; // +60s buffer
-
-    if (isNaN(windowStart) || isNaN(windowEnd)) return zero;
-
-    // Collect files to scan: parent JSONL + all subagent JSONLs
-    const filesToScan: string[] = [];
-
-    const parentJsonl = `${projectBase}/${parentSessionId}.jsonl`;
-    if (existsSync(parentJsonl)) {
-      filesToScan.push(parentJsonl);
-    }
-
-    const subagentsDir = `${projectBase}/${parentSessionId}/subagents`;
-    if (existsSync(subagentsDir)) {
-      try {
-        const entries = readdirSync(subagentsDir);
-        for (const entry of entries) {
-          if (entry.startsWith("agent-") && entry.endsWith(".jsonl")) {
-            filesToScan.push(`${subagentsDir}/${entry}`);
-          }
-        }
-      } catch {
-        // Subagents dir unreadable — proceed with parent only
-      }
-    }
-
-    if (filesToScan.length === 0) return zero;
-
-    // Single dedup set shared across all files
-    const seenMessageIds = new Set<string>();
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheCreationTokens = 0;
-    let costUsd = 0;
-
-    for (const filePath of filesToScan) {
-      let content: string;
-      try {
-        content = readFileSync(filePath, "utf8");
-      } catch {
-        continue;
-      }
-
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let obj: any;
-        try {
-          obj = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-
-        // Filter by time window
-        if (!obj.timestamp) continue;
-        const ts = new Date(obj.timestamp as string).getTime();
-        if (isNaN(ts) || ts < windowStart || ts > windowEnd) continue;
-
-        // Must have message.usage and message.id
-        const msg = obj.message;
-        if (!msg || typeof msg !== "object") continue;
-        if (!msg.usage) continue;
-        if (!msg.id) continue;
-
-        // Deduplicate by message.id across all files
-        const msgId = msg.id as string;
-        if (seenMessageIds.has(msgId)) continue;
-        seenMessageIds.add(msgId);
-
-        const usage = msg.usage as Record<string, number>;
-        const family = modelFamily((msg.model as string | undefined) ?? "");
-        const pricing = MODEL_PRICING[family];
-
-        const inTok = (usage.input_tokens as number | undefined) ?? 0;
-        const outTok = (usage.output_tokens as number | undefined) ?? 0;
-        const cacheReadTok = (usage.cache_read_input_tokens as number | undefined) ?? 0;
-        const cacheCreateTok = (usage.cache_creation_input_tokens as number | undefined) ?? 0;
-
-        inputTokens += inTok;
-        outputTokens += outTok;
-        cacheReadTokens += cacheReadTok;
-        cacheCreationTokens += cacheCreateTok;
-        costUsd +=
-          (inTok * pricing.in +
-            outTok * pricing.out +
-            cacheReadTok * pricing.cacheRead +
-            cacheCreateTok * pricing.cacheCreate) /
-          1_000_000;
-      }
-    }
-
-    return { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
-  } catch {
-    // Never throw — return zeros on any unexpected failure
-    return zero;
-  }
-}
-
+export { aggregateRunCost, resolveClaudeProjectDir, modelFamily, MODEL_PRICING, type AggregatedUsage } from "./harness/claude/legacy-usage.ts";
 
 /**
  * Disable remote MCP connectors that hang on startup by writing to ~/.claude.json.
@@ -1311,10 +966,9 @@ export function pruneStreamChunks(db: Database, sessionId: string): void {
  */
 export const runnerDeps: {
   createNotifier: () => WebUiNotifier;
-  query: typeof query;
+  query?: QueryFactory;
 } = {
   createNotifier: () => createWebUiNotifier(),
-  query,
 };
 
 /**
@@ -1449,31 +1103,15 @@ export async function runDirect(
 
   const startedAt = isoNow();
   const startedMs = Date.now();
-  let resultMsg: SDKResultMessage | null = null;
+  let resultMsg: ConversationResult | null = null;
   let capturedSessionId: string | null = null;
   let isError = false;
 
   const resumeId = options?.resumeId;
-  // Auto-memory is disabled via the settings layer: `autoMemoryEnabled` is a
-  // Settings field, not a top-level query() option — passing it at the top
-  // level is silently ignored. mcpServers is parsed from JSON so it's cast at
-  // the field; the outer `as` keeps that loose shape off the typecheck.
-  const queryOptions = {
-    systemPrompt,
-    model,
-    mcpServers: mcpServers as any,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    settings: { autoMemoryEnabled: false },
-    disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-    cwd: HOME,
+  const q = createAtlasHarness({ query: runnerDeps.query }).openConversation({
+    prompt, systemPrompt, model, mcpServers: mcpServers as any, cwd: HOME,
     ...(resumeId ? { resume: resumeId } : { persistSession: false }),
-    ...(CLAUDE_CODE_PATH
-      ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
-      : {}),
-  } as unknown as Parameters<typeof query>[0]["options"];
-
-  const q = query({ prompt, options: queryOptions });
+  });
 
   const timeoutHandle = setTimeout(() => {
     q.return(undefined);
@@ -1482,7 +1120,7 @@ export async function runDirect(
   try {
     for await (const msg of q) {
       if (msg.type === "result") {
-        resultMsg = msg as SDKResultMessage;
+        resultMsg = msg as ConversationResult;
         capturedSessionId = (msg as { session_id?: string }).session_id ?? capturedSessionId;
         isError = msg.subtype !== "success";
         break;
@@ -2015,7 +1653,7 @@ export async function main(): Promise<void> {
       ? undefined
       : parseInt(process.env.TRIGGER_TIMEOUT ?? "3600", 10) * 1000;
 
-  let resultMsg: SDKResultMessage | null = null;
+  let resultMsg: ConversationResult | null = null;
   let capturedSessionId: string | null = null;
   let isError = false;
 
@@ -2028,7 +1666,7 @@ export async function main(): Promise<void> {
   // --- Set up message channel + socket server for message injection ---
   const socketPath = getSocketPath(triggerName, sessionKey);
   // Use a placeholder session_id initially; the generator produces messages with it
-  const msgChannel = createMessageChannel(
+  let msgChannel = createMessageChannel(
     "pending",
     sessionMode === "persistent" ? undefined : IDLE_TIMEOUT_MS,
   );
@@ -2080,50 +1718,14 @@ export async function main(): Promise<void> {
     const injectionQueue: string[] = [];
     let inTurn = false;
 
-    // Auto-memory is disabled via the settings layer: `autoMemoryEnabled` is a
-    // Settings field, not a top-level query() option — passing it at the top
-    // level is silently ignored. mcpServers is parsed from JSON so it's cast at
-    // the field; the outer `as` keeps that loose shape off the typecheck.
-    const options = {
-      systemPrompt,
-      model,
-      mcpServers: mcpServers as any,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      settings: { autoMemoryEnabled: false },
-      disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-      cwd: HOME,
-      ...(resumeId ? { resume: resumeId } : {}),
-      ...(CLAUDE_CODE_PATH
-        ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
-        : {}),
-      ...(wantsStreaming ? { includePartialMessages: true } : {}),
-      hooks: {
-        PostToolBatch: [
-          {
-            hooks: [
-              async () => {
-                const pending = injectionQueue.splice(0);
-                if (pending.length === 0) {
-                  return {};
-                }
-                log.log(
-                  `Mid-turn steering: injecting ${pending.length} queued message(s) as additionalContext`,
-                );
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: "PostToolBatch" as const,
-                    additionalContext: pending
-                      .map((t) => `[Steering-Nachricht von ${sessionKey} (während aktivem Turn empfangen)]\n${t}`)
-                      .join("\n\n---\n\n"),
-                  },
-                };
-              },
-            ],
-          },
-        ],
-      },
-    } as unknown as Parameters<typeof query>[0]["options"];
+    const nextToolContext = () => {
+      const pending = injectionQueue.splice(0);
+      if (!pending.length) return undefined;
+      log.log(`Mid-turn steering: injecting ${pending.length} queued message(s) as additionalContext`);
+      return pending
+        .map((t) => `[Steering-Nachricht von ${sessionKey} (während aktivem Turn empfangen)]\n${t}`)
+        .join("\n\n---\n\n");
+    };
 
     // Typing indicator: one-shot per turn (no heartbeat).
     // signal-cli's `sendTyping` auto-expires after ~15s on Signal's side,
@@ -2147,7 +1749,7 @@ export async function main(): Promise<void> {
     sendTypingOnce();
 
     // Use a mutable reference so the socket server control handler can call q.interrupt()
-    let q: import("@anthropic-ai/claude-agent-sdk").Query | null = null;
+    let q: Conversation | null = null;
 
     // Start socket server so other trigger-runner processes can inject messages.
     //
@@ -2200,7 +1802,11 @@ export async function main(): Promise<void> {
       log,
     );
 
-    q = runnerDeps.query({ prompt: msgChannel.generator, options });
+    q = createAtlasHarness({ query: runnerDeps.query }).openConversation({
+      prompt: msgChannel.generator, systemPrompt, model, mcpServers: mcpServers as any,
+      cwd: HOME, ...(resumeId ? { resume: resumeId } : {}),
+      includePartialMessages: wantsStreaming, nextToolContext,
+    });
 
     const timeoutHandle = triggerTimeout
       ? setTimeout(() => {
@@ -2222,7 +1828,7 @@ export async function main(): Promise<void> {
           // user message. The for-await loop ends naturally when
           // msgChannel.generator finishes (idle timeout closes it) or when
           // the trigger timeout fires q.close().
-          resultMsg = msg as SDKResultMessage;
+          resultMsg = msg as ConversationResult;
           capturedSessionId = msg.session_id ?? null;
           isError = msg.subtype !== "success";
           inTurn = false;
@@ -2334,6 +1940,7 @@ export async function main(): Promise<void> {
         capturedSessionId = null;
         isError = false;
         // Need a fresh message channel for the retry
+        msgChannel = createMessageChannel("pending", IDLE_TIMEOUT_MS);
         cleanupSocket(socketServer, socketPath);
         socketServer = null;
         await runQuery();

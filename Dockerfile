@@ -14,6 +14,8 @@ RUN bun install --frozen-lockfile
 # Copy source files: trigger-runner + lib imports (config.ts, db.ts, timezone.ts,
 # zoned-time.ts, trigger-socket.ts for socket/lock paths, web-ui-notify.ts for chat pings)
 COPY app/triggers/trigger-runner.ts ./triggers/
+COPY app/triggers/harness/ ./triggers/harness/
+COPY app/lib/harness.ts ./lib/
 COPY app/lib/config.ts ./lib/
 COPY app/lib/db.ts ./lib/
 COPY app/lib/timezone.ts ./lib/
