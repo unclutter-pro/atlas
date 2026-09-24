@@ -184,6 +184,11 @@ COPY app/ /atlas/app/
 # Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/
 COPY app/defaults/skill-support/ /etc/claude-code/.claude/skill-support/
+# Office skills share one helper package. The links are created here instead of
+# being committed, because symlinked directories break some git-based file trees.
+RUN for skill in docx pptx xlsx; do \
+      ln -sfn ../../../skill-support/office /etc/claude-code/.claude/skills/$skill/scripts/office; \
+    done
 COPY app/defaults/agents/ /etc/claude-code/.claude/agents/
 COPY .claude/settings.json /atlas/app/.claude/settings.json
 COPY supervisord.conf /etc/supervisor/conf.d/atlas.conf
