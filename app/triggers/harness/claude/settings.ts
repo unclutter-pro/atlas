@@ -110,15 +110,30 @@ function installMarkdown(from: string | undefined, target: (name: string) => str
   }
 }
 
-/** Move entries of a legacy directory into the new one, then remove it. */
-function migrateLegacy(from: string, to: string, log: string[], what: string, filter: (name: string) => boolean): void {
+/**
+ * Move entries of a legacy directory into the new one, then remove it — but
+ * only once every entry was actually migrated. An entry whose target already
+ * exists, or which fails `filter`, is left in place and logged instead of
+ * being silently dropped along with the rest of the directory.
+ */
+function migrateLegacy(from: string, to: string, log: string[], what: string, filter: (name: string) => boolean, filterReason: string): void {
   if (!existsSync(from)) return;
+  let allMigrated = true;
   for (const name of readdirSync(from)) {
-    if (!filter(name) || existsSync(join(to, name))) continue;
+    if (!filter(name)) {
+      log.push(`Skipped legacy ${what} ${name}: ${filterReason}`);
+      allMigrated = false;
+      continue;
+    }
+    if (existsSync(join(to, name))) {
+      log.push(`Skipped legacy ${what} ${name}: target exists`);
+      allMigrated = false;
+      continue;
+    }
     renameSync(join(from, name), join(to, name));
     log.push(`Migrated ${what}: ${name} → ${to}`);
   }
-  rmSync(from, { recursive: true, force: true });
+  if (allMigrated) rmSync(from, { recursive: true, force: true });
 }
 
 /**
@@ -145,14 +160,21 @@ function prepareSkillsAndAgents(home: string, log: string[]): void {
     } catch {}
   }
   // Legacy ~/skills/ and ~/agents/ locations.
-  migrateLegacy(join(home, "skills"), skills, log, "skill", (name) => {
-    try {
-      return statSync(join(home, "skills", name)).isDirectory();
-    } catch {
-      return false;
-    }
-  });
-  migrateLegacy(join(home, "agents"), agents, log, "agent", (name) => name.endsWith(".md"));
+  migrateLegacy(
+    join(home, "skills"),
+    skills,
+    log,
+    "skill",
+    (name) => {
+      try {
+        return statSync(join(home, "skills", name)).isDirectory();
+      } catch {
+        return false;
+      }
+    },
+    "not a directory",
+  );
+  migrateLegacy(join(home, "agents"), agents, log, "agent", (name) => name.endsWith(".md"), "not a file");
 }
 
 /** Write the whole Claude Code configuration; returns a one-line summary per step. */
