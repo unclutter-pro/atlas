@@ -80,7 +80,7 @@ describe("configureClaude", () => {
     writeFileSync(join(home, "skills", "deploy", "SKILL.md"), "legacy version");
     mkdirSync(join(home, ".claude", "skills", "deploy"), { recursive: true });
     writeFileSync(join(home, ".claude", "skills", "deploy", "SKILL.md"), "current version");
-    configureClaude(home, { appDir: home });
+    configureClaude(home);
     expect(existsSync(join(home, "skills", "deploy"))).toBe(true);
     expect(readFileSync(join(home, ".claude", "skills", "deploy", "SKILL.md"), "utf8")).toBe("current version");
   });
