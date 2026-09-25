@@ -17,6 +17,7 @@ import {
   buildSystemPrompt,
   buildInjectMessage,
   resolveModel,
+  defaultModelKeyFor,
   getMcpServers,
   safePlaceholderReplace,
   readTriggerConfig,
@@ -432,6 +433,17 @@ models:
     expect(model).toBe("claude-sonnet-4-6");
   });
 
+  test("cron trigger without model_key resolves via models.cron", () => {
+    writeFileSync(join(tmpDir, "config.yml"), `
+models:
+  trigger: claude-opus-4-8
+  cron: claude-sonnet-4-6
+`);
+    process.env.HOME = tmpDir;
+    delete process.env.ATLAS_CRON;
+    expect(resolveModel("", defaultModelKeyFor("cron"))).toBe("claude-sonnet-4-6");
+  });
+
   test("handles malformed YAML gracefully", () => {
     const badDir = makeTempDir();
     writeFileSync(join(badDir, "config.yml"), "{ this is: not valid: yaml: [");
@@ -440,6 +452,45 @@ models:
     const model = resolveModel("", "trigger");
     expect(model).toBe("opus");
     rmSync(badDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultModelKeyFor
+// ---------------------------------------------------------------------------
+
+describe("defaultModelKeyFor", () => {
+  let originalCron: string | undefined;
+
+  beforeEach(() => {
+    originalCron = process.env.ATLAS_CRON;
+    delete process.env.ATLAS_CRON;
+  });
+
+  afterEach(() => {
+    if (originalCron !== undefined) {
+      process.env.ATLAS_CRON = originalCron;
+    } else {
+      delete process.env.ATLAS_CRON;
+    }
+  });
+
+  test("cron-type trigger uses the cron key", () => {
+    expect(defaultModelKeyFor("cron")).toBe("cron");
+  });
+
+  test("webhook and manual triggers use the trigger key", () => {
+    expect(defaultModelKeyFor("webhook")).toBe("trigger");
+    expect(defaultModelKeyFor("manual")).toBe("trigger");
+  });
+
+  test("direct invocation without ATLAS_CRON uses the trigger key", () => {
+    expect(defaultModelKeyFor()).toBe("trigger");
+  });
+
+  test("ATLAS_CRON=1 still selects the cron key for direct invocations", () => {
+    process.env.ATLAS_CRON = "1";
+    expect(defaultModelKeyFor()).toBe("cron");
   });
 });
 

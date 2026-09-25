@@ -327,6 +327,19 @@ export function resolveModel(
 }
 
 /**
+ * Model key a trigger uses when it carries no explicit `model_key` override.
+ * Cron-type triggers get `models.cron`; everything else gets `models.trigger`.
+ *
+ * @param triggerType - `type` column of the trigger row, or undefined for
+ *   `--direct` invocations, which signal cron via the ATLAS_CRON env var.
+ */
+export function defaultModelKeyFor(triggerType?: string): string {
+  return triggerType === "cron" || process.env.ATLAS_CRON === "1"
+    ? "cron"
+    : "trigger";
+}
+
+/**
  * Returns the MCP servers config object for the query() call.
  * Merges user servers from:
  *   1. ~/.atlas-mcp/user.json (Atlas-managed user config)
@@ -1181,7 +1194,7 @@ export async function main(): Promise<void> {
     }
 
     let channel = "internal";
-    let modelKey = process.env.ATLAS_CRON === "1" ? "cron" : "trigger";
+    let modelKey = defaultModelKeyFor();
     let resumeId: string | undefined;
     let triggerNameOverride: string | undefined;
 
@@ -1574,10 +1587,10 @@ export async function main(): Promise<void> {
   const systemPrompt = buildSystemPrompt(channel);
 
   // --- Resolve model ---
-  // Per-trigger model_key (from DB) overrides the env-driven default so a
+  // Per-trigger model_key (from DB) overrides the type-driven default so a
   // single cron can opt out of the global `models.cron` setting — e.g. a
   // lightweight daily digest running cheaper than security-scan.
-  const defaultModelKey = process.env.ATLAS_CRON === "1" ? "cron" : "trigger";
+  const defaultModelKey = defaultModelKeyFor(config.type);
   const modelKey = (config.model_key && config.model_key.trim()) || defaultModelKey;
   const model = resolveModel(`${HOME}/config.yml`, modelKey);
 
