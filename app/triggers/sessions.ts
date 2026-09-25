@@ -90,9 +90,7 @@ export function summarize(id: string, reference: string, nested: boolean, entrie
       if (!isSystemText(e.text) && e.text.trim().length > 10) turns.push({ role: "user", text: e.text });
       continue;
     }
-    // messageId correlates blocks to their assistant message across all three
-    // kinds now (assistant-text, reasoning, tool-call), so a tool-only message
-    // gets its own boundary too, not just ones that also carry text.
+    // All three kinds carry messageId, so a tool-only message gets a boundary too.
     const messageId = e.kind === "assistant-text" || e.kind === "reasoning" || e.kind === "tool-call" ? e.messageId : null;
     if (!group || (messageId && group.messageId && messageId !== group.messageId)) {
       flush();

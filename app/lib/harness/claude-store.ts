@@ -348,8 +348,6 @@ export class ClaudeSessionStore implements HarnessSessionStore {
         rmSync(file, { force: true });
         removed++;
       } catch (err) {
-        // Best-effort cleanup: skip and keep pruning, but name the session so a
-        // permanently failing removal (permissions, busy file) is not invisible.
         console.error(`Prune failed for session ${id}: ${(err as Error).message}`);
       }
     }
