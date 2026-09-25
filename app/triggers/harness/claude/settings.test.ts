@@ -74,6 +74,16 @@ describe("configureClaude", () => {
     expect(existsSync(join(home, "skills"))).toBe(false);
     expect(existsSync(join(home, "agents"))).toBe(false);
   });
+
+  test("keeps a legacy entry and its directory when the target already exists", () => {
+    mkdirSync(join(home, "skills", "deploy"), { recursive: true });
+    writeFileSync(join(home, "skills", "deploy", "SKILL.md"), "legacy version");
+    mkdirSync(join(home, ".claude", "skills", "deploy"), { recursive: true });
+    writeFileSync(join(home, ".claude", "skills", "deploy", "SKILL.md"), "current version");
+    configureClaude(home, { appDir: home });
+    expect(existsSync(join(home, "skills", "deploy"))).toBe(true);
+    expect(readFileSync(join(home, ".claude", "skills", "deploy", "SKILL.md"), "utf8")).toBe("current version");
+  });
 });
 
 describe("Claude prompt extension", () => {

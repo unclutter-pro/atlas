@@ -110,8 +110,13 @@ atlas/
 │   ├── web-ui/                   # Bun.serve + React dashboard
 │   ├── triggers/                 # Trigger runner scripts
 │   │   ├── trigger.sh            # Generic trigger runner
-│   │   ├── lifecycle/            # Atlas lifecycle policy (memory, task gate, compaction)
-│   │   ├── harness/              # Agent backends; claude/ is the Claude Code adapter
+│   │   ├── lifecycle/            # Atlas lifecycle policy, backend-neutral
+│   │   │   ├── session-start.sh      # Loads identity + memory on wake
+│   │   │   ├── stop.sh               # Task gate and journal reminder
+│   │   │   ├── pre-compact.sh        # Memory flush before compaction
+│   │   │   └── task-session.sh       # Task and goal context
+│   │   ├── harness/              # Agent backends
+│   │   │   └── claude/hooks/         # Claude Code protocol wrappers
 │   │   ├── sync-crontab.ts       # Crontab auto-generation from DB
 │   │   └── cron/                 # Cron-specific scripts
 │   └── init.sh                   # Container bootstrap
