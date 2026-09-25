@@ -15,14 +15,14 @@
  * (the documented alternative to the single-shot `stop_hook_active` guard),
  * then failing open so the run can never hang.
  *
- * Wired into `app/hooks/stop.sh`, active only when ATLAS_TRIGGER_CHANNEL=validator.
+ * Wired into `stop.sh` (this directory), active only when ATLAS_TRIGGER_CHANNEL=validator.
  *
  * Stop-hook contract (see https://code.claude.com/docs/en/hooks):
  *   stdin  — { transcript_path, stop_hook_active, ... }
  *   stdout — empty (allow stop) | {"decision":"block","reason":"..."} (continue)
  */
 import { readFileSync } from "node:fs";
-import { parseValidatorOutput } from "../triggers/manage-tasks.ts";
+import { parseValidatorOutput } from "../../../manage-tasks.ts";
 
 /** How many times to bounce a malformed verdict back before giving up. */
 const MAX_REPROMPTS = 3;

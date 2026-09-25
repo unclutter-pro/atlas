@@ -194,6 +194,19 @@ describe("buildSystemPrompt", () => {
     expect(result).toContain("Core trigger instructions.");
   });
 
+  test("places the harness prompt between the shared prompt and the channel prompt", () => {
+    writeFileSync(join(appDir, "prompts", "trigger-system-prompt.md"), "Core trigger instructions.");
+    writeFileSync(join(appDir, "prompts", "trigger-channel-email.md"), "Email-specific instructions.");
+    const result = buildSystemPrompt("email", { appDir, workspace, harnessPrompt: "<harness>syntax</harness>" });
+    const core = result.indexOf("Core trigger instructions.");
+    const harness = result.indexOf("<harness>syntax</harness>");
+    const channel = result.indexOf("Email-specific instructions.");
+    expect(core).toBeGreaterThan(-1);
+    expect(harness).toBeGreaterThan(core);
+    expect(channel).toBeGreaterThan(harness);
+    expect(buildSystemPrompt("email", { appDir, workspace })).not.toContain("<harness>");
+  });
+
   test("includes channel-specific prompt after --- separator", () => {
     writeFileSync(
       join(appDir, "prompts", "trigger-channel-signal.md"),

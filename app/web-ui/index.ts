@@ -217,7 +217,7 @@ api.patch("/config", async (c) => {
     );
   }
 
-  trySpawnSync(["bun", "run", "/atlas/app/hooks/generate-settings.ts"]);
+  trySpawnSync(["bun", "run", "/atlas/app/triggers/harness/configure.ts"]);
   syncCrontab();
 
   const config = resolveConfig(WS);

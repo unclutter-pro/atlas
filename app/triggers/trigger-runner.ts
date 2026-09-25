@@ -236,6 +236,8 @@ export function buildSystemPrompt(
   options?: {
     appDir?: string;
     workspace?: string;
+    /** The harness backend's prompt section (HarnessBackend.promptExtension). */
+    harnessPrompt?: string;
   },
 ): string {
   const appDir = options?.appDir ?? APP_DIR;
@@ -258,6 +260,12 @@ export function buildSystemPrompt(
   const triggerSystemPromptFile = `${promptDir}/trigger-system-prompt.md`;
   if (existsSync(triggerSystemPromptFile)) {
     systemPrompt += `\n---\n\n${readFileSync(triggerSystemPromptFile, "utf8")}`;
+  }
+
+  // How the shared prompt's concepts (agents, skills, model tiers) are invoked
+  // in the configured backend.
+  if (options?.harnessPrompt) {
+    systemPrompt += `\n---\n\n${options.harnessPrompt}`;
   }
 
   // Channel-specific prompt
@@ -984,9 +992,10 @@ export async function runDirect(
   const triggerName = options?.triggerName ?? "direct";
 
   const log = makeLogger(triggerName);
+  const backend = runnerDeps.createBackend();
 
   // --- Build system prompt ---
-  const systemPrompt = buildSystemPrompt(channel);
+  const systemPrompt = buildSystemPrompt(channel, { harnessPrompt: backend.promptExtension });
 
   // --- Resolve model ---
   const model = resolveModel(`${HOME}/config.yml`, modelKey);
@@ -1016,7 +1025,6 @@ export async function runDirect(
   let capturedSessionId: string | null = null;
   let isError = false;
 
-  const backend = runnerDeps.createBackend();
   const resume = options?.resumeId ? backend.sessions.ref(options.resumeId) : null;
   if (options?.resumeId && !resume) {
     log.log(`ERROR: invalid session id to resume: ${options.resumeId}`);
@@ -1550,7 +1558,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Build system prompt ---
-  const systemPrompt = buildSystemPrompt(channel);
+  const systemPrompt = buildSystemPrompt(channel, { harnessPrompt: backend.promptExtension });
 
   // --- Resolve model ---
   // Per-trigger model_key (from DB) overrides the env-driven default so a

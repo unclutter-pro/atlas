@@ -5,7 +5,7 @@
  * told the tool exists, which leaks into the system prompt. `disallowedTools`
  * on the SDK query options removes the tool from the disclosure entirely.
  *
- * Keep in sync with the deny list in app/hooks/generate-settings.ts.
+ * Keep in sync with the deny list in settings.ts (this directory).
  */
 export const DISALLOWED_BUILTIN_TOOLS = [
   // Cron management — exposed via dedicated trigger commands, not LLM tools

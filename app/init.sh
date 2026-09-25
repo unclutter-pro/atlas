@@ -210,27 +210,6 @@ if [ ! -f "$WORKSPACE/SOUL.md" ]; then
   echo "  Created default SOUL.md"
 fi
 
-# Install default skills from external directory (e.g. ConfigMap mount)
-if [ -n "${ATLAS_DEFAULT_SKILLS_DIR:-}" ] && [ -d "$ATLAS_DEFAULT_SKILLS_DIR" ]; then
-  for f in "$ATLAS_DEFAULT_SKILLS_DIR"/*.md; do
-    [ -f "$f" ] || continue
-    _skill_name=$(basename "$f" .md)
-    mkdir -p "$HOME/.claude/skills/$_skill_name"
-    cp "$f" "$HOME/.claude/skills/$_skill_name/SKILL.md"
-    echo "  Installed default skill: $_skill_name"
-  done
-fi
-
-# Install default agents from external directory (e.g. ConfigMap mount)
-if [ -n "${ATLAS_DEFAULT_AGENTS_DIR:-}" ] && [ -d "$ATLAS_DEFAULT_AGENTS_DIR" ]; then
-  mkdir -p "$HOME/.claude/agents"
-  for f in "$ATLAS_DEFAULT_AGENTS_DIR"/*.md; do
-    [ -f "$f" ] || continue
-    cp "$f" "$HOME/.claude/agents/$(basename "$f")"
-    echo "  Installed default agent: $(basename "$f" .md)"
-  done
-fi
-
 # Migrate journal files to journal/ subdir
 for f in "$WORKSPACE/memory/"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md; do
   [ -f "$f" ] || continue
@@ -378,56 +357,12 @@ echo "[$(date)] Phase 7b: Atlas task management system (atlas.db)"
 TASK_TABLES=$(sqlite3 "$HOME/.index/atlas.db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('goals','tasks','task_deps','goal_validations');" 2>/dev/null) || TASK_TABLES=0
 echo "  Task management tables ready: ${TASK_TABLES}/4"
 
-# ── Phase 8: Claude Code Settings + Discovery Links ──
-# Regenerated on every start to pick up model changes from config.yml
-echo "[$(date)] Phase 8: Claude Code settings + discovery links"
-bun run /atlas/app/hooks/generate-settings.ts || echo "  ⚠ Settings generation failed (non-fatal)"
-
-# Skills: user-created skills live directly in ~/.claude/skills/
-# System default skills are in /etc/claude-code/.claude/skills/ (from Dockerfile)
-mkdir -p "$HOME/.claude/skills"
-
-# Clean up broken symlinks left from previous boot cycles (pre-97f3603 legacy)
-for link in "$HOME/.claude/skills/"*; do
-  if [ -L "$link" ] && [ ! -e "$link" ]; then
-    echo "  Removed broken skill symlink: $(basename "$link")"
-    rm -f "$link"
-  fi
-done
-
-# Migrate legacy ~/skills/ directories → ~/.claude/skills/
-if [ -d "$HOME/skills" ]; then
-  for d in "$HOME/skills/"*/; do
-    [ -d "$d" ] || continue
-    skill_name=$(basename "$d")
-    if [ ! -d "$HOME/.claude/skills/$skill_name" ]; then
-      mv "$d" "$HOME/.claude/skills/$skill_name"
-      echo "  Migrated skill: $skill_name → ~/.claude/skills/"
-    fi
-  done
-  # Remove old ~/skills/ dir if possible
-  rm -rf "$HOME/skills" 2>/dev/null || true
-fi
-echo "  Skills directory: $HOME/.claude/skills/"
-
-# Skills: user-created agents live directly in ~/.claude/agents/
-# System default skills are in /etc/claude-code/.claude/agents/ (from Dockerfile)
-mkdir -p "$HOME/.claude/agents"
-
-# Migrate legacy ~/agents/ files → ~/.claude/agents/
-if [ -d "$HOME/agents" ]; then
-  for f in "$HOME/agents/"*.md; do
-    [ -f "$f" ] || continue
-    agent_file=$(basename "$f")
-    if [ ! -f "$HOME/.claude/agents/$agent_file" ]; then
-      mv "$f" "$HOME/.claude/agents/$agent_file"
-      echo "  Migrated agent: ${agent_file%.md} → ~/.claude/agents/"
-    fi
-  done
-  # Remove old ~/agents/ dir if possible
-  rm -rf "$HOME/agents" 2>/dev/null || true
-fi
-echo "  Skills directory: $HOME/.claude/agents/"
+# ── Phase 8: Agent backend configuration ──
+# Regenerated on every start to pick up config.yml changes: hooks, permissions,
+# plugins, skill and agent locations (and ATLAS_DEFAULT_SKILLS_DIR /
+# ATLAS_DEFAULT_AGENTS_DIR installs) of the configured harness backend.
+echo "[$(date)] Phase 8: Agent backend configuration"
+bun run /atlas/app/triggers/harness/configure.ts || echo "  ⚠ Agent backend configuration failed (non-fatal)"
 
 # ── Phase 9: Sync Crontab from Triggers ──
 echo "[$(date)] Phase 9: Crontab sync"

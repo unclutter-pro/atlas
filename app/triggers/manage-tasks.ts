@@ -439,7 +439,7 @@ export const VALIDATOR_UNPARSEABLE_FEEDBACK = "Validator produced no parseable o
  * line-starts-with-{ check.
  *
  * Returns `null` when no parseable verdict is found. The validator Stop-hook
- * (`app/hooks/validator-stop-check.ts`) relies on this exact contract: a `null`
+ * (`harness/claude/hooks/validator-stop-check.ts`) relies on this exact contract: a `null`
  * means the model did not produce a usable verdict and must be reprompted.
  *
  * Exported for unit testing.
