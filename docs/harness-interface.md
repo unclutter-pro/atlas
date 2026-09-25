@@ -1,9 +1,11 @@
 # Backend-independent agent execution
 
 Status: the first Claude Code adapter is implemented. The TypeScript contract is
-in [`app/lib/harness.ts`](../app/lib/harness.ts). The existing runner goes through
-the adapter's compatibility entry point; migrating its multi-turn coordinator
-to the portable run API is a separate step.
+in [`app/lib/harness.ts`](../app/lib/harness.ts). The trigger runner and the web-ui
+work only through that contract: the runner's multi-turn loop uses
+`HarnessBackend.openConversation`, and every reader of session data uses the
+backend's `HarnessSessionStore`. Migrating the runner's coordinator to the
+portable run API is a separate step.
 
 ## Current implementation
 
@@ -21,24 +23,29 @@ Two entry points share the adapter:
 - `HarnessBackend.create/resume` returns portable sessions with explicit tool
   capabilities, scoped environments, normalized events and per-run results.
   Each run uses a local SDK process, and later runs resume the native conversation.
-- `createAtlasHarness().openConversation` retains the existing long-lived SDK
-  conversation and its native events. Both direct mode and persistent triggers
-  use this entry point. Its SDK-shaped types are confined to the compatibility
-  boundary, though the runner still interprets those events during this stage.
+- `HarnessBackend.openConversation` runs Atlas' long-lived conversation with the
+  backend's native tools, hooks, skills and delegation. Direct mode and persistent
+  triggers use it. The runner feeds input (`push`), interrupts turns, and reads
+  normalized events: `session`, `message`, `text.delta` and one `turn.finished`
+  per turn. SDK message shapes never leave the adapter.
 
-This distinction preserves startup/stop hooks, native Agent delegation, skills,
-MCP configuration, model aliases and the exact system prompt in current deployments.
-It also preserves the web UI's item IDs, streaming chunk format, notification
-order, database schema, usage webhook and existing native-child cost aggregation.
-The runner fails with `unsupported` when another backend is configured, because
-its conversation loop still interprets the Claude SDK stream.
+The conversation entry point preserves startup/stop hooks, native Agent delegation,
+skills, MCP configuration, model aliases and the exact system prompt in current
+deployments. It also preserves the web UI's item IDs, streaming chunk format,
+notification order, database schema, usage webhook and existing native-child cost
+aggregation. `text.delta` carries the message ID that the stored assistant entry
+has (`HistoryEntry.messageId`), which is how a streamed draft is replaced by the
+stored text. A turn's `usage` is that turn's alone: the adapter subtracts the
+session totals before the turn, read from the stored cost-state on resume.
+Provider rejections of the request itself come back as `invalid-request`; the
+runner then discards the session instead of resuming a context that fails again.
 
 The portable API currently advertises customTools: false, compactionContext: false
 and usageUpdates: final-only. Requests for unsupported host tools or compaction
 bindings fail before execution. Existing Atlas hooks, skills, MCP tools and native
-subagents continue to work through the compatibility path. No native delegation
-is exposed through the portable tool allowlist. A future backend must implement
-the portable contract; it does not need to imitate the compatibility API.
+subagents continue to work through the conversation entry point. No native delegation
+is exposed through the portable tool allowlist. A second backend implements the
+whole contract, including openConversation with its own native tools.
 
 Model profiles default to strong/Opus, balanced/Sonnet and fast/Haiku using the
 existing model-name expansion. Constructor overrides configure the three profiles.
@@ -56,9 +63,10 @@ Claude's final cost and modelUsage fields can be cumulative across resumed
 sessions. The portable adapter reads the persisted cost-state before a resumed
 run and reports the counter difference, including internal model calls. If the
 baseline is missing or stale, it reports partial token usage and an unknown cost.
-It never charges the full historical session to a new run. The compatibility
-path keeps the existing aggregation and pricing, now behind
-`HarnessSessionStore.usage`.
+It never charges the full historical session to a new run. Trigger metrics keep
+the existing aggregation and pricing, now behind `HarnessSessionStore.usage`,
+because it includes nested agents; ephemeral direct runs store no history and
+record the turn's own `usage`.
 
 The sections below describe the full architectural contract. Portable host tools,
 Atlas-owned delegation and moving completion gates into a coordinator remain
@@ -363,11 +371,9 @@ offsets may interpret them approximately.
 
 ## Remaining migration
 
-1. Move the runner's conversation loop off SDK message shapes: normalized
-   conversation events instead of `stream_event`/`result`, provider error
-   classification in the adapter. Python and shell readers of native transcripts
-   (dreaming's session extraction, cleanup, the validator stop hook) still need a
-   store-backed CLI.
+1. Give the Python and shell readers of native transcripts (dreaming's session
+   extraction and filter, daily cleanup, the validator stop hook) a store-backed
+   CLI instead of parsing `~/.claude/projects`.
 2. Move completion gates, pending input ownership and normalized event persistence
    into the Atlas coordinator. UI and memory readers consume Atlas data or history().
 3. Introduce Atlas host tools for delegation and persist agent relationships.
@@ -383,4 +389,5 @@ child costs counted exactly once; usage snapshots replaced rather than summed;
 all three distinct model profiles; pinned models surviving catalog changes; and
 usage returned on failed and aborted runs. These tests belong with implementations.
 The adapter includes contract tests and an independent baseline check of the
-pre-extraction SDK options. Existing runner and web-UI tests cover compatibility.
+pre-extraction SDK options. Existing runner and web-UI tests cover the conversation
+and session-store paths.

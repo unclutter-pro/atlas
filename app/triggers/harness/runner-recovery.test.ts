@@ -11,6 +11,7 @@ test("failed resume retries with a fresh input channel and persists the replacem
 import { mkdirSync, writeFileSync } from "node:fs";
 import { getDb } from ${JSON.stringify(join(import.meta.dir, "../../lib/atlas-db.ts"))};
 import { main, runnerDeps } from ${JSON.stringify(join(import.meta.dir, "../trigger-runner.ts"))};
+import { ClaudeCodeBackend } from ${JSON.stringify(join(import.meta.dir, "claude/backend.ts"))};
 const db = getDb();
 db.prepare("INSERT INTO triggers (name, type, channel, prompt, session_mode) VALUES ('retry-check', 'manual', 'internal', '{{payload}}', 'persistent')").run();
 db.prepare("INSERT INTO trigger_sessions (trigger_name, session_key, session_id) VALUES ('retry-check', ?, 'old-session')").run(${JSON.stringify(key)});
@@ -18,7 +19,7 @@ const dir = process.env.HOME + "/.claude/projects/p";
 mkdirSync(dir, {recursive: true});
 writeFileSync(dir + "/old-session.jsonl", "{}\\n");
 let attempts = 0;
-runnerDeps.query = ((request) => {
+const query = ((request) => {
   const attempt = ++attempts;
   async function* events() {
     const first = await request.prompt[Symbol.asyncIterator]().next();
@@ -34,6 +35,7 @@ runnerDeps.query = ((request) => {
   }
   return Object.assign(events(), {close() {}, async interrupt() {}});
 }) as any;
+runnerDeps.createBackend = () => new ClaudeCodeBackend({ query });
 process.argv = [process.argv[0], "trigger-runner.ts", "retry-check", "recover-me", ${JSON.stringify(key)}];
 await main();
 const row = db.query("SELECT session_id FROM trigger_sessions WHERE trigger_name='retry-check' AND session_key=?").get(${JSON.stringify(key)});
