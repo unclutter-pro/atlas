@@ -22,27 +22,61 @@ const baseline = {
   allowDangerouslySkipPermissions: true, settings: { autoMemoryEnabled: false },
   disallowedTools: DISALLOWED_BUILTIN_TOOLS, cwd, persistSession: false,
 };
+const initOf = (event: any) => ({
+  model: event.model, tools: [...event.tools].sort(), agents: [...(event.agents ?? [])].sort(), permissionMode: event.permissionMode,
+});
 async function collect(q: ReturnType<typeof query>) {
   const timer = setTimeout(() => q.close(), 90_000);
   let init: any;
   let result: any;
   try {
     for await (const event of q) {
-      if (event.type === "system" && event.subtype === "init") init = {
-        model: event.model, tools: [...event.tools].sort(), agents: [...(event.agents ?? [])].sort(), permissionMode: event.permissionMode,
-      };
+      if (event.type === "system" && event.subtype === "init") init = initOf(event);
       if (event.type === "result") { result = { subtype: event.subtype, text: "result" in event ? event.result : event.errors }; break; }
     }
   } finally { clearTimeout(timer); q.close(); }
   if (result?.subtype !== "success") throw new Error(JSON.stringify(result));
   return { init, result };
 }
+/** The SDK's init message behind the adapter, observed without consuming the stream. */
+let adapterInit: any;
+const observed = ((request: Parameters<typeof query>[0]) => {
+  const q = factory(request);
+  async function* tee() {
+    for await (const message of q) {
+      if (message.type === "system" && message.subtype === "init") adapterInit = initOf(message);
+      yield message;
+    }
+  }
+  return Object.assign(tee(), { close: () => q.close(), interrupt: () => q.interrupt() });
+}) as unknown as typeof query;
 try {
   const before = await collect(factory({ prompt, options: baseline }));
-  const backend = new ClaudeCodeBackend({ query: factory, prepareEnvironment: false });
-  const after = await collect(backend.openConversation({ prompt, systemPrompt, model: "haiku", mcpServers: {}, cwd, persistSession: false }));
-  if (JSON.stringify(before.init) !== JSON.stringify(after.init)) throw new Error("Tool/model init parity mismatch");
-  console.log(JSON.stringify({ check: "live compatibility parity", baseline: before, adapter: after }));
+  const backend = new ClaudeCodeBackend({ query: observed, prepareEnvironment: false });
+  const conversation = backend.openConversation({ prompt, systemPrompt, model: "haiku", mcpServers: {}, cwd, turns: "single", ephemeral: true });
+  const timer = setTimeout(() => conversation.stop(), 90_000);
+  let turn: any;
+  try {
+    for await (const event of conversation) if (event.type === "turn.finished") { turn = event.result; break; }
+  } finally { clearTimeout(timer); conversation.stop(); }
+  if (turn?.outcome !== "completed") throw new Error(JSON.stringify(turn));
+  const after = { init: adapterInit, result: { outcome: turn.outcome, text: turn.text, usage: turn.usage } };
+  if (JSON.stringify(before.init) !== JSON.stringify(after.init)) throw new Error(`Tool/model init parity mismatch: ${JSON.stringify({ before: before.init, after: after.init })}`);
+  console.log(JSON.stringify({ check: "live conversation parity", baseline: before, adapter: after }));
+  // A stored conversation, then a resume of it: the resumed turn's usage must
+  // be complete (baseline found) and cover only that turn.
+  const turnOf = async (c: ReturnType<typeof backend.openConversation>) => {
+    const t = setTimeout(() => c.stop(), 90_000);
+    try {
+      for await (const event of c) if (event.type === "turn.finished") return event.result;
+    } finally { clearTimeout(t); c.stop(); }
+    throw new Error("Conversation ended without a turn");
+  };
+  const stored = await turnOf(backend.openConversation({ prompt, systemPrompt, model: "haiku", mcpServers: {}, cwd, turns: "single" }));
+  const resumed = await turnOf(backend.openConversation({ prompt, systemPrompt, model: "haiku", mcpServers: {}, cwd, turns: "single", resume: stored.session! }));
+  console.log(JSON.stringify({ check: "live conversation resume", first: stored.usage, resumed: resumed.usage, session: resumed.session }));
+  if (resumed.session?.nativeId !== stored.session?.nativeId) throw new Error("Resume changed the session");
+  if (resumed.usage.completeness !== "complete") throw new Error("Resumed turn usage has no baseline");
   const session = await backend.create({ cwd, systemPrompt, model: { tier: "fast", model: { provider: "anthropic", model: "haiku" } }, toolEnvironment: {}, nativeTools: [] }, { tools: [] });
   for (let n = 0; n < 2; n++) {
     const run = session.run({ runId: `live-${n}`, input: [{ id: `input-${n}`, content: [{ type: "text", text: prompt }] }] });

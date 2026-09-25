@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type {
-  HarnessBackend, HarnessCapabilities, HarnessSession, ModelTier, SessionBindings, SessionRef, SessionSpec,
+  Conversation, ConversationRequest, HarnessBackend, HarnessCapabilities, HarnessSession, ModelTier,
+  SessionBindings, SessionRef, SessionSpec,
 } from "../../../lib/harness.ts";
 import { harnessError } from "../../../lib/harness/errors.ts";
 import { ClaudeSessionStore } from "../../../lib/harness/claude-store.ts";
 import { claudeModels, MODEL_TIERS, validateModel } from "./models.ts";
 import { findTranscript, readHistory, validateRef } from "./history.ts";
-import { openConversation, type ConversationRequest, type QueryFactory } from "./compatibility.ts";
+import { openConversation, type QueryFactory } from "./conversation.ts";
 import { NATIVE_TOOLS } from "./policy.ts";
 import { prepareClaudeEnvironment } from "./environment.ts";
 import { startClaudeRun, validateInput } from "./run.ts";
@@ -81,10 +82,12 @@ export class ClaudeCodeBackend implements HarnessBackend {
 
   history(ref: SessionRef, cursor?: string) { return readHistory(this.sessions, ref, cursor); }
 
-  /** Preserve Atlas' native tools, hooks and multi-turn SDK stream during migration. */
-  openConversation(request: ConversationRequest) {
+  /** Claude Code's native tools, hooks and subagents behind normalized events. */
+  openConversation(request: ConversationRequest): Conversation {
+    if (request.resume) validateRef(request.resume);
     this.prepare();
-    return openConversation(request, this.factory);
+    const baseline = request.resume ? readCostSnapshot(this.sessions, request.resume) : ZERO_COST;
+    return openConversation(request, this.factory, baseline);
   }
 
   private prepare(): void {
