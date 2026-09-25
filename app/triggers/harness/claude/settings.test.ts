@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeBackend } from "./backend.ts";
-import { configureClaude, HOOKS_DIR } from "./settings.ts";
+import { configureClaude, HOOKS_DIR, LIFECYCLE_DIR } from "./settings.ts";
 
 let home: string;
 const saved = { skills: process.env.ATLAS_DEFAULT_SKILLS_DIR, agents: process.env.ATLAS_DEFAULT_AGENTS_DIR };
@@ -28,9 +28,10 @@ const commands = (s: any, event: string) => s.hooks[event].flatMap((m: any) => m
 describe("configureClaude", () => {
   test("writes hooks from this adapter's hook directory, permissions and plugins", () => {
     writeFileSync(join(home, "config.yml"), "agent:\n  name: Nova\n  email: nova@example.com\nplugins:\n  enabled:\n    \"x@m\": true\n");
-    configureClaude(home, { appDir: home });
+    configureClaude(home);
     const s = settings();
-    expect(commands(s, "SessionStart")).toEqual([`${HOOKS_DIR}/session-start.sh`, `${HOOKS_DIR}/task-session.sh start`]);
+    expect(commands(s, "SessionStart")).toEqual([`${LIFECYCLE_DIR}/session-start.sh`, `${LIFECYCLE_DIR}/task-session.sh start`]);
+    expect(commands(s, "PreCompact")).toEqual([`${LIFECYCLE_DIR}/pre-compact.sh auto`, `${LIFECYCLE_DIR}/pre-compact.sh manual`]);
     expect(commands(s, "Stop")).toEqual([`${HOOKS_DIR}/stop.sh`]);
     expect(commands(s, "PreToolUse")).toEqual(["rtk hook claude", `${HOOKS_DIR}/remind-use-reminders.sh`]);
     expect(s.hooks.SubagentStop[0].hooks[0]).toMatchObject({ type: "prompt" });
@@ -40,7 +41,7 @@ describe("configureClaude", () => {
   });
 
   test("every hook command points at a script that exists in the repo", () => {
-    configureClaude(home, { appDir: home, hooksDir: import.meta.dir + "/hooks" });
+    configureClaude(home, { hooksDir: import.meta.dir + "/hooks", lifecycleDir: join(import.meta.dir, "../../lifecycle") });
     const all = Object.keys(settings().hooks).flatMap((event) => commands(settings(), event));
     for (const command of all.filter((c: string) => c.startsWith("/"))) {
       expect(existsSync(command.split(" ")[0]!)).toBe(true);
@@ -56,7 +57,7 @@ describe("configureClaude", () => {
     writeFileSync(join(agents, "helper.md"), "# helper");
     process.env.ATLAS_DEFAULT_SKILLS_DIR = skills;
     process.env.ATLAS_DEFAULT_AGENTS_DIR = agents;
-    configureClaude(home, { appDir: home });
+    configureClaude(home);
     expect(readFileSync(join(home, ".claude", "skills", "deploy", "SKILL.md"), "utf8")).toBe("# deploy");
     expect(readFileSync(join(home, ".claude", "agents", "helper.md"), "utf8")).toBe("# helper");
   });
@@ -67,7 +68,7 @@ describe("configureClaude", () => {
     writeFileSync(join(home, "agents", "old-agent.md"), "x");
     mkdirSync(join(home, ".claude", "skills"), { recursive: true });
     symlinkSync(join(home, "nowhere"), join(home, ".claude", "skills", "dangling"));
-    configureClaude(home, { appDir: home });
+    configureClaude(home);
     expect(readdirSync(join(home, ".claude", "skills"))).toEqual(["old-skill"]);
     expect(existsSync(join(home, ".claude", "agents", "old-agent.md"))).toBe(true);
     expect(existsSync(join(home, "skills"))).toBe(false);

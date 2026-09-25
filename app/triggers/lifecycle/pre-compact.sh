@@ -1,11 +1,15 @@
 #!/bin/bash
-# PreCompact (auto) Hook: Memory flush before context compaction
-# For trigger sessions: uses channel-specific pre-compact + compact templates
-# For main session: uses generic memory flush instructions
+# Lifecycle policy: before context compaction — memory flush instructions.
+# Usage: pre-compact.sh auto|manual   (manual: the user asked for it; be thorough)
+# Output: context text for the agent.
+# For trigger sessions: channel-specific pre-compact + compact templates.
+# For the main session: generic memory flush instructions.
 set -euo pipefail
 
+MODE="${1:-auto}"
 TODAY=$(date +%Y-%m-%d)
 PROMPT_DIR="/atlas/app/prompts"
+LIFECYCLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Helper: resolve channel-specific template with fallback
 resolve_template() {
@@ -27,6 +31,10 @@ if [ -n "${ATLAS_TRIGGER:-}" ]; then
   PRE_COMPACT=$(resolve_template "pre-compact")
   if [ -n "$PRE_COMPACT" ]; then
     echo "<system-notice>"
+    if [ "$MODE" = "manual" ]; then
+      echo "Manual compaction requested. Be thorough — detailed context will be lost."
+      echo ""
+    fi
     sed -e "s|{{trigger_name}}|${TRIGGER_NAME}|g" \
         -e "s|{{channel}}|${CHANNEL}|g" \
         -e "s|{{today}}|${TODAY}|g" \
@@ -48,7 +56,7 @@ if [ -n "${ATLAS_TRIGGER:-}" ]; then
   fi
 
   # Phase 3: Task context injection for continuity after compaction
-  /atlas/app/triggers/harness/claude/hooks/task-session.sh prime 2>/dev/null || true
+  "$LIFECYCLE_DIR/task-session.sh" prime 2>/dev/null || true
 
   exit 0
 fi
@@ -56,6 +64,19 @@ fi
 # --- Main session: generic memory flush ---
 
 echo "<system-notice>"
+if [ "$MODE" = "manual" ]; then
+cat << EOF
+Manual compaction requested. Consolidate ALL important findings:
+
+1. Write lasting facts, decisions, and preferences to memory/MEMORY.md
+2. Write task results and context to memory/journal/${TODAY}.md
+3. If a project topic is relevant, create/update memory/projects/
+4. If managing a team or coordinating agents, save current task state, decisions, and progress
+5. Save any in-flight coordination context that would be lost after compaction
+
+Be thorough — detailed context will be lost after compaction.
+EOF
+else
 cat << EOF
 Context is about to be compressed. Consolidate important findings:
 
@@ -68,4 +89,5 @@ Context is about to be compressed. Consolidate important findings:
 MEMORY.md is for long-term, timeless information. The journal is for daily details (append-only).
 Only write what is truly relevant, no noise. Perform the memory flush now.
 EOF
+fi
 echo "</system-notice>"

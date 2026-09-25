@@ -461,25 +461,6 @@ export function resolveConfig(home?: string): AtlasConfig {
   return config as AtlasConfig;
 }
 
-// ---------------------------------------------------------------------------
-// Model name utilities
-// ---------------------------------------------------------------------------
-
-const MODEL_SHORTHAND: Record<string, string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5",
-};
-
-/**
- * Expand a model shorthand (e.g. "opus") to its full API name
- * (e.g. "claude-opus-4-6"). If the value is already a full name or
- * unrecognised, it is returned as-is.
- */
-export function expandModelName(shorthand: string): string {
-  return MODEL_SHORTHAND[shorthand] ?? shorthand;
-}
-
 /**
  * Redact sensitive values from config for API responses.
  */

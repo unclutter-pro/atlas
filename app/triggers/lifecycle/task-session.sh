@@ -1,17 +1,18 @@
 #!/bin/bash
-# task-session.sh — Atlas task management session hooks.
+# task-session.sh — Atlas task management lifecycle policy.
 # Scoped to (ATLAS_TRIGGER, ATLAS_TRIGGER_SESSION_KEY) per session.
 #
-# Usage (from hooks):
-#   task-session.sh start        — Output task-context block for SessionStart
-#   task-session.sh prime        — Same as start, for PreCompact context recovery
+# Usage:
+#   task-session.sh start        — Output task-context block at session start
+#   task-session.sh prime        — Same as start, for context recovery before compaction
 #   task-session.sh post-compact — Compact context with 2KB hard limit
-#   task-session.sh check        — Stop hook: block if open goals or tasks exist
+#   task-session.sh check        — Stop gate: exit 2 with the reason on stdout
+#                                  while open goals or tasks exist
 set -euo pipefail
 
 # Resolve the task CLI — works both in container and in dev
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TRIGGERS_DIR="$SCRIPT_DIR/../../.."
+TRIGGERS_DIR="$SCRIPT_DIR/.."
 TASK_CLI="bun $TRIGGERS_DIR/manage-tasks.ts"
 
 # ---------------------------------------------------------------------------
@@ -234,10 +235,8 @@ case "${1:-help}" in
       fi
     fi
 
-    jq -n --arg parts "$parts" '{
-      decision: "block",
-      reason: ("You have " + $parts + ". Complete or close them before exiting. Use `task list` and `task goal list` to review, then `task close <id>` / `task goal close <id> --reason=...` to finish up. To defer instead, set a continuation reminder that resumes THIS session — `reminder add` with `--when-reply-to=<thread>` / `--when-script-ok=<cmd>` / `--at=<future-time>` (optionally `--recurring=<interval>` for ongoing monitoring; NOT `--new-session`, which routes elsewhere). A pending continuation reminder lets the session stop without false-closing unfinished work.")
-    }'
+    echo "You have ${parts}. Complete or close them before exiting. Use \`task list\` and \`task goal list\` to review, then \`task close <id>\` / \`task goal close <id> --reason=...\` to finish up. To defer instead, set a continuation reminder that resumes THIS session — \`reminder add\` with \`--when-reply-to=<thread>\` / \`--when-script-ok=<cmd>\` / \`--at=<future-time>\` (optionally \`--recurring=<interval>\` for ongoing monitoring; NOT \`--new-session\`, which routes elsewhere). A pending continuation reminder lets the session stop without false-closing unfinished work."
+    exit 2
     ;;
 
   *)

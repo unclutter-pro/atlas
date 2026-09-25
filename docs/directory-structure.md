@@ -38,10 +38,11 @@ app/
 │   ├── manage.ts              # Trigger management CLI
 │   ├── sync-crontab.ts        # Crontab auto-generation from DB
 │   ├── sessions.ts            # `sessions` CLI: extraction and retention via the session store
+│   ├── lifecycle/             # Atlas lifecycle policy, backend-neutral (docs/hooks.md)
 │   ├── harness/               # Agent backends (docs/harness-interface.md)
 │   │   ├── configure.ts       # Writes the configured backend's settings (init.sh, web-ui)
 │   │   └── claude/            # Claude Code adapter
-│   │       ├── hooks/         # Claude Code lifecycle hooks (docs/hooks.md)
+│   │       ├── hooks/         # Claude Code hook protocol wrappers (docs/hooks.md)
 │   │       ├── settings.ts    # ~/.claude/settings.json, skill and agent directories
 │   │       └── prompt.md      # Claude-specific system prompt section
 │   └── cron/                  # Cron-specific scripts
@@ -108,8 +109,8 @@ home/
 |------|-------------|
 | `app/triggers/trigger-runner` | Native binary: trigger session launcher (injects system prompt, model, MCP) |
 | `app/triggers/trigger.sh` | Thin shell wrapper: delegates to trigger-runner binary |
-| `app/triggers/harness/claude/hooks/session-start.sh` | Loads memory context on session start |
-| `app/triggers/harness/claude/hooks/stop.sh` | Task gate, validator gate, journal reminder |
+| `app/triggers/lifecycle/session-start.sh` | Loads memory context on session start |
+| `app/triggers/lifecycle/stop.sh` | Task gate and journal reminder when the agent wants to stop |
 | `app/lib/atlas-db.ts` | Database initialization, schema, migrations |
 | `app/web-ui/server.ts` | Dashboard server entrypoint (Bun.serve + React) |
 | `app/web-ui/index.ts` | Hono routes: `/api/v1`, webhook receiver, `/healthz` |

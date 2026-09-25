@@ -1,15 +1,23 @@
 /**
  * Claude Code configuration for an Atlas deployment: ~/.claude/settings.json
- * (hooks, permissions, plugins, attribution), the trigger MCP file, and the
- * skill and agent directories. Written from Atlas config by
+ * (hooks, permissions, plugins, attribution) and the skill and agent
+ * directories. Written from Atlas config by
  * HarnessBackend.configure() at container start and after settings changes.
  */
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { expandModelName, resolveConfig } from "../../../lib/config.ts";
+import { resolveConfig } from "../../../lib/config.ts";
+import { claudeModelId } from "./models.ts";
 
-/** Hook scripts of this adapter, as installed in the image. */
+/** Claude protocol wrappers of this adapter, as installed in the image. */
 export const HOOKS_DIR = "/atlas/app/triggers/harness/claude/hooks";
+/** Atlas' backend-neutral lifecycle policy (app/triggers/lifecycle). */
+export const LIFECYCLE_DIR = "/atlas/app/triggers/lifecycle";
+
+export interface HookPaths {
+  hooksDir?: string;
+  lifecycleDir?: string;
+}
 
 const SUBAGENT_STOP_PROMPT = [
   "A subagent has completed their task. Review the result in $ARGUMENTS.",
@@ -23,13 +31,19 @@ const SUBAGENT_STOP_PROMPT = [
   'Use "ok": false only if the result is clearly incomplete or wrong.',
 ].join("\n");
 
-/** settings.json content for this deployment. */
-export function claudeSettings(home: string, hooksDir = HOOKS_DIR): Record<string, unknown> {
+/**
+ * settings.json content for this deployment. Lifecycle scripts whose contract
+ * (context text on stdout) is Claude's hook contract are registered directly;
+ * Stop and PreToolUse go through the protocol wrappers in HOOKS_DIR.
+ */
+export function claudeSettings(home: string, paths: HookPaths = {}): Record<string, unknown> {
+  const hooksDir = paths.hooksDir ?? HOOKS_DIR;
+  const lifecycleDir = paths.lifecycleDir ?? LIFECYCLE_DIR;
   const config = resolveConfig(home);
   const agentEmail = config.agent?.email;
   // Attribution: the agent's email when configured, otherwise no co-authored-by.
   const commitAttribution = agentEmail ? `Co-Authored-By: ${config.agent.name || "Atlas"} <${agentEmail}>` : "";
-  const taskSession = `${hooksDir}/task-session.sh`;
+  const taskSession = `${lifecycleDir}/task-session.sh`;
 
   return {
     env: {
@@ -65,33 +79,32 @@ export function claudeSettings(home: string, hooksDir = HOOKS_DIR): Record<strin
       SessionStart: [
         {
           hooks: [
-            { type: "command", command: `${hooksDir}/session-start.sh` },
+            { type: "command", command: `${lifecycleDir}/session-start.sh` },
             { type: "command", command: `${taskSession} start` },
           ],
         },
       ],
       // Task completion gate, validator format gate and journal reminder.
       Stop: [{ hooks: [{ type: "command", command: `${hooksDir}/stop.sh` }] }],
-      PostCompact: [{ hooks: [{ type: "command", command: `${hooksDir}/post-compact.sh` }] }],
+      PostCompact: [{ hooks: [{ type: "command", command: `${lifecycleDir}/post-compact.sh` }] }],
       PreCompact: [
-        { matcher: "auto", hooks: [{ type: "command", command: `${hooksDir}/pre-compact-auto.sh` }] },
-        { matcher: "manual", hooks: [{ type: "command", command: `${hooksDir}/pre-compact-manual.sh` }] },
+        { matcher: "auto", hooks: [{ type: "command", command: `${lifecycleDir}/pre-compact.sh auto` }] },
+        { matcher: "manual", hooks: [{ type: "command", command: `${lifecycleDir}/pre-compact.sh manual` }] },
       ],
       PreToolUse: [
         {
           matcher: "Bash",
           hooks: [
             { type: "command", command: "rtk hook claude" },
-            // Nudge toward the reminder CLI when a Bash command polls/sleeps to
-            // wait on an event — Atlas is event-driven ("no polling"). Advisory
-            // only: emits additionalContext, never blocks.
+            // Atlas' command advice (lifecycle/command-advice.sh): nudge toward
+            // the reminder CLI when a command polls/sleeps. Advisory only.
             { type: "command", command: `${hooksDir}/remind-use-reminders.sh` },
           ],
         },
       ],
       SubagentStop: [
         {
-          hooks: [{ type: "prompt", prompt: SUBAGENT_STOP_PROMPT, model: expandModelName(config.models.subagent_review) }],
+          hooks: [{ type: "prompt", prompt: SUBAGENT_STOP_PROMPT, model: claudeModelId(config.models.subagent_review) }],
         },
       ],
     },
@@ -156,23 +169,14 @@ function prepareSkillsAndAgents(home: string, log: string[]): void {
 }
 
 /** Write the whole Claude Code configuration; returns a one-line summary per step. */
-export function configureClaude(home: string, options: { hooksDir?: string; appDir?: string } = {}): string[] {
+export function configureClaude(home: string, options: HookPaths = {}): string[] {
   const log: string[] = [];
   const settingsPath = join(home, ".claude", "settings.json");
   mkdirSync(join(home, ".claude"), { recursive: true });
-  const settings = claudeSettings(home, options.hooksDir);
+  const settings = claudeSettings(home, options);
   writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   const config = resolveConfig(home);
-  log.push(`Settings written: ${settingsPath} (subagent_review=${expandModelName(config.models.subagent_review)})`);
-
-  // Trigger MCP config from the image's base .mcp.json.
-  const mcpBase = join(options.appDir ?? "/atlas/app", ".mcp.json");
-  try {
-    writeFileSync(join(home, ".mcp-trigger.json"), JSON.stringify(JSON.parse(readFileSync(mcpBase, "utf8")), null, 2) + "\n");
-    log.push(`Trigger MCP config generated: ${join(home, ".mcp-trigger.json")}`);
-  } catch (err) {
-    log.push(`Warning: could not generate trigger MCP config: ${err}`);
-  }
+  log.push(`Settings written: ${settingsPath} (subagent_review=${claudeModelId(config.models.subagent_review)})`);
 
   prepareSkillsAndAgents(home, log);
   log.push(`Skills: ${join(home, ".claude", "skills")}, agents: ${join(home, ".claude", "agents")}`);

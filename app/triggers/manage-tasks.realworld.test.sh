@@ -17,11 +17,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TASK_CLI="bun $SCRIPT_DIR/manage-tasks.ts"
-# Resolve hooks relative to THIS test script's own tree, so the suite always
-# exercises the code it ships with — not a (possibly stale) deployed copy at
-# /atlas. The container install runs its own copy of this script, for which
-# $APP_DIR already points at /atlas/app, so the live system is still covered.
-HOOKS_DIR="$APP_DIR/hooks"
+# Resolve the lifecycle policy relative to THIS test script's own tree, so the
+# suite always exercises the code it ships with — not a (possibly stale)
+# deployed copy at /atlas. The container install runs its own copy of this
+# script, for which $SCRIPT_DIR already points into /atlas/app, so the live
+# system is still covered.
+LIFECYCLE_DIR="$SCRIPT_DIR/lifecycle"
 
 export ATLAS_TRIGGER="test"
 export ATLAS_TRIGGER_SESSION_KEY="integration"
@@ -284,13 +285,13 @@ export ATLAS_TRIGGER_SESSION_KEY="hook-test"
 # Add an open task
 $TASK_CLI add --title="Open hook task" > /dev/null 2>&1
 
-# Run task-session.sh check — should output block JSON
-CHECK_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "HOOK_FAILED")
-if echo "$CHECK_OUT" | grep -q '"decision"'; then
-  assert_contains "check outputs block JSON with open tasks" '"decision"' "$CHECK_OUT"
-  assert_contains "check JSON has block value" 'block' "$CHECK_OUT"
+# Run task-session.sh check — should block: exit 2 with the reason on stdout
+CHECK_CODE=0
+CHECK_OUT=$("$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null) || CHECK_CODE=$?
+if [ "$CHECK_CODE" -eq 2 ]; then
+  assert_contains "check gives the block reason with open tasks" 'open task(s)' "$CHECK_OUT"
 else
-  fail "task-session.sh check did not output block JSON (output: $CHECK_OUT)"
+  fail "task-session.sh check did not block (exit $CHECK_CODE, output: $CHECK_OUT)"
 fi
 
 # Close the task and re-check
@@ -300,16 +301,12 @@ for tid in $HOOK_TASK_IDS; do
   $TASK_CLI close "$tid" --reason="cleaning up" > /dev/null 2>&1 || true
 done
 
-CHECK_EMPTY=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-if [ -z "$CHECK_EMPTY" ]; then
-  pass "check returns empty when no open items"
+EMPTY_CODE=0
+CHECK_EMPTY=$("$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null) || EMPTY_CODE=$?
+if [ "$EMPTY_CODE" -eq 0 ]; then
+  pass "check allows stop when no open items"
 else
-  # May have non-JSON output from warnings — check no 'decision' field
-  if echo "$CHECK_EMPTY" | grep -q '"decision"'; then
-    fail "check should return empty with no open items (got: $CHECK_EMPTY)"
-  else
-    pass "check returns no block JSON when no open items"
-  fi
+  fail "check should allow stop with no open items (exit $EMPTY_CODE, got: $CHECK_EMPTY)"
 fi
 
 export ATLAS_TRIGGER_SESSION_KEY="integration"
@@ -327,16 +324,16 @@ export ATLAS_TRIGGER_SESSION_KEY="reminder-gate-test"
 
 # Open task → gate must block
 $TASK_CLI add --title="Deferred work" > /dev/null 2>&1
-BLOCK_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-assert_contains "gate blocks with open task and no reminder" '"decision"' "$BLOCK_OUT"
+BLOCK_OUT=$("$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null || true)
+assert_contains "gate blocks with open task and no reminder" 'open task(s)' "$BLOCK_OUT"
 
 # Add an event-driven continuation reminder scoped to THIS session
 $REMINDER_CLI add --when-reply-to="reminder-gate-thread" --title="continue" --prompt="resume later" > /dev/null 2>&1
 HAS_CONT=$($REMINDER_CLI has-continuation 2>/dev/null || echo "no")
 assert_contains "has-continuation reports yes for scoped event reminder" "yes" "$HAS_CONT"
 
-ALLOW_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-assert_not_contains "gate allows stop with pending continuation reminder" '"decision"' "$ALLOW_OUT"
+ALLOW_OUT=$("$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null || true)
+assert_not_contains "gate allows stop with pending continuation reminder" 'open task(s)' "$ALLOW_OUT"
 
 # A recurring reminder also unlocks the gate (re-fires into this session for
 # long-term monitoring); the re-wake prompt warns against permanent bypass.
@@ -345,14 +342,14 @@ $TASK_CLI add --title="Recurring-guard work" > /dev/null 2>&1
 $REMINDER_CLI add --at="+1h" --recurring="1h" --title="monitor" --prompt="poll" > /dev/null 2>&1
 REC_HAS=$($REMINDER_CLI has-continuation 2>/dev/null || echo "no")
 assert_contains "has-continuation reports yes for recurring reminder" "yes" "$REC_HAS"
-REC_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-assert_not_contains "gate allows stop with a recurring reminder" '"decision"' "$REC_OUT"
+REC_OUT=$("$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null || true)
+assert_not_contains "gate allows stop with a recurring reminder" 'open task(s)' "$REC_OUT"
 
 # A session with an open task and NO continuation reminder still blocks
 export ATLAS_TRIGGER_SESSION_KEY="reminder-none-test"
 $TASK_CLI add --title="Undeferred work" > /dev/null 2>&1
-NONE_OUT=$("$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-assert_contains "gate still blocks with open task and no reminder" '"decision"' "$NONE_OUT"
+NONE_OUT=$("$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null || true)
+assert_contains "gate still blocks with open task and no reminder" 'open task(s)' "$NONE_OUT"
 
 # Cleanup the reminder-gate sub-sessions (tasks; reminders cleaned in final pass)
 for s in reminder-gate-test reminder-recurring-test reminder-none-test; do
@@ -377,23 +374,24 @@ export ATLAS_TRIGGER_SESSION_KEY="killswitch-test"
 $TASK_CLI add --title="Task that should not block" > /dev/null 2>&1
 
 # Without kill-switch — should block
-NO_KS_OUT=$(ATLAS_TASKS_DISABLE_GATE=0 "$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
-if echo "$NO_KS_OUT" | grep -q '"decision"'; then
+NO_KS_CODE=0
+NO_KS_OUT=$(ATLAS_TASKS_DISABLE_GATE=0 "$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null) || NO_KS_CODE=$?
+if [ "$NO_KS_CODE" -eq 2 ]; then
   pass "without kill-switch: stop is blocked"
 else
-  fail "without kill-switch: expected block JSON, got: $NO_KS_OUT"
+  fail "without kill-switch: expected a block (exit 2), got exit $NO_KS_CODE: $NO_KS_OUT"
 fi
 
 # With kill-switch — should allow stop (empty output, warning to stderr)
-KS_COMBINED=$(ATLAS_TASKS_DISABLE_GATE=1 "$HOOKS_DIR/task-session.sh" check 2>&1 || echo "")
-KS_STDOUT=$(ATLAS_TASKS_DISABLE_GATE=1 "$HOOKS_DIR/task-session.sh" check 2>/dev/null || echo "")
+KS_COMBINED=$(ATLAS_TASKS_DISABLE_GATE=1 "$LIFECYCLE_DIR/task-session.sh" check 2>&1 || echo "")
+KS_STDOUT=$(ATLAS_TASKS_DISABLE_GATE=1 "$LIFECYCLE_DIR/task-session.sh" check 2>/dev/null || echo "")
 if echo "$KS_COMBINED" | grep -q "ATLAS_TASKS_DISABLE_GATE"; then
   pass "kill-switch logs warning"
 else
   fail "kill-switch should log warning, got: $KS_COMBINED"
 fi
-if ! echo "$KS_STDOUT" | grep -q '"decision"'; then
-  pass "kill-switch allows stop (no block JSON)"
+if ! echo "$KS_STDOUT" | grep -q 'open task(s)'; then
+  pass "kill-switch allows stop (no block reason)"
 else
   fail "kill-switch should allow stop, got: $KS_STDOUT"
 fi
@@ -421,7 +419,7 @@ CONTEXT_GOAL_ID=$(echo "$CONTEXT_GOAL_OUT" | grep -oP '#\K\d+' | head -1)
 $TASK_CLI add --title="Context task" --goal="$CONTEXT_GOAL_ID" > /dev/null 2>&1
 
 # Run task-session.sh start
-START_OUT=$("$HOOKS_DIR/task-session.sh" start 2>/dev/null || echo "")
+START_OUT=$("$LIFECYCLE_DIR/task-session.sh" start 2>/dev/null || echo "")
 assert_contains "start outputs task-context block" "<task-context>" "$START_OUT"
 assert_contains "start shows open goals" "Context goal" "$START_OUT"
 assert_contains "start shows open tasks" "Context task" "$START_OUT"
@@ -429,7 +427,7 @@ assert_contains "start shows open tasks" "Context task" "$START_OUT"
 # Close and re-check: empty state = no output
 $TASK_CLI goal close "$CONTEXT_GOAL_ID" --reason="done" --cascade-cancel > /dev/null 2>&1
 
-EMPTY_START=$("$HOOKS_DIR/task-session.sh" start 2>/dev/null || echo "SILENCE")
+EMPTY_START=$("$LIFECYCLE_DIR/task-session.sh" start 2>/dev/null || echo "SILENCE")
 if [ "$EMPTY_START" = "SILENCE" ] || [ -z "$EMPTY_START" ]; then
   pass "start outputs nothing when no open items"
 else
