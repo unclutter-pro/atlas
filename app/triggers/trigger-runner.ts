@@ -43,11 +43,13 @@ import { applyProcessTimeZone } from "../lib/timezone.ts";
 import { openDb as openSharedDb } from "../lib/db.ts";
 import {
   getLockPath,
+  getRetiringPath,
   getSocketPath,
   isPidAlive,
   readLockPid,
   trySocketInject,
   type SocketAck,
+  type SocketControl,
   type SocketMessage,
 } from "../lib/trigger-socket.ts";
 import { createWebUiNotifier, type ChatNotifyKind, type WebUiNotifier } from "../lib/web-ui-notify.ts";
@@ -112,6 +114,9 @@ const WORKSPACE = HOME;
 // Control socket for message injection
 // ---------------------------------------------------------------------------
 
+/** A retired session gets this long to finish its running turn and farewell. */
+const RETIRE_TIMEOUT_MS = parseInt(process.env.TRIGGER_RETIRE_TIMEOUT ?? "600000", 10);
+
 /** Default idle timeout: 5 minutes of no new messages → session ends */
 const IDLE_TIMEOUT_MS = parseInt(
   process.env.TRIGGER_IDLE_TIMEOUT ?? "300000",
@@ -129,7 +134,7 @@ const IDLE_TIMEOUT_MS = parseInt(
 export function startSocketServer(
   socketPath: string,
   pushFn: (text: string) => void,
-  controlFn: (control: "interrupt") => Promise<void> | void,
+  controlFn: (control: SocketControl, message: string) => Promise<void> | void,
   logger?: { log: (msg: string) => void },
 ): Server {
   // Clean up stale socket file
@@ -152,10 +157,10 @@ export function startSocketServer(
       (async () => {
         try {
           const msg = JSON.parse(line) as SocketMessage;
-          if (msg.control === "interrupt") {
-            await controlFn("interrupt");
+          if (msg.control === "interrupt" || msg.control === "retire") {
+            await controlFn(msg.control, msg.message);
             logger?.log(
-              `Socket: interrupt control from ${msg.channel}/${msg.sessionKey}`,
+              `Socket: ${msg.control} control from ${msg.channel}/${msg.sessionKey}`,
             );
           } else {
             pushFn(msg.message);
@@ -736,8 +741,9 @@ export async function injectIntoRunner(
   sessionKey: string,
   message: string,
   channel: string,
+  control?: "retire",
 ): Promise<0 | 2 | 3> {
-  if (await trySocketInject(getSocketPath(triggerName, sessionKey), message, channel, sessionKey)) return 0;
+  if (await trySocketInject(getSocketPath(triggerName, sessionKey), message, channel, sessionKey, control)) return 0;
   return isPidAlive(readLockPid(getLockPath(triggerName, sessionKey))) ? 3 : 2;
 }
 
@@ -1102,20 +1108,23 @@ export async function main(): Promise<void> {
 
   const args = process.argv.slice(2);
 
-  // --- Inject mode: --inject <trigger> <session-key> "<message>" [--channel <channel>] ---
+  // --- Inject mode: --inject <trigger> <session-key> "<message>" [--channel <channel>] [--retire] ---
   // Hands a message to the live runner of (trigger, key) without starting a
-  // session. Exit 0: injected. Exit 2: no runner, the caller may resume the
-  // session itself. Exit 3: a runner is alive but unreachable, so resuming
-  // would start a second process on the same session.
+  // session. With --retire the runner hands (trigger, key) over at once and
+  // runs the message as its session's last turn (the /new farewell).
+  // Exit 0: delivered. Exit 2: no runner, the caller may resume the session
+  // itself. Exit 3: a runner is alive but unreachable, so resuming would
+  // start a second process on the same session.
   if (args[0] === "--inject") {
     const [, trigger, sessionKey, message] = args;
     if (!trigger || !sessionKey || !message) {
-      console.error('Usage: trigger-runner.ts --inject <trigger> <session-key> "<message>" [--channel <channel>]');
+      console.error('Usage: trigger-runner.ts --inject <trigger> <session-key> "<message>" [--channel <channel>] [--retire]');
       process.exit(1);
     }
     const channelIdx = args.indexOf("--channel");
     const channel = channelIdx > 0 && args[channelIdx + 1] ? args[channelIdx + 1] : "internal";
-    process.exit(await injectIntoRunner(trigger, sessionKey, message, channel));
+    const control = args.includes("--retire") ? "retire" as const : undefined;
+    process.exit(await injectIntoRunner(trigger, sessionKey, message, channel, control));
   }
 
   // --- Direct mode: --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] [--trigger-name <name>] ---
@@ -1403,9 +1412,20 @@ export async function main(): Promise<void> {
 
   // Ensure lock + socket are released on exit
   const triggerSocketPath = getSocketPath(triggerName, sessionKey);
+  // After /new retired this runner, the lock and socket paths belong to its
+  // successor; only the retiring PID file is ours.
+  let handedOver = false;
   const releaseLock = () => {
+    if (handedOver) {
+      try {
+        if (readLockPid(getRetiringPath(triggerName, sessionKey)) === process.pid) {
+          unlinkSync(getRetiringPath(triggerName, sessionKey));
+        }
+      } catch {}
+      return;
+    }
     try {
-      unlinkSync(flockFile);
+      if (readLockPid(flockFile) === process.pid) unlinkSync(flockFile);
     } catch {}
     // Socket cleanup is best-effort (may already be cleaned up by runQuery)
     if (existsSync(triggerSocketPath)) {
@@ -1414,6 +1434,16 @@ export async function main(): Promise<void> {
       } catch {}
     }
   };
+  /** Give (trigger, key) to the next runner now; this one finishes its farewell. */
+  const handOver = () => {
+    if (handedOver) return;
+    try {
+      writeFileSync(getRetiringPath(triggerName, sessionKey), String(process.pid));
+    } catch {}
+    releaseLock();
+    handedOver = true;
+  };
+
   process.on("exit", releaseLock);
   process.on("SIGTERM", () => {
     releaseLock();
@@ -1559,6 +1589,12 @@ export async function main(): Promise<void> {
   // --- Control socket for message injection ---
   const socketPath = getSocketPath(triggerName, sessionKey);
   let socketServer: Server | null = null;
+  /** Close the control socket; after a handover its path belongs to the successor. */
+  const closeSocket = () => {
+    if (handedOver) socketServer?.close();
+    else cleanupSocket(socketServer, socketPath);
+    socketServer = null;
+  };
 
   // Streaming: emit text deltas for any session whose channel renders them
   // (today: web). Other channels (signal, email) deliver complete messages
@@ -1569,13 +1605,14 @@ export async function main(): Promise<void> {
   // transcript lines land, so it re-reads instead of polling.
   const notifier = channel === "web" ? runnerDeps.createNotifier() : null;
   const notify = (kind: ChatNotifyKind, extra?: { isError?: boolean; interrupted?: boolean }) => {
-    if (!notifier) return;
+    // After a handover the chat's pings belong to the successor's session.
+    if (!notifier || handedOver) return;
     try {
       notifier.ping({ trigger: triggerName, sessionKey, sessionId: capturedSessionId ?? existingSession, kind, ...extra });
     } catch {}
   };
   const beginTurn = () => {
-    if (!notifier) return;
+    if (!notifier || handedOver) return;
     const sid = capturedSessionId ?? existingSession;
     if (sid) {
       try {
@@ -1601,6 +1638,10 @@ export async function main(): Promise<void> {
     // last tool boundary) are pushed to start a new turn.
     const injectionQueue: string[] = [];
     let inTurn = false;
+    // /new retired this session: the farewell still to run, or running now.
+    let pendingFarewell: string | null = null;
+    let farewellRunning = false;
+    let retireTimeout: ReturnType<typeof setTimeout> | undefined;
 
     const nextToolContext = () => {
       const pending = injectionQueue.splice(0);
@@ -1661,7 +1702,26 @@ export async function main(): Promise<void> {
         // Each new injected message gets a typing flash.
         sendTypingOnce();
       },
-      async (control) => {
+      async (control, message) => {
+        if (control === "retire") {
+          if (handedOver) return;
+          // Hand (trigger, key) over at once so the next message starts a fresh
+          // session, then finish this one: the running turn, then the farewell.
+          handOver();
+          closeSocket();
+          log.log("Retired by /new — handed over; running the farewell as the last turn");
+          retireTimeout = setTimeout(() => {
+            log.log("Farewell timed out — stopping");
+            conversation.stop();
+          }, RETIRE_TIMEOUT_MS);
+          if (inTurn) pendingFarewell = message;
+          else {
+            conversation.push(message);
+            inTurn = true;
+            farewellRunning = true;
+          }
+          return;
+        }
         if (control === "interrupt") {
           try {
             await conversation.interrupt();
@@ -1721,6 +1781,17 @@ export async function main(): Promise<void> {
             inTurn = true;
             beginTurn();
           }
+          if (handedOver && !inTurn) {
+            if (farewellRunning) {
+              log.log("Farewell done — exiting");
+              conversation.stop();
+            } else if (pendingFarewell !== null) {
+              conversation.push(pendingFarewell);
+              pendingFarewell = null;
+              inTurn = true;
+              farewellRunning = true;
+            }
+          }
           continue;
         }
         if (event.type === "session" && !capturedSessionId) {
@@ -1750,7 +1821,7 @@ export async function main(): Promise<void> {
         // forward them to the client in near-real-time. We accept the cost
         // of one INSERT per delta (typically a few characters) because the
         // chunks table is local SQLite and the web channel is low-volume.
-        if (event.type === "text.delta" && wantsStreaming && capturedSessionId) {
+        if (event.type === "text.delta" && wantsStreaming && capturedSessionId && !handedOver) {
           try {
             if (persistStreamChunk(capturedSessionId, event, chunkState, db)) notify("chunk");
           } catch (err) {
@@ -1761,9 +1832,9 @@ export async function main(): Promise<void> {
       }
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (retireTimeout) clearTimeout(retireTimeout);
       conversation.stop();
-      cleanupSocket(socketServer, socketPath);
-      socketServer = null;
+      closeSocket();
     }
   };
 
@@ -1789,8 +1860,7 @@ export async function main(): Promise<void> {
         capturedSessionId = null;
         isError = false;
         // The retry opens a fresh conversation with its own input.
-        cleanupSocket(socketServer, socketPath);
-        socketServer = null;
+        closeSocket();
         await runQuery();
       }
     } else {
@@ -1802,7 +1872,7 @@ export async function main(): Promise<void> {
   } catch (err) {
     log.log(`ERROR running trigger: ${err}`);
     isError = true;
-    cleanupSocket(socketServer, socketPath);
+    closeSocket();
   }
 
   // Log result text
@@ -1817,7 +1887,8 @@ export async function main(): Promise<void> {
   // to inline image content), the session is fine to discard — persisting the
   // failing session_id would make every subsequent message in this thread
   // resume the same broken context and fail identically.
-  const cleared = clearRejectedSession(
+  // A retired runner's (trigger, key) mapping belongs to its successor.
+  const cleared = handedOver ? null : clearRejectedSession(
     db, lastTurn, sessionMode, triggerName, sessionKey,
     capturedSessionId, existingSession, log,
   );
@@ -1827,7 +1898,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Save session for persistent triggers ---
-  if (sessionMode === "persistent" && capturedSessionId) {
+  if (sessionMode === "persistent" && capturedSessionId && !handedOver) {
     upsertTriggerSession(db, triggerName, sessionKey, capturedSessionId);
     log.log(`Saved session for key=${sessionKey}: ${capturedSessionId}`);
   }

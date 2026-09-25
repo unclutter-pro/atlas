@@ -219,10 +219,12 @@ export async function resetSession(sessionKey: string): Promise<{ farewellSent: 
         `</session-ending>`;
     }
 
-    // A live runner owns this session: hand it the farewell over its control
-    // socket. Never start a second agent process on the same session while
-    // the runner is alive, even if its socket doesn't answer.
-    if (await trySocketInject(getSocketPath(CHAT_TRIGGER, sessionKey), farewell, "web", sessionKey)) {
+    // A live runner owns this session: retire it over its control socket. It
+    // hands the chat over at once (the next message starts a fresh session)
+    // and runs the farewell as its last turn. Never start a second agent
+    // process on the same session while the runner is alive, even if its
+    // socket doesn't answer.
+    if (await trySocketInject(getSocketPath(CHAT_TRIGGER, sessionKey), farewell, "web", sessionKey, "retire")) {
       farewellSent = true;
     } else if (isPidAlive(readLockPid(getLockPath(CHAT_TRIGGER, sessionKey)))) {
       // Runner alive but unreachable — skip the farewell rather than race it.

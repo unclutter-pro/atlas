@@ -21,7 +21,17 @@ For persistent triggers, the trigger-runner tries to hand new messages to the ru
 
 A running runner listens on that control socket and holds the lock file `/tmp/.trigger-<name>-<key>.flock` with its PID. `app/lib/trigger-socket.ts` builds both paths: characters other than letters, digits and `_` in the key become `_` plus a short hash of the original key (so `a-b` and `a_b` never share a runner), and long keys are hashed. The runner uses them to accept messages between turns. The web-ui uses them to interrupt a chat turn ("Stop turn") and to check whether a chat's runner is still alive, and the kill switch uses the PID to stop runners.
 
-Processes that cannot import `trigger-socket.ts` (the Python channel addons) use `trigger-runner --inject <trigger> <key> "<message>" [--channel <channel>]`. It exits 0 when the live runner accepted the message, 2 when no runner is alive (the caller may resume the session itself) and 3 when a runner is alive but unreachable. Signal and WhatsApp `/new` use it to hand the farewell prompt to a running session instead of resuming the same session in a second process.
+Processes that cannot import `trigger-socket.ts` (the Python channel addons) use `trigger-runner --inject <trigger> <key> "<message>" [--channel <channel>] [--retire]`. It exits 0 when the live runner accepted the message, 2 when no runner is alive (the caller may resume the session itself) and 3 when a runner is alive but unreachable.
+
+### Retiring a session (`/new`)
+
+`/new` in Signal, WhatsApp and the web chat retires the running session with the `retire` control message (`--inject --retire` from the addons). The runner:
+
+1. hands `(trigger, key)` over at once: it closes its control socket, releases the lock and records its PID in `<lock>.retiring` instead, so the kill switch still finds it;
+2. lets the running turn finish, then runs the farewell prompt as the session's last turn (the agent saves context to memory);
+3. exits, leaving the session mapping to its successor (`TRIGGER_RETIRE_TIMEOUT`, default 10 minutes, caps steps 2 and 3).
+
+The caller deletes the session mapping right after the retire. The next message therefore finds no lock and no mapping and starts a fresh session, while the old one finishes its farewell in parallel. Before, a message sent within the old runner's idle window was injected into the old session. When no runner is alive, the caller resumes the session with the farewell in a separate process instead (`--direct --resume`).
 
 ## Session State Machine
 

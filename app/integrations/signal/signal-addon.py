@@ -537,8 +537,10 @@ FAREWELL_TEMPLATE_PATH = "/atlas/app/prompts/trigger-channel-signal-farewell.md"
 
 
 def _inject_into_runner(sender, message):
-    """Hand a message to the live runner of this chat (trigger-runner --inject).
+    """Retire the live runner of this chat with a farewell (trigger-runner --inject --retire).
 
+    The runner hands the chat over at once, so the next message starts a fresh
+    session, and runs the farewell as its session's last turn.
     Returns "injected", "no-runner" (the caller may resume the session) or
     "busy" (a runner is alive but unreachable; resuming would start a second
     process on the same session).
@@ -546,7 +548,7 @@ def _inject_into_runner(sender, message):
     try:
         result = subprocess.run(
             ["/atlas/app/triggers/trigger-runner", "--inject", TRIGGER_NAME, sender, message,
-             "--channel", "signal"],
+             "--channel", "signal", "--retire"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=30,

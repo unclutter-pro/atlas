@@ -12,7 +12,7 @@
 import { existsSync, writeFileSync, unlinkSync, readFileSync } from "fs";
 import { join } from "path";
 import type { Database } from "bun:sqlite";
-import { getLockPath, isPidAlive, readLockPid } from "./trigger-socket";
+import { getLockPath, getRetiringPath, isPidAlive, readLockPid } from "./trigger-socket";
 
 const PAUSED_MARKER = ".atlas-paused";
 
@@ -168,14 +168,17 @@ export function getControlStatus(db: Database, home: string): {
  */
 function killRunnerByLock(triggerName: string, sessionKey: string | null): boolean {
   if (!triggerName || !sessionKey) return false;
-  const pid = readLockPid(getLockPath(triggerName, sessionKey));
-  if (!pid || pid === process.pid || !isPidAlive(pid)) return false;
-  try {
-    const cmd = Bun.spawnSync(["ps", "-o", "command=", "-p", String(pid)]).stdout.toString();
-    if (!cmd.includes("trigger-runner")) return false;
-    process.kill(pid, "SIGTERM");
-    return true;
-  } catch {
-    return false;
+  let killed = false;
+  // The lock holder, and a runner still finishing its farewell after /new.
+  for (const path of [getLockPath(triggerName, sessionKey), getRetiringPath(triggerName, sessionKey)]) {
+    const pid = readLockPid(path);
+    if (!pid || pid === process.pid || !isPidAlive(pid)) continue;
+    try {
+      const cmd = Bun.spawnSync(["ps", "-o", "command=", "-p", String(pid)]).stdout.toString();
+      if (!cmd.includes("trigger-runner")) continue;
+      process.kill(pid, "SIGTERM");
+      killed = true;
+    } catch {}
   }
+  return killed;
 }
