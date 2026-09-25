@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [ -n "${ATLAS_TRIGGER:-}" ] && [ -n "${ATLAS_TRIGGER_SESSION_KEY:-}" ]; then
-  /atlas/app/triggers/harness/claude/hooks/task-session.sh post-compact 2>/dev/null || true
+  "$(dirname "${BASH_SOURCE[0]}")/task-session.sh" post-compact 2>/dev/null || true
 fi
 
 exit 0

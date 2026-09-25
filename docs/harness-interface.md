@@ -224,7 +224,14 @@ run is active. Cancellation cannot undo effects a tool already performed.
 
 ## Hooks become Atlas policy
 
-The current Stop hook mixes execution lifecycle with task policy. In this design,
+Today the policy is backend-neutral but still triggered by the backend's hooks:
+`app/triggers/lifecycle/` holds session-start context, compaction memory flush,
+the stop gate (tasks, journal), the validator format gate and command advice,
+with a text/exit-code contract (docs/hooks.md). The Claude adapter registers
+these scripts and translates its hook protocol in `harness/claude/hooks/`. A
+second backend maps its own lifecycle events onto the same scripts.
+
+The target moves the gates out of the backend's turn into the coordinator. In this design,
 Atlas evaluates task completion after outcome: completed. It can enqueue another
 input in the same session with validator feedback or unfinished tasks. It only
 marks its own work finished after that evaluation. Partial assistant text may
@@ -349,9 +356,12 @@ format, before accepting it.
 `HarnessBackend.configure()` writes the backend's own configuration for the
 deployment. `app/triggers/harness/configure.ts` runs it at container start
 (`init.sh`) and after config changes (web-ui). For Claude Code that is
-`~/.claude/settings.json` (hooks from `harness/claude/hooks/`, permissions,
+`~/.claude/settings.json` (the lifecycle policy registered as hooks, permissions,
 plugins, attribution), the skill and agent directories and their installs from
-`ATLAS_DEFAULT_SKILLS_DIR` / `ATLAS_DEFAULT_AGENTS_DIR`.
+`ATLAS_DEFAULT_SKILLS_DIR` / `ATLAS_DEFAULT_AGENTS_DIR`. Model aliases in Atlas
+config (`opus`, `sonnet`, `haiku`, `fable`) resolve to current model IDs in the
+adapter (`harness/claude/models.ts`: Opus 5.5, Sonnet 5, Haiku 4.5, Fable 5.1),
+not in Atlas config.
 
 Prompts and skills are shared across backends. The shared system prompt names
 concepts: delegate to the `memory-searcher` agent, a general-purpose subagent
@@ -360,6 +370,11 @@ on the fast/balanced/strong tier, load a skill by name. Each backend appends
 (`harness/claude/prompt.md`, embedded in the runner binary) maps the concepts to
 `Agent(...)`, `Skill(...)`, `haiku`/`sonnet`/`opus`, `~/.claude/skills/` and the
 `Workflow` tool. The runner places it right after the shared prompt.
+
+Agent definitions (`app/defaults/agents/*.md`) are shared content in Claude
+Code's file format (frontmatter `model` alias and `tools` list). The image
+installs them for Claude Code under `/etc/claude-code/.claude/agents/`; another
+backend translates the frontmatter when it installs them.
 
 ## Session storage
 
@@ -391,15 +406,16 @@ offsets may interpret them approximately.
 
 ## Remaining migration
 
-1. Hooks as Atlas policy: the Claude hooks (task gate, memory flush, context
-   loading) still carry Atlas logic in Claude's hook protocol. A second backend
-   needs the same policy, so it belongs in the coordinator with thin adapters.
-2. Move completion gates, pending input ownership and normalized event persistence
-   into the Atlas coordinator. UI and memory readers consume Atlas data or history().
-3. Introduce Atlas host tools for delegation and persist agent relationships.
-   Translate role prompts and skills instead of exposing Claude tool names.
-4. Implement a second adapter against the same contract. Keep native IDs opaque
-   and require backend selection only when creating a session.
+The runner, web-ui, CLIs and lifecycle policy use only this contract. What
+remains is the target architecture:
+
+1. Move completion gates, pending input ownership and normalized event persistence
+   into the Atlas coordinator (the lifecycle policy then runs after a turn instead
+   of inside the backend's Stop hook).
+2. Introduce Atlas host tools for delegation and persist agent relationships.
+3. Implement a second adapter against the same contract: its session store,
+   openConversation, configure() mapping lifecycle events onto
+   `app/triggers/lifecycle/`, a prompt extension and agent-definition install.
 
 Adapter acceptance scenarios should cover resume after restart; an input arriving
 at the last tool boundary; cancellation with pending messages; a transport loss

@@ -106,17 +106,19 @@ See [docs/Triggers.md](docs/Triggers.md) for the full guide and [docs/watcher.md
 ```
 atlas/
 ├── app/                          # Core application (read-only in container)
-│   ├── atlas-mcp/                # Database module (schema, migrations)
+│   ├── lib/                      # Shared libraries (config, DB, harness contract + session store)
 │   ├── web-ui/                   # Bun.serve + React dashboard
 │   ├── triggers/                 # Trigger runner scripts
 │   │   ├── trigger.sh            # Generic trigger runner
-│   │   ├── sync-crontab.ts       # Crontab auto-generation from DB
-│   │   ├── harness/claude/hooks/ # Claude Code lifecycle hooks
+│   │   ├── lifecycle/            # Atlas lifecycle policy, backend-neutral
 │   │   │   ├── session-start.sh      # Loads identity + memory on wake
-│   │   │   ├── stop.sh               # Checks inbox, continues or sleeps
-│   │   │   └── pre-compact-auto.sh   # Memory flush before compaction
+│   │   │   ├── stop.sh               # Task gate and journal reminder
+│   │   │   ├── pre-compact.sh        # Memory flush before compaction
+│   │   │   └── task-session.sh       # Task and goal context
+│   │   ├── harness/              # Agent backends
+│   │   │   └── claude/hooks/         # Claude Code protocol wrappers
+│   │   ├── sync-crontab.ts       # Crontab auto-generation from DB
 │   │   └── cron/                 # Cron-specific scripts
-│   ├── watcher.sh                # inotifywait event loop
 │   └── init.sh                   # Container bootstrap
 ├── docker-compose.yml
 ├── Dockerfile

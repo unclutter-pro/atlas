@@ -206,7 +206,7 @@ COPY --from=web-ui-builder /build/web-ui/web-ui /atlas/app/web-ui/web-ui
 # Set permissions, install bun deps, configure nginx/supervisor (single layer)
 RUN chmod +x /atlas/app/entrypoint.sh \
   && chmod +x /atlas/app/init.sh \
-  && chmod +x /atlas/app/triggers/harness/claude/hooks/*.sh \
+  && chmod +x /atlas/app/triggers/harness/claude/hooks/*.sh /atlas/app/triggers/lifecycle/*.sh \
   && chmod +x /atlas/app/triggers/cron/*.sh \
   && chmod +x /atlas/app/triggers/trigger-runner \
   && chmod +x /atlas/app/web-ui/web-ui \

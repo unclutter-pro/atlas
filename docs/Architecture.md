@@ -90,18 +90,20 @@ See [directory-structure.md](directory-structure.md) for details.
 
 ## Hook System
 
-Hooks inject context at lifecycle events:
+Atlas' lifecycle policy (`app/triggers/lifecycle/`, backend-neutral) runs at session lifecycle events; the harness adapter registers it with the backend's hook mechanism:
 
-| Hook | Runs When | Purpose |
+| Policy | Runs When | Purpose |
 |------|-----------|---------|
 | session-start.sh | Every session starts | Load memory (all sessions) |
-| stop.sh | After response | Task gate + journal reminder (trigger sessions) |
-| pre-compact-*.sh | Before compaction | Prompt memory flush + task context injection |
+| stop.sh | Agent wants to stop | Task gate + journal reminder (trigger sessions) |
+| validator-gate.ts | Validator wants to stop | JSON verdict format gate |
+| pre-compact.sh | Before compaction | Prompt memory flush + task context injection |
 | post-compact.sh | After compaction | Re-inject task context (2KB limit) |
-| SubagentStop | Subagent finishes | Quality gate (prompt-type review) |
+| command-advice.sh | Before a shell command | Advise reminders instead of polling |
 | task-session.sh start | Every session starts | Load task context, show open goals/tasks |
 | task-session.sh prime | Before compaction | Inject task state for context recovery |
-| task-session.sh check | Stop hook | Gate exit on open goals or tasks |
+| task-session.sh check | Stop gate | Gate exit on open goals or tasks |
+| SubagentStop (Claude Code) | Subagent finishes | Quality gate (prompt-type review) |
 
 See [hooks.md](hooks.md) for details.
 
