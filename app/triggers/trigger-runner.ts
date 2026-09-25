@@ -1848,20 +1848,27 @@ export async function main(): Promise<void> {
           throw new Error("Resume returned error with 0 turns");
         }
       } catch (err) {
-        // Resume failed — retry as fresh session
-        log.log(
-          `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
-        );
-        db.prepare(
-          "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
-        ).run(triggerName, sessionKey);
-        existingSession = null;
-        lastTurn = null;
-        capturedSessionId = null;
-        isError = false;
-        // The retry opens a fresh conversation with its own input.
-        closeSocket();
-        await runQuery();
+        if (handedOver) {
+          // (trigger, key) already belongs to the successor — nothing left
+          // to retry. Retrying here would delete the successor's session
+          // mapping and steal its socket.
+          log.log(`Resume failed after hand-over for session ${existingSession} — not retrying: ${err}`);
+        } else {
+          // Resume failed — retry as fresh session
+          log.log(
+            `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
+          );
+          db.prepare(
+            "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
+          ).run(triggerName, sessionKey);
+          existingSession = null;
+          lastTurn = null;
+          capturedSessionId = null;
+          isError = false;
+          // The retry opens a fresh conversation with its own input.
+          closeSocket();
+          await runQuery();
+        }
       }
     } else {
       if (sessionMode === "persistent") {
