@@ -129,7 +129,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   # --- Python packages (messaging addons + office skills: defusedxml/lxml power docx/pptx/xlsx unpack·pack·validate) ---
   && pip install --break-system-packages pyyaml html2text factur-x lxml defusedxml openpyxl pandas pillow pdf2image pdfplumber \
   # --- Claude Code CLI ---
-  && npm install -g @anthropic-ai/claude-code@2.1.220 \
+  && npm install -g @anthropic-ai/claude-code@2.1.282 \
   && claude --version \
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse \
