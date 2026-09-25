@@ -18,11 +18,9 @@ import argparse
 import json
 import os
 import re
-import socket as _socket_mod
 import sqlite3
 import subprocess
 import sys
-import time
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -467,25 +465,25 @@ def cmd_incoming(config, sender, message, name="", timestamp="", attachments_jso
 FAREWELL_TEMPLATE_PATH = "/atlas/app/prompts/trigger-channel-whatsapp-farewell.md"
 
 
-def _inject_ipc(socket_path, message):
-    """Inject a message into a running Claude session via IPC socket."""
-    s = _socket_mod.socket(_socket_mod.AF_UNIX, _socket_mod.SOCK_STREAM)
-    s.settimeout(10)
+def _inject_into_runner(sender, message):
+    """Hand a message to the live runner of this chat (trigger-runner --inject).
+
+    Returns "injected", "no-runner" (the caller may resume the session) or
+    "busy" (a runner is alive but unreachable; resuming would start a second
+    process on the same session).
+    """
     try:
-        s.connect(socket_path)
-        s.sendall(json.dumps({"action": "send", "text": message, "submit": True}).encode() + b"\n")
-    finally:
-        s.close()
-
-
-def _wait_for_socket_gone(socket_path, timeout=120):
-    """Wait for IPC socket to disappear (session finished processing)."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if not os.path.exists(socket_path):
-            return True
-        time.sleep(2)
-    return False
+        result = subprocess.run(
+            ["/atlas/app/triggers/trigger-runner", "--inject", TRIGGER_NAME, sender, message,
+             "--channel", "whatsapp"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"[{datetime.now()}] /new: Runner inject failed: {e}", file=sys.stderr)
+        return "busy"
+    return {0: "injected", 2: "no-runner"}.get(result.returncode, "busy")
 
 
 def _load_farewell_message():
@@ -546,17 +544,13 @@ def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
 
     if old_session_id:
         farewell = _load_farewell_message()
-        socket_path = f"/tmp/claudec-{old_session_id}.sock"
-
-        if os.path.exists(socket_path):
-            try:
-                _inject_ipc(socket_path, farewell)
-                farewell_sent = True
-                print(f"[{datetime.now()}] /new: Injected farewell into running session {old_session_id}")
-                _wait_for_socket_gone(socket_path, timeout=120)
-            except Exception as e:
-                print(f"[{datetime.now()}] /new: Failed to inject farewell: {e}", file=sys.stderr)
-        else:
+        # A live runner owns the session: hand it the farewell. Resume only
+        # when no runner is alive, never a second process on the same session.
+        delivery = _inject_into_runner(sender, farewell)
+        if delivery == "injected":
+            farewell_sent = True
+            print(f"[{datetime.now()}] /new: Injected farewell into running session {old_session_id}")
+        elif delivery == "no-runner":
             try:
                 _resume_with_farewell(old_session_id, sender, farewell)
                 farewell_sent = True
@@ -565,6 +559,8 @@ def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
                 print(f"[{datetime.now()}] /new: Farewell resume timed out", file=sys.stderr)
             except Exception as e:
                 print(f"[{datetime.now()}] /new: Failed to resume for farewell: {e}", file=sys.stderr)
+        else:
+            print(f"[{datetime.now()}] /new: Runner of {old_session_id} is alive but unreachable, skipping farewell", file=sys.stderr)
 
         atlas_db.execute(
             "DELETE FROM trigger_sessions WHERE trigger_name=? AND session_key=?",

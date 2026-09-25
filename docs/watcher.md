@@ -21,6 +21,8 @@ For persistent triggers, the trigger-runner tries to hand new messages to the ru
 
 A running runner listens on that control socket and holds the lock file `/tmp/.trigger-<name>-<key>.flock` with its PID. `app/lib/trigger-socket.ts` builds both paths: characters other than letters, digits and `_` in the key become `_` plus a short hash of the original key (so `a-b` and `a_b` never share a runner), and long keys are hashed. The runner uses them to accept messages between turns. The web-ui uses them to interrupt a chat turn ("Stop turn") and to check whether a chat's runner is still alive, and the kill switch uses the PID to stop runners.
 
+Processes that cannot import `trigger-socket.ts` (the Python channel addons) use `trigger-runner --inject <trigger> <key> "<message>" [--channel <channel>]`. It exits 0 when the live runner accepted the message, 2 when no runner is alive (the caller may resume the session itself) and 3 when a runner is alive but unreachable. Signal and WhatsApp `/new` use it to hand the farewell prompt to a running session instead of resuming the same session in a second process.
+
 ## Session State Machine
 
 ```
@@ -53,16 +55,18 @@ Message arrives for persistent trigger
 | **Active** | alive | recent (< 30min) | IPC inject message into running session |
 | **Stale** | alive | idle (> 30min) | Kill process, resume session with system notice |
 | **Stopped** | gone | — | Resume session normally (e.g. after container restart) |
-| **Corrupted** | — | ends with `queue-operation` | Clear session, start fresh |
 | **Missing** | — | no JSONL | Start fresh session |
 
 ### Stale Recovery
 
-When a session is detected as stale (socket alive but no JSONL writes for 30+ minutes):
+A session is stale when a live runner holds its lock but neither the session transcript nor any of its subagent transcripts (`<session-id>/subagents/*.jsonl`) was written for 30+ minutes. Subagents write to their own files while the parent waits, so their activity keeps the session alive.
 
-1. The owning process is killed via `SIGTERM` (found via `lsof` on the socket)
-2. The socket file is cleaned up
-3. The session is resumed with a `<system-notice>` prepended to the prompt, telling the session it was idle-terminated and should continue
+1. The runner holding the lock gets `SIGTERM` (it releases its lock and the SDK stops the Claude CLI). After 10 seconds, the runner and its child processes get `SIGKILL`.
+2. The session is resumed with a `<system-notice>` prepended to the prompt, telling the session it was idle-terminated and should continue.
+
+An old transcript without a live runner is normal (runners exit after `TRIGGER_IDLE_TIMEOUT`, default 5 minutes). It resumes without a notice.
+
+A failed resume (error result with 0 turns) clears the stored session and retries with a fresh one, so a transcript the CLI cannot resume never blocks the chat.
 
 The stale threshold is configurable via `STALE_SESSION_THRESHOLD` env var (default: 1800 seconds / 30 minutes).
 
