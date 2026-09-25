@@ -63,10 +63,11 @@ Claude's final cost and modelUsage fields can be cumulative across resumed
 sessions. The portable adapter reads the persisted cost-state before a resumed
 run and reports the counter difference, including internal model calls. If the
 baseline is missing or stale, it reports partial token usage and an unknown cost.
-It never charges the full historical session to a new run. Trigger metrics keep
-the existing aggregation and pricing, now behind `HarnessSessionStore.usage`,
-because it includes nested agents; ephemeral direct runs store no history and
-record the turn's own `usage`.
+It never charges the full historical session to a new run. Trigger metrics use
+`HarnessSessionStore.usage` instead, because it includes nested agents; ephemeral
+direct runs store no history and record the turn's own `usage`. The Claude store
+estimates cost per model ID from `app/lib/harness/claude-pricing.ts`: list prices,
+5-minute and 1-hour cache writes, fast mode and US-only inference.
 
 The sections below describe the full architectural contract. Portable host tools,
 Atlas-owned delegation and moving completion gates into a coordinator remain
@@ -359,6 +360,8 @@ Atlas reader of session history or metadata goes through it:
 | `cursor` | Incremental live chat reads; `until` reproduces an earlier view |
 | `watch` | Change notification for the live chat, null when unsupported |
 | `usage` | Run cost across the session and its nested agents, each request once |
+| `list`, `load({ agent })` | The `sessions` CLI (dreaming extraction and filter): active sessions and their nested agents |
+| `prune` | Retention in daily cleanup: removes sessions inactive for 14 days |
 | `locate` | File browser links from storage files to the session view |
 
 History entries are normalized: user text, assistant text, reasoning, tool call
@@ -371,9 +374,8 @@ offsets may interpret them approximately.
 
 ## Remaining migration
 
-1. Give the Python and shell readers of native transcripts (dreaming's session
-   extraction and filter, daily cleanup, the validator stop hook) a store-backed
-   CLI instead of parsing `~/.claude/projects`.
+1. Move Claude Code hooks and settings generation behind the adapter (the
+   validator stop hook still reads the native transcript it is handed).
 2. Move completion gates, pending input ownership and normalized event persistence
    into the Atlas coordinator. UI and memory readers consume Atlas data or history().
 3. Introduce Atlas host tools for delegation and persist agent relationships.

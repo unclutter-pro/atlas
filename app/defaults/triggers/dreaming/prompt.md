@@ -10,19 +10,19 @@ Discover which sessions ran in the last 24 hours:
 sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-cleanup --exclude-trigger validator
 ```
 
-This outputs a lightweight index with session file paths. For each **main session** (not subagents):
+This outputs a lightweight index; its last column is the session reference. For each **main session** (not subagents):
 
-1. **Pre-process** it via `sessions --session <path>` — this strips tool inputs/outputs, truncates long messages, and produces a condensed transcript (~5-15k tokens instead of 500k+ raw)
+1. **Pre-process** it via `sessions --session <session>` — this strips tool inputs/outputs, truncates long messages, and produces a condensed transcript (~5-15k tokens instead of 500k+ raw)
 2. **Spawn a `session-analyzer` subagent** with that text as input:
 
 ```
-result=$(sessions --session <path>)
+result=$(sessions --session <session>)
 Agent(subagent_type="session-analyzer", prompt="Analyze this session transcript:\n\n$result")
 ```
 
 Launch these **in parallel** — send them all in one message, then wait for all results. The analyzers do the extraction; you do the thinking.
 
-Skip subagent session files (type=sub) — they're covered through their parent's context.
+Skip subagent sessions (type=sub) — they're covered through their parent's context.
 
 ## Phase 2: Synthesize — the part that matters
 

@@ -298,9 +298,10 @@ export type AgentEvent = {
 );
 
 // ---------------------------------------------------------------------------
-// Session storage: read-only, no model execution, no SDK.
-// Every Atlas reader of session history or metadata (web UI, runner recovery,
-// cost aggregation) goes through this instead of backend files.
+// Session storage: no model execution, no SDK. Every Atlas reader of session
+// history or metadata (web UI, runner recovery, cost aggregation, the
+// `sessions` CLI) goes through this instead of backend files. The only write
+// is retention (prune).
 // ---------------------------------------------------------------------------
 
 /** Opaque read position. Only pass it back to the store that returned it. */
@@ -328,8 +329,20 @@ export type HistoryEntry = {
        */
       messageId: string | null;
     }
-  | { kind: "reasoning"; text: string }
-  | { kind: "tool-call"; callId: string | null; name: string; input: JsonValue }
+  | {
+      kind: "reasoning";
+      text: string;
+      /** Same correlation as assistant-text's messageId: groups this block with its assistant message. */
+      messageId: string | null;
+    }
+  | {
+      kind: "tool-call";
+      callId: string | null;
+      name: string;
+      input: JsonValue;
+      /** Same correlation as assistant-text's messageId: groups this block with its assistant message. */
+      messageId: string | null;
+    }
   | { kind: "tool-result"; callId: string | null; content: string; isError: boolean }
 );
 
@@ -370,8 +383,20 @@ export interface SessionMetadata {
   turn: "active" | "ended";
 }
 
+/** A stored session, as listed for reports and retention. */
+export interface StoredSession {
+  ref: SessionRef;
+  /** Last write to the session or to any nested agent's storage. */
+  lastActivityAt: string;
+  /** Nested agents with their own stored history; read them with load({ agent }). */
+  nestedAgents: Array<{ id: string; lastActivityAt: string }>;
+}
+
 export interface HarnessSessionStore {
   readonly backend: string;
+
+  /** Sessions with activity at or after `activeSince`, least recently active first. */
+  list(options: { activeSince: string }): StoredSession[];
 
   /** Reference for a persisted native ID; null when it cannot be this backend's. */
   ref(nativeId: string | null | undefined): SessionRef | null;
@@ -395,7 +420,12 @@ export interface HarnessSessionStore {
    */
   load(
     ref: SessionRef,
-    options?: { window?: { from: string | null; to: string | null }; maxBytes?: number },
+    options?: {
+      window?: { from: string | null; to: string | null };
+      maxBytes?: number;
+      /** Read this nested agent's history (StoredSession.nestedAgents) instead. */
+      agent?: string;
+    },
   ): Promise<HistoryExcerpt | null>;
 
   /**
@@ -420,6 +450,12 @@ export interface HarnessSessionStore {
    * list prices unless the backend stores reported cost.
    */
   usage(ref: SessionRef, window: { from: string; to: string }): UsageSummary;
+
+  /**
+   * Delete sessions (with their nested agents) whose last activity is before
+   * `inactiveBefore`. Returns how many sessions were removed.
+   */
+  prune(options: { inactiveBefore: string }): number;
 
   /**
    * The session a file belongs to, for workspace file browsers. `path` is
