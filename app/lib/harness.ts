@@ -108,6 +108,13 @@ export interface HarnessBackend {
   readonly sessions: HarnessSessionStore;
 
   /**
+   * Atlas' long-lived conversation (the trigger runner): the backend's native
+   * tools, hooks, skills and delegation, fed by host input. Returns at once;
+   * iterate the conversation for its events.
+   */
+  openConversation(request: ConversationRequest): Conversation;
+
+  /**
    * Exactly three deployment-configured profiles. No model/tool execution.
    * Reject missing or duplicate mappings; do not substitute models silently.
    * Authentication or availability can still fail during execution.
@@ -231,6 +238,11 @@ export interface HarnessError {
   code:
     | "unsupported" | "authentication" | "rate-limit" | "context-limit"
     | "session-missing" | "session-busy" | "configuration"
+    /**
+     * The provider rejected the request itself (e.g. an oversized image).
+     * Resuming the same context fails the same way; start a fresh session.
+     */
+    | "invalid-request"
     | "transport" | "execution";
   message: string;
 }
@@ -414,4 +426,79 @@ export interface HarnessSessionStore {
    * relative to the workspace home. Null for files outside session storage.
    */
   locate(path: string): SessionRef | null;
+}
+
+// ---------------------------------------------------------------------------
+// Conversation: the runner's long-lived, multi-turn session with the
+// backend's native tools. Portable sessions and runs (above) are the target
+// for Atlas-owned coordination; this is how triggers run today.
+// ---------------------------------------------------------------------------
+
+export interface ConversationRequest {
+  cwd: string;
+  /** Model name or alias as configured in Atlas (models.* in config.yml). */
+  model: string;
+  systemPrompt: string;
+  /** First user message. */
+  prompt: string;
+  /**
+   * multi: push() starts further turns, and the conversation ends after
+   * idleTimeoutMs without input. single: one turn, push() is rejected.
+   */
+  turns: "single" | "multi";
+  idleTimeoutMs?: number;
+  /** MCP servers in the common `mcpServers` configuration format. */
+  mcpServers?: { [name: string]: { [key: string]: unknown } };
+  /** Continue this stored session. */
+  resume?: SessionRef;
+  /** Do not store the session (one-off runs that are never resumed). */
+  ephemeral?: boolean;
+  /** Emit text.delta events while the model writes. */
+  streamText?: boolean;
+  /**
+   * Asked at every tool boundary inside a turn. Returned text is added to
+   * the next model request of the same turn (mid-turn steering).
+   */
+  nextToolContext?: () => string | undefined;
+}
+
+export interface TurnResult {
+  outcome: "completed" | "failed";
+  /** Final text of the turn: the answer, or the provider's error text. */
+  text: string | null;
+  /** Set when failed, and for completed turns whose answer is a provider error. */
+  error: HarnessError | null;
+  session: SessionRef | null;
+  /** Model turns taken; 0 means the backend never started (e.g. an unusable resume). */
+  turns: number | null;
+  durationMs: number | null;
+  /**
+   * Usage of this turn as reported by the backend, never the stored session's
+   * running total. Nested agents are included only if the backend reports
+   * them; HarnessSessionStore.usage covers them for stored sessions.
+   */
+  usage: UsageSummary;
+}
+
+export type ConversationEvent =
+  /** The stored session is known (first event, and after the backend replaces it). */
+  | { type: "session"; session: SessionRef }
+  /** A user or assistant message was stored; `nested` for nested agents. */
+  | { type: "message"; role: "user" | "assistant"; nested: boolean }
+  /**
+   * Streamed text (streamText). messageId equals the stored assistant entry's
+   * HistoryEntry.messageId, so a draft can be replaced by the stored text.
+   */
+  | { type: "text.delta"; messageId: string; text: string }
+  /** One per turn. A multi-turn conversation continues with the next input. */
+  | { type: "turn.finished"; result: TurnResult };
+
+/** Single consumer. Iteration ends when the conversation is over. */
+export interface Conversation extends AsyncIterable<ConversationEvent> {
+  /** Queue a user message for the next turn (multi-turn only). */
+  push(text: string): void;
+  /** Stop the running turn; the conversation stays open for input. */
+  interrupt(): Promise<void>;
+  /** End now: drop pending input and release the backend. Idempotent. */
+  stop(): void;
 }

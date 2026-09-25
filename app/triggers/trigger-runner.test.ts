@@ -24,7 +24,6 @@ import {
   getSessionIdleSeconds,
   killStaleRunner,
   injectIntoRunner,
-  createMessageChannel,
   getSocketPath,
   startSocketServer,
   trySocketInject,
@@ -32,13 +31,14 @@ import {
   persistStreamChunk,
   pruneStreamChunks,
   upsertTriggerSession,
-  is400UpstreamError,
-  clearSessionOn400,
+  clearRejectedSession,
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
 } from "./trigger-runner.ts";
 import { migrateSchema } from "../lib/atlas-db.ts";
+import type { TurnResult } from "../lib/harness.ts";
+import { createMessageChannel } from "./harness/claude/message-channel.ts";
 import { getLockPath, getSocketPath as socketPathFor } from "../lib/trigger-socket.ts";
 
 // ---------------------------------------------------------------------------
@@ -1117,10 +1117,8 @@ describe("Socket IPC", () => {
 
 describe("persistStreamChunk", () => {
   let db: Database;
-  let state: { uuid: string | null; nextIndex: number };
-  let api: StreamChunkState;
 
-  beforeAll(() => {
+  beforeEach(() => {
     db = new Database(":memory:");
     db.exec(`
       CREATE TABLE web_chat_stream_chunks (
@@ -1134,23 +1132,7 @@ describe("persistStreamChunk", () => {
     `);
   });
 
-  afterAll(() => {
-    db.close();
-  });
-
-  afterEach(() => {
-    db.exec("DELETE FROM web_chat_stream_chunks");
-  });
-
-  function freshState(): StreamChunkState {
-    state = { uuid: null, nextIndex: 0 };
-    api = {
-      setUuid: (u) => { state.uuid = u; state.nextIndex = 0; },
-      uuidRef: () => state.uuid,
-      nextIndex: () => state.nextIndex++,
-    };
-    return api;
-  }
+  afterEach(() => db.close());
 
   function rows(): { message_uuid: string; chunk_index: number; content_delta: string }[] {
     return db.prepare(
@@ -1158,48 +1140,11 @@ describe("persistStreamChunk", () => {
     ).all() as { message_uuid: string; chunk_index: number; content_delta: string }[];
   }
 
-  test("message_start records the message id but writes no chunk row", () => {
-    const s = freshState();
-    persistStreamChunk(
-      { type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-abc" } } },
-      s,
-      db,
-    );
-    expect(state.uuid).toBe("msg-abc");
-    expect(rows().length).toBe(0);
-  });
-
-  test("text deltas after message_start are persisted with incrementing index", () => {
-    const s = freshState();
-    persistStreamChunk(
-      { type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } },
-      s, db,
-    );
-    persistStreamChunk(
-      { type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hello" } } },
-      s, db,
-    );
-    persistStreamChunk(
-      { type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: " world" } } },
-      s, db,
-    );
-
-    expect(rows()).toEqual([
-      { message_uuid: "msg-1", chunk_index: 0, content_delta: "Hello" },
-      { message_uuid: "msg-1", chunk_index: 1, content_delta: " world" },
-    ]);
-  });
-
-  test("a new message_start resets the chunk index to 0", () => {
-    const s = freshState();
-    // turn 1
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "A" } } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "B" } } }, s, db);
-    // turn 2 (after a tool, say)
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-2" } } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "X" } } }, s, db);
-
+  test("deltas are persisted with incrementing index; a new message restarts at 0", () => {
+    const state: StreamChunkState = { messageId: null, index: 0 };
+    persistStreamChunk("sess-1", { messageId: "msg-1", text: "A" }, state, db);
+    persistStreamChunk("sess-1", { messageId: "msg-1", text: "B" }, state, db);
+    persistStreamChunk("sess-1", { messageId: "msg-2", text: "X" }, state, db);
     expect(rows()).toEqual([
       { message_uuid: "msg-1", chunk_index: 0, content_delta: "A" },
       { message_uuid: "msg-1", chunk_index: 1, content_delta: "B" },
@@ -1207,53 +1152,18 @@ describe("persistStreamChunk", () => {
     ]);
   });
 
-  test("non-text deltas (tool_use, thinking, message_stop) are ignored", () => {
-    const s = freshState();
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
-
-    // Tool-block delta, thinking-delta, content_block_stop, message_stop — none should write a row
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "..." } } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_stop", index: 0 } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_stop" } }, s, db);
-
-    expect(rows().length).toBe(0);
-  });
-
-  test("empty text deltas are ignored (no zero-length rows)", () => {
-    const s = freshState();
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "" } } }, s, db);
-
-    expect(rows().length).toBe(0);
-  });
-
-  test("text delta before any message_start is silently dropped", () => {
-    const s = freshState();
-    persistStreamChunk({ type: "stream_event", session_id: "sess-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "orphan" } } }, s, db);
-
-    expect(rows().length).toBe(0);
-    expect(state.uuid).toBeNull();
-  });
-
-  test("non-stream_event types are ignored", () => {
-    const s = freshState();
-    persistStreamChunk({ type: "assistant", session_id: "sess-1", event: { type: "message_start", message: { id: "x" } } }, s, db);
-    expect(state.uuid).toBeNull();
-    expect(rows().length).toBe(0);
-  });
-
-  test("missing session_id is ignored", () => {
-    const s = freshState();
-    persistStreamChunk({ type: "stream_event", event: { type: "message_start", message: { id: "msg-1" } } }, s, db);
-    // message_start with no session_id should not even set the uuid
-    expect(state.uuid).toBeNull();
-    expect(rows().length).toBe(0);
+  test("returns true only when it inserted a row", () => {
+    const state: StreamChunkState = { messageId: null, index: 0 };
+    expect(persistStreamChunk("sess-1", { messageId: "m1", text: "A" }, state, db)).toBe(true);
+    expect(persistStreamChunk("sess-1", { messageId: "m1", text: "" }, state, db)).toBe(false);
+    expect(persistStreamChunk("", { messageId: "m1", text: "B" }, state, db)).toBe(false);
+    expect(persistStreamChunk("sess-1", { messageId: "", text: "B" }, state, db)).toBe(false);
+    expect(rows()).toHaveLength(1);
   });
 });
 
 // ---------------------------------------------------------------------------
-// persistStreamChunk return value + pruneStreamChunks (web-ui notify support)
+// pruneStreamChunks (web-ui notify support)
 // ---------------------------------------------------------------------------
 
 describe("stream chunk bookkeeping for web-ui pings", () => {
@@ -1274,20 +1184,6 @@ describe("stream chunk bookkeeping for web-ui pings", () => {
   });
 
   afterEach(() => db.close());
-
-  test("persistStreamChunk returns true only when it inserted a row", () => {
-    let uuid: string | null = null;
-    let i = 0;
-    const s: StreamChunkState = { setUuid: (u) => { uuid = u; i = 0; }, uuidRef: () => uuid, nextIndex: () => i++ };
-    const ev = (event: unknown) => ({ type: "stream_event", session_id: "sess-1", event });
-    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "text_delta", text: "orphan" } }), s, db)).toBe(false);
-    expect(persistStreamChunk(ev({ type: "message_start", message: { id: "m1" } }), s, db)).toBe(false);
-    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "text_delta", text: "A" } }), s, db)).toBe(true);
-    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "text_delta", text: "" } }), s, db)).toBe(false);
-    expect(persistStreamChunk(ev({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } }), s, db)).toBe(false);
-    expect(persistStreamChunk({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "B" } } }, s, db)).toBe(false);
-    expect(persistStreamChunk({ type: "assistant", session_id: "sess-1" }, s, db)).toBe(false);
-  });
 
   test("pruneStreamChunks drops one session's rows and ids stay monotonic", () => {
     const ins = db.prepare("INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta) VALUES (?, ?, ?, ?)");
@@ -1329,6 +1225,7 @@ describe("web-ui notify pings from main()", () => {
 import { mkdirSync, writeFileSync } from "fs";
 import { getDb } from ${JSON.stringify(join(import.meta.dir, "../lib/atlas-db.ts"))};
 import { main, runnerDeps } from ${JSON.stringify(join(import.meta.dir, "trigger-runner.ts"))};
+import { ClaudeCodeBackend } from ${JSON.stringify(join(import.meta.dir, "harness/claude/backend.ts"))};
 const SID = ${JSON.stringify(sid)};
 const KEY = ${JSON.stringify(key)};
 const db = getDb();
@@ -1338,7 +1235,7 @@ db.prepare("INSERT INTO trigger_sessions (trigger_name, session_key, session_id)
 db.prepare("INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta) VALUES (?, 'old', 0, 'stale')").run(SID);
 mkdirSync(process.env.HOME + "/.claude/projects/p", { recursive: true });
 writeFileSync(process.env.HOME + "/.claude/projects/p/" + SID + ".jsonl", JSON.stringify({ type: "assistant", message: { content: [] } }) + "\\n");
-runnerDeps.query = (() => {
+const query = (() => {
   async function* gen() {
     yield { type: "system", subtype: "init", session_id: SID };
     yield { type: "stream_event", session_id: SID, event: { type: "message_start", message: { id: "msg_1" } } };
@@ -1349,6 +1246,7 @@ runnerDeps.query = (() => {
   }
   return Object.assign(gen(), { interrupt: async () => {}, close: () => {} });
 }) as any;
+runnerDeps.createBackend = () => new ClaudeCodeBackend({ query });
 process.argv = [process.argv[0], "trigger-runner.ts", "web-chat", JSON.stringify({ message: "hi" }), KEY];
 await main();
 const rows = db.query("SELECT message_uuid, content_delta FROM web_chat_stream_chunks WHERE session_id = ? ORDER BY id").all(SID);
@@ -1436,37 +1334,16 @@ describe("upsertTriggerSession", () => {
 });
 
 // ---------------------------------------------------------------------------
-// is400UpstreamError + clearSessionOn400
+// clearRejectedSession
 // ---------------------------------------------------------------------------
 
-describe("is400UpstreamError", () => {
-  test("returns true for API Error: 400 result", () => {
-    expect(is400UpstreamError('API Error: 400 {"error":"Upstream error"}')).toBe(true);
-  });
-
-  test("returns true for bare API Error: 400", () => {
-    expect(is400UpstreamError("API Error: 400")).toBe(true);
-  });
-
-  test("returns false for other API errors", () => {
-    expect(is400UpstreamError("API Error: 401 Unauthorized")).toBe(false);
-    expect(is400UpstreamError("API Error: 500 Internal Server Error")).toBe(false);
-  });
-
-  test("returns false for null", () => {
-    expect(is400UpstreamError(null)).toBe(false);
-  });
-
-  test("returns false for undefined", () => {
-    expect(is400UpstreamError(undefined)).toBe(false);
-  });
-
-  test("returns false for normal result text", () => {
-    expect(is400UpstreamError("Email sent successfully")).toBe(false);
-  });
+const turn = (error: TurnResult["error"]): TurnResult => ({
+  outcome: error ? "failed" : "completed", text: error?.message ?? "Email replied successfully.", error, session: null, turns: 1, durationMs: 1,
+  usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, cost: null, completeness: "unavailable" },
 });
+const rejected = turn({ code: "invalid-request", message: 'API Error: 400 {"error":"Upstream error"}' });
 
-describe("clearSessionOn400", () => {
+describe("clearRejectedSession", () => {
   function makeSessionDb(): Database {
     const db = new Database(":memory:");
     db.exec(`
@@ -1496,7 +1373,7 @@ describe("clearSessionOn400", () => {
     return row !== null && row !== undefined;
   }
 
-  test("deletes session row and logs when result starts with API Error: 400", () => {
+  test("deletes session row and logs when the provider rejected the request", () => {
     const db = makeSessionDb();
     const logMessages: string[] = [];
     const log = { log: (msg: string) => logMessages.push(msg) };
@@ -1504,9 +1381,9 @@ describe("clearSessionOn400", () => {
     insertSession(db, "email-handler", "thread-abc", "sess-broken-123");
     expect(sessionExists(db, "email-handler", "thread-abc")).toBe(true);
 
-    const cleared = clearSessionOn400(
+    const cleared = clearRejectedSession(
       db,
-      'API Error: 400 {"error":"Upstream error"}',
+      rejected,
       "persistent",
       "email-handler",
       "thread-abc",
@@ -1520,7 +1397,7 @@ describe("clearSessionOn400", () => {
     // Returned the cleared session id
     expect(cleared).toBe("sess-broken-123");
     // Log message must be emitted
-    expect(logMessages.some(m => m.includes("Upstream 400 detected"))).toBe(true);
+    expect(logMessages.some(m => m.includes("Request rejected by the provider"))).toBe(true);
     expect(logMessages.some(m => m.includes("sess-broken-123"))).toBe(true);
     expect(logMessages.some(m => m.includes("starts fresh"))).toBe(true);
   });
@@ -1532,9 +1409,9 @@ describe("clearSessionOn400", () => {
 
     insertSession(db, "email-handler", "thread-xyz", "sess-old-456");
 
-    const cleared = clearSessionOn400(
+    const cleared = clearRejectedSession(
       db,
-      "API Error: 400",
+      rejected,
       "persistent",
       "email-handler",
       "thread-xyz",
@@ -1548,16 +1425,16 @@ describe("clearSessionOn400", () => {
     expect(logMessages.some(m => m.includes("sess-old-456"))).toBe(true);
   });
 
-  test("does NOT delete session for non-400 result", () => {
+  test("does NOT delete session for other results", () => {
     const db = makeSessionDb();
     const logMessages: string[] = [];
     const log = { log: (msg: string) => logMessages.push(msg) };
 
     insertSession(db, "email-handler", "thread-ok", "sess-good-789");
 
-    const cleared = clearSessionOn400(
+    const cleared = clearRejectedSession(
       db,
-      "Email replied successfully.",
+      turn(null),
       "persistent",
       "email-handler",
       "thread-ok",
@@ -1578,9 +1455,9 @@ describe("clearSessionOn400", () => {
 
     insertSession(db, "some-trigger", "key-1", "sess-ephemeral");
 
-    const cleared = clearSessionOn400(
+    const cleared = clearRejectedSession(
       db,
-      "API Error: 400",
+      rejected,
       "ephemeral",   // not persistent
       "some-trigger",
       "key-1",
