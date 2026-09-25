@@ -536,25 +536,25 @@ def cmd_incoming(config, sender, message, name="", timestamp="", attachments_jso
 FAREWELL_TEMPLATE_PATH = "/atlas/app/prompts/trigger-channel-signal-farewell.md"
 
 
-def _inject_ipc(socket_path, message):
-    """Inject a message into a running Claude session via IPC socket."""
-    s = _socket_mod.socket(_socket_mod.AF_UNIX, _socket_mod.SOCK_STREAM)
-    s.settimeout(10)
+def _inject_into_runner(sender, message):
+    """Hand a message to the live runner of this chat (trigger-runner --inject).
+
+    Returns "injected", "no-runner" (the caller may resume the session) or
+    "busy" (a runner is alive but unreachable; resuming would start a second
+    process on the same session).
+    """
     try:
-        s.connect(socket_path)
-        s.sendall(json.dumps({"action": "send", "text": message, "submit": True}).encode() + b"\n")
-    finally:
-        s.close()
-
-
-def _wait_for_socket_gone(socket_path, timeout=120):
-    """Wait for IPC socket to disappear (session finished processing)."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if not os.path.exists(socket_path):
-            return True
-        time.sleep(2)
-    return False
+        result = subprocess.run(
+            ["/atlas/app/triggers/trigger-runner", "--inject", TRIGGER_NAME, sender, message,
+             "--channel", "signal"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"[{datetime.now()}] /new: Runner inject failed: {e}", file=sys.stderr)
+        return "busy"
+    return {0: "injected", 2: "no-runner"}.get(result.returncode, "busy")
 
 
 def _load_farewell_message():
@@ -598,15 +598,10 @@ def _resume_with_farewell(session_id, sender, farewell):
 
 
 def _farewell_background(old_session_id, sender, farewell):
-    """Run farewell in background thread — inject via IPC or resume session."""
-    socket_path = f"/tmp/claudec-{old_session_id}.sock"
+    """Resume the retired session in the background so it can save to memory."""
     try:
-        if os.path.exists(socket_path):
-            _inject_ipc(socket_path, farewell)
-            print(f"[{datetime.now()}] /new: Injected farewell into running session {old_session_id}")
-        else:
-            _resume_with_farewell(old_session_id, sender, farewell)
-            print(f"[{datetime.now()}] /new: Resumed session {old_session_id} for farewell")
+        _resume_with_farewell(old_session_id, sender, farewell)
+        print(f"[{datetime.now()}] /new: Resumed session {old_session_id} for farewell")
     except Exception as e:
         print(f"[{datetime.now()}] /new: Farewell failed for {old_session_id}: {e}", file=sys.stderr)
 
@@ -631,7 +626,13 @@ def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
     old_session_id = row[0] if row else None
 
     if old_session_id:
-        # Clear session entry FIRST — new messages immediately get a fresh session
+        # A live runner owns the session: hand it the farewell now, while the
+        # mapping still points at it. Resume only when no runner is alive.
+        farewell = _load_farewell_message()
+        delivery = _inject_into_runner(sender, farewell)
+        print(f"[{datetime.now()}] /new: Farewell for {old_session_id}: {delivery}")
+
+        # Clear session entry — new messages get a fresh session
         atlas_db.execute(
             "DELETE FROM trigger_sessions WHERE trigger_name=? AND session_key=?",
             (TRIGGER_NAME, sender),
@@ -639,11 +640,11 @@ def cmd_new_session(config, sender, inbox_msg_id, name="", timestamp=""):
         atlas_db.commit()
         print(f"[{datetime.now()}] /new: Cleared session for {sender}")
 
-        # Send farewell in background (non-blocking)
-        farewell = _load_farewell_message()
-        import threading
-        t = threading.Thread(target=_farewell_background, args=(old_session_id, sender, farewell), daemon=True)
-        t.start()
+        if delivery == "no-runner":
+            # Resume the idle session in the background (non-blocking)
+            import threading
+            t = threading.Thread(target=_farewell_background, args=(old_session_id, sender, farewell), daemon=True)
+            t.start()
 
     atlas_db.close()
 

@@ -6,7 +6,7 @@
  */
 
 import { test, describe, expect, beforeAll, beforeEach, afterAll, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
@@ -21,7 +21,9 @@ import {
   safePlaceholderReplace,
   readTriggerConfig,
   recordMetrics,
-  checkCorruptedSession,
+  getSessionIdleSeconds,
+  killStaleRunner,
+  injectIntoRunner,
   createMessageChannel,
   getSocketPath,
   startSocketServer,
@@ -42,6 +44,7 @@ import {
   type AggregatedUsage,
 } from "./trigger-runner.ts";
 import { migrateSchema } from "../lib/atlas-db.ts";
+import { getLockPath, getSocketPath as socketPathFor } from "../lib/trigger-socket.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -736,77 +739,117 @@ describe("recordMetrics", () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkCorruptedSession
+// getSessionIdleSeconds
 // ---------------------------------------------------------------------------
 
-describe("checkCorruptedSession", () => {
+describe("getSessionIdleSeconds", () => {
   let tmpDir: string;
+  let projectDir: string;
 
   beforeAll(() => {
     tmpDir = makeTempDir();
+    projectDir = join(tmpDir, ".claude", "projects", "-home-agent");
+    mkdirSync(projectDir, { recursive: true });
   });
 
   afterAll(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  test("returns false for non-existent session", () => {
-    expect(checkCorruptedSession("nonexistent-session-id", tmpDir)).toBe(false);
+  const age = (path: string, seconds: number) => {
+    const t = new Date(Date.now() - seconds * 1000);
+    utimesSync(path, t, t);
+  };
+
+  test("returns 0 for a session without transcript", () => {
+    expect(getSessionIdleSeconds("missing-session", tmpDir)).toBe(0);
   });
 
-  test("returns true when last JSONL line is queue-operation", () => {
-    const sessionsDir = join(tmpDir, ".claude", "projects", "test-proj", "sessions");
-    mkdirSync(sessionsDir, { recursive: true });
-
-    const sessionId = "test-session-corrupted";
-    const jsonlPath = join(sessionsDir, `${sessionId}.jsonl`);
-
-    writeFileSync(jsonlPath, [
-      JSON.stringify({ type: "user", content: "Hello" }),
-      JSON.stringify({ type: "assistant", content: "Hi there" }),
-      JSON.stringify({ type: "queue-operation", data: {} }),
-    ].join("\n") + "\n");
-
-    expect(checkCorruptedSession(sessionId, tmpDir)).toBe(true);
+  test("measures the transcript in the project directory, where Claude Code writes it", () => {
+    const file = join(projectDir, "idle-main.jsonl");
+    writeFileSync(file, "{}\n");
+    age(file, 3600);
+    expect(getSessionIdleSeconds("idle-main", tmpDir)).toBeGreaterThanOrEqual(3599);
   });
 
-  test("returns false when last JSONL line is not queue-operation", () => {
-    const sessionsDir = join(tmpDir, ".claude", "projects", "test-proj", "sessions");
-    mkdirSync(sessionsDir, { recursive: true });
+  test("a working subagent keeps the session active", () => {
+    const file = join(projectDir, "idle-parent.jsonl");
+    writeFileSync(file, "{}\n");
+    age(file, 3600);
+    const subagents = join(projectDir, "idle-parent", "subagents");
+    mkdirSync(subagents, { recursive: true });
+    writeFileSync(join(subagents, "agent-a1.jsonl"), "{}\n");
+    expect(getSessionIdleSeconds("idle-parent", tmpDir)).toBeLessThan(60);
+  });
+});
 
-    const sessionId = "test-session-healthy";
-    const jsonlPath = join(sessionsDir, `${sessionId}.jsonl`);
+// ---------------------------------------------------------------------------
+// killStaleRunner
+// ---------------------------------------------------------------------------
 
-    writeFileSync(jsonlPath, [
-      JSON.stringify({ type: "user", content: "Hello" }),
-      JSON.stringify({ type: "result", subtype: "success" }),
-    ].join("\n") + "\n");
+describe("killStaleRunner", () => {
+  const trigger = `stale-test-${process.pid}`;
+  const lockPath = () => getLockPath(trigger, "key");
 
-    expect(checkCorruptedSession(sessionId, tmpDir)).toBe(false);
+  afterEach(() => {
+    try { unlinkSync(lockPath()); } catch {}
   });
 
-  test("returns false for empty JSONL file", () => {
-    const sessionsDir = join(tmpDir, ".claude", "projects", "test-proj2", "sessions");
-    mkdirSync(sessionsDir, { recursive: true });
-
-    const sessionId = "test-session-empty";
-    const jsonlPath = join(sessionsDir, `${sessionId}.jsonl`);
-
-    writeFileSync(jsonlPath, "");
-
-    expect(checkCorruptedSession(sessionId, tmpDir)).toBe(false);
+  test("returns false without a lock holder", async () => {
+    expect(await killStaleRunner(trigger, "key")).toBe(false);
   });
 
-  test("returns false for malformed JSONL", () => {
-    const sessionsDir = join(tmpDir, ".claude", "projects", "test-proj3", "sessions");
-    mkdirSync(sessionsDir, { recursive: true });
+  test("never kills its own process", async () => {
+    writeFileSync(lockPath(), String(process.pid));
+    expect(await killStaleRunner(trigger, "key")).toBe(false);
+  });
 
-    const sessionId = "test-session-malformed";
-    const jsonlPath = join(sessionsDir, `${sessionId}.jsonl`);
+  test("terminates the lock holder and its child processes", async () => {
+    // sh dies on SIGTERM and orphans its sleep child, which must be killed too.
+    const runner = Bun.spawn(["sh", "-c", "sleep 60; true"], { stdout: "ignore", stderr: "ignore" });
+    await Bun.sleep(200);
+    const child = parseInt(Bun.spawnSync(["pgrep", "-P", String(runner.pid)]).stdout.toString(), 10);
+    expect(child).toBeGreaterThan(0);
+    writeFileSync(lockPath(), String(runner.pid));
 
-    writeFileSync(jsonlPath, "not valid json\n");
+    expect(await killStaleRunner(trigger, "key", 2_000)).toBe(true);
+    await runner.exited;
+    await Bun.sleep(200);
+    let childAlive = true;
+    try { process.kill(child, 0); } catch { childAlive = false; }
+    expect(childAlive).toBe(false);
+  });
+});
 
-    expect(checkCorruptedSession(sessionId, tmpDir)).toBe(false);
+// ---------------------------------------------------------------------------
+// injectIntoRunner (--inject)
+// ---------------------------------------------------------------------------
+
+describe("injectIntoRunner", () => {
+  const trigger = `inject-test-${process.pid}`;
+  let server: Server | null = null;
+
+  afterEach(() => {
+    server?.close();
+    server = null;
+    try { unlinkSync(getLockPath(trigger, "key")); } catch {}
+  });
+
+  test("returns 2 when no runner owns the session", async () => {
+    expect(await injectIntoRunner(trigger, "key", "bye", "signal")).toBe(2);
+  });
+
+  test("returns 3 when the lock holder is alive but its socket is gone", async () => {
+    writeFileSync(getLockPath(trigger, "key"), String(process.pid));
+    expect(await injectIntoRunner(trigger, "key", "bye", "signal")).toBe(3);
+  });
+
+  test("returns 0 and delivers the message to the live runner", async () => {
+    const received: string[] = [];
+    server = startSocketServer(socketPathFor(trigger, "key"), (text) => received.push(text), async () => {});
+    await Bun.sleep(50);
+    expect(await injectIntoRunner(trigger, "key", "bye", "signal")).toBe(0);
+    expect(received).toEqual(["bye"]);
   });
 });
 

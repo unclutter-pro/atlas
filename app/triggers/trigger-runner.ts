@@ -17,6 +17,7 @@
  */
 
 import { createAtlasHarness } from "./harness/registry.ts";
+import { findTranscript } from "./harness/claude/history.ts";
 import { createMessageChannel, type PushOptions } from "./harness/claude/message-channel.ts";
 import { aggregateRunCost, type AggregatedUsage } from "./harness/claude/legacy-usage.ts";
 import type { ConversationResult, Conversation, QueryFactory } from "./harness/claude/compatibility.ts";
@@ -41,6 +42,8 @@ import { openDb as openSharedDb } from "../lib/db.ts";
 import {
   getLockPath,
   getSocketPath,
+  isPidAlive,
+  readLockPid,
   trySocketInject,
   type SocketAck,
   type SocketMessage,
@@ -694,105 +697,101 @@ export function disableRemoteMcp(): void {
 }
 
 /**
- * Find the JSONL file for a session across all project directories.
- */
-export function findSessionJsonl(
-  sessionId: string,
-  homeDir?: string,
-): string | null {
-  const base = homeDir ?? HOME;
-  const projectsDir = `${base}/.claude/projects`;
-
-  if (!existsSync(projectsDir)) return null;
-
-  try {
-    for (const projectEntry of readdirSync(projectsDir)) {
-      const sessionsDir = `${projectsDir}/${projectEntry}/sessions`;
-      if (!existsSync(sessionsDir)) continue;
-      const candidate = `${sessionsDir}/${sessionId}.jsonl`;
-      if (existsSync(candidate)) return candidate;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
-/**
- * Check if a session's JSONL file ends with a "queue-operation" entry,
- * which indicates the container was killed mid-IPC-inject (corrupted state).
- */
-export function checkCorruptedSession(
-  sessionId: string,
-  homeDir?: string,
-): boolean {
-  const jsonlPath = findSessionJsonl(sessionId, homeDir);
-  if (!jsonlPath) return false;
-
-  try {
-    const content = readFileSync(jsonlPath, "utf8");
-    const lines = content.trimEnd().split("\n");
-    if (lines.length === 0) return false;
-    const lastLine = lines[lines.length - 1];
-    const parsed = JSON.parse(lastLine) as { type?: string };
-    return parsed.type === "queue-operation";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if a session is stale (no JSONL activity for longer than threshold).
- * Returns idle seconds, or 0 if the session is fresh or JSONL not found.
+ * Seconds since the session last wrote to its transcript or to one of its
+ * subagent transcripts (a subagent works in its own file while the parent
+ * waits). 0 when the session has no transcript.
  */
 export function getSessionIdleSeconds(
   sessionId: string,
   homeDir?: string,
 ): number {
-  const jsonlPath = findSessionJsonl(sessionId, homeDir);
-  if (!jsonlPath) return 0;
-
+  let transcript: string | null;
   try {
-    const mtime = statSync(jsonlPath).mtimeMs;
-    return (Date.now() - mtime) / 1000;
+    transcript = findTranscript(homeDir ?? HOME, { backend: "claude-code", nativeId: sessionId });
   } catch {
     return 0;
   }
+  if (!transcript) return 0;
+
+  const files = [transcript];
+  const subagentsDir = join(transcript.slice(0, -".jsonl".length), "subagents");
+  try {
+    for (const entry of readdirSync(subagentsDir)) {
+      if (entry.endsWith(".jsonl")) files.push(join(subagentsDir, entry));
+    }
+  } catch {
+    // No subagents yet
+  }
+
+  let latestMs = 0;
+  for (const file of files) {
+    try {
+      latestMs = Math.max(latestMs, statSync(file).mtimeMs);
+    } catch {}
+  }
+  return latestMs ? Math.max(0, (Date.now() - latestMs) / 1000) : 0;
 }
 
-/** Default: 10 minutes of no JSONL activity = stale (was 30min, reduced for faster frozen session detection) */
+/** Default: 30 minutes without transcript activity while a runner is alive = stale */
 const STALE_SESSION_THRESHOLD_S = parseInt(
-  process.env.STALE_SESSION_THRESHOLD ?? "600",
+  process.env.STALE_SESSION_THRESHOLD ?? "1800",
   10,
 );
 
-/**
- * Kill a running Claude session by finding and terminating the process owning its socket.
- */
-function killSessionProcess(sessionId: string): void {
-  const socketPath = `/tmp/claudec-${sessionId}.sock`;
-  if (!existsSync(socketPath)) return;
-
+/** Direct children of a process (the Claude Code CLI under a runner). */
+function childPids(pid: number): number[] {
   try {
-    // Read the socket to find the owning process via lsof (more portable than fuser)
-    const result = Bun.spawnSync(["lsof", "-t", socketPath]);
-    const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
-    for (const pidStr of pids) {
-      const pid = parseInt(pidStr, 10);
-      if (!isNaN(pid)) {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {}
-      }
-    }
+    const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+    return result.stdout
+      .toString()
+      .split("\n")
+      .map((line) => parseInt(line, 10))
+      .filter((child) => Number.isInteger(child) && child > 0);
   } catch {
-    // lsof not available or failed — try to remove socket directly
+    return [];
   }
+}
 
-  // Clean up socket file
+function sendSignal(pid: number, signal: NodeJS.Signals): void {
   try {
-    unlinkSync(socketPath);
+    process.kill(pid, signal);
   } catch {}
+}
+
+/**
+ * Terminate the runner that holds the (trigger, key) lock, plus its child
+ * processes. SIGTERM first so the runner releases its lock and the SDK stops
+ * the CLI; SIGKILL after the grace period for a runner whose event loop hangs.
+ * Returns false when no other live runner holds the lock.
+ */
+export async function killStaleRunner(
+  triggerName: string,
+  sessionKey: string,
+  graceMs = 10_000,
+): Promise<boolean> {
+  const pid = readLockPid(getLockPath(triggerName, sessionKey));
+  if (!pid || pid === process.pid || !isPidAlive(pid)) return false;
+
+  const children = childPids(pid);
+  sendSignal(pid, "SIGTERM");
+  const deadline = Date.now() + graceMs;
+  while (isPidAlive(pid) && Date.now() < deadline) await Bun.sleep(200);
+  if (isPidAlive(pid)) sendSignal(pid, "SIGKILL");
+  for (const child of children) {
+    if (isPidAlive(child)) sendSignal(child, "SIGKILL");
+  }
+  return true;
+}
+
+/** Exit codes of --inject; see the CLI section in main(). */
+export async function injectIntoRunner(
+  triggerName: string,
+  sessionKey: string,
+  message: string,
+  channel: string,
+): Promise<0 | 2 | 3> {
+  if (await trySocketInject(getSocketPath(triggerName, sessionKey), message, channel, sessionKey)) return 0;
+  return isPidAlive(readLockPid(getLockPath(triggerName, sessionKey))) ? 3 : 2;
 }
 
 /**
@@ -1207,6 +1206,22 @@ export async function main(): Promise<void> {
 
   const args = process.argv.slice(2);
 
+  // --- Inject mode: --inject <trigger> <session-key> "<message>" [--channel <channel>] ---
+  // Hands a message to the live runner of (trigger, key) without starting a
+  // session. Exit 0: injected. Exit 2: no runner, the caller may resume the
+  // session itself. Exit 3: a runner is alive but unreachable, so resuming
+  // would start a second process on the same session.
+  if (args[0] === "--inject") {
+    const [, trigger, sessionKey, message] = args;
+    if (!trigger || !sessionKey || !message) {
+      console.error('Usage: trigger-runner.ts --inject <trigger> <session-key> "<message>" [--channel <channel>]');
+      process.exit(1);
+    }
+    const channelIdx = args.indexOf("--channel");
+    const channel = channelIdx > 0 && args[channelIdx + 1] ? args[channelIdx + 1] : "internal";
+    process.exit(await injectIntoRunner(trigger, sessionKey, message, channel));
+  }
+
   // --- Direct mode: --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] [--trigger-name <name>] ---
   if (args[0] === "--direct") {
     const prompt = args[1];
@@ -1374,17 +1389,6 @@ export async function main(): Promise<void> {
 
     existingSession = sessionRow?.session_id ?? null;
 
-    // Guard: corrupted session (killed mid-IPC-inject)
-    if (existingSession && checkCorruptedSession(existingSession)) {
-      log.log(
-        `Corrupted session ${existingSession} (ended mid-IPC-inject) — clearing, will start fresh`,
-      );
-      db.prepare(
-        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
-      ).run(triggerName, sessionKey);
-      existingSession = null;
-    }
-
     // Guard: session file doesn't exist — clear stale session entry
     if (existingSession && !sessionFileExists(existingSession)) {
       log.log(
@@ -1402,12 +1406,14 @@ export async function main(): Promise<void> {
       const idleSeconds = getSessionIdleSeconds(existingSession);
       const isStopCommand = payload.trim().toLowerCase() === "/stop";
 
-      if (idleSeconds >= STALE_SESSION_THRESHOLD_S) {
-        // Session is stale (no JSONL activity) — kill it, then resume with notice
+      if (
+        idleSeconds >= STALE_SESSION_THRESHOLD_S &&
+        (await killStaleRunner(triggerName, sessionKey))
+      ) {
+        // A live runner without transcript activity hangs — killed it, resume with notice
         log.log(
-          `Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killing process`,
+          `Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killed its runner`,
         );
-        killSessionProcess(existingSession);
         staleRecovery = true;
       } else {
         // Session might be alive — try socket injection
