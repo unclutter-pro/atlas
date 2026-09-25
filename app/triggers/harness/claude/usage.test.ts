@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { ClaudeSessionStore } from "../../../lib/harness/claude-store.ts";
 import { readCostSnapshot, runUsage, ZERO_COST } from "./usage.ts";
 
 const first = { total_cost_usd: 0.000737, modelUsage: { haiku: {
@@ -34,10 +35,10 @@ test("resume reads persisted cost-state, but rejects stale or incomplete snapsho
   const state = JSON.stringify({ type: "cost-state", totalCostUSD: first.total_cost_usd, modelUsage: first.modelUsage });
   try {
     writeFileSync(file, state + "\n");
-    expect(readCostSnapshot(home, ref)).toEqual(first);
+    expect(readCostSnapshot(new ClaudeSessionStore(home), ref)).toEqual(first);
     writeFileSync(file, state + '\n{"type":"assistant"}\n');
-    expect(readCostSnapshot(home, ref)).toBeNull();
+    expect(readCostSnapshot(new ClaudeSessionStore(home), ref)).toBeNull();
     writeFileSync(file, state + '\n{"partial":');
-    expect(readCostSnapshot(home, ref)).toBeNull();
+    expect(readCostSnapshot(new ClaudeSessionStore(home), ref)).toBeNull();
   } finally { rmSync(home, { recursive: true, force: true }); }
 });

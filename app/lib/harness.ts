@@ -1,6 +1,8 @@
 /**
  * Backend contract implemented by triggers/harness/claude/backend.ts.
  * The current runner uses that adapter's explicit compatibility entry point.
+ * Session storage (HarnessSessionStore) is SDK-free and lives in lib/harness/,
+ * so the web UI can read sessions without the execution adapter.
  * Semantics and migration plan: docs/harness-interface.md.
  * Keep SDK types, database access and channel routing out of this module.
  */
@@ -102,6 +104,8 @@ export interface HostTool {
 export interface HarnessBackend {
   readonly id: string;
   readonly capabilities: HarnessCapabilities;
+  /** Read access to this backend's persisted sessions. */
+  readonly sessions: HarnessSessionStore;
 
   /**
    * Exactly three deployment-configured profiles. No model/tool execution.
@@ -280,3 +284,134 @@ export type AgentEvent = {
   | { type: "usage.updated"; usage: UsageReport }
   | { type: "run.finished"; result: RunResult }
 );
+
+// ---------------------------------------------------------------------------
+// Session storage: read-only, no model execution, no SDK.
+// Every Atlas reader of session history or metadata (web UI, runner recovery,
+// cost aggregation) goes through this instead of backend files.
+// ---------------------------------------------------------------------------
+
+/** Opaque read position. Only pass it back to the store that returned it. */
+export type HistoryPosition = string;
+
+/**
+ * One stored conversation event, in storage order. A tool result is its own
+ * entry; readers pair it with its call by callId.
+ */
+export type HistoryEntry = {
+  /** Stable across reads of the same storage; unique within the session. */
+  id: string;
+  /** ISO timestamp, null when the backend did not record one. */
+  at: string | null;
+  /** Written by a nested agent inside this session, not the main conversation. */
+  nested: boolean;
+} & (
+  | { kind: "user-text"; text: string }
+  | {
+      kind: "assistant-text";
+      text: string;
+      /**
+       * Equals the messageId of this message's live text.delta events
+       * (AgentMessage.id), so streamed drafts can be replaced by the stored text.
+       */
+      messageId: string | null;
+    }
+  | { kind: "reasoning"; text: string }
+  | { kind: "tool-call"; callId: string | null; name: string; input: JsonValue }
+  | { kind: "tool-result"; callId: string | null; content: string; isError: boolean }
+);
+
+export interface HistoryExcerpt {
+  entries: HistoryEntry[];
+  /** Model of the first assistant message in the excerpt. */
+  model: string | null;
+  /** Entries before the excerpt exist but were not read (byte budget). */
+  truncated: boolean;
+  /** Entries outside the requested time window were dropped. */
+  windowed: boolean;
+}
+
+/** Incremental reader for a live session. Single consumer, not thread-safe. */
+export interface HistoryCursor {
+  /**
+   * Entries stored since the previous read. The first read starts at the tail
+   * when the history exceeds initialBytes. reset: storage was rewritten, the
+   * reader must drop earlier entries; `entries` then restarts from the tail.
+   */
+  read(): { entries: HistoryEntry[]; reset: boolean };
+  /** After the last complete entry read so far. */
+  readonly position: HistoryPosition;
+  /** The first read skipped older entries. */
+  readonly truncated: boolean;
+}
+
+export interface SessionMetadata {
+  /** Last write to the session or to any nested agent's storage. */
+  lastActivityAt: string | null;
+  /** Timestamp of the last user or assistant entry of the main conversation. */
+  lastEntryAt: string | null;
+  /**
+   * From the stored conversation alone: "active" when the agent still owes a
+   * response (the last entry is input or a tool call), "ended" otherwise. Only
+   * meaningful while a runner owns the session; storage cannot prove liveness.
+   */
+  turn: "active" | "ended";
+}
+
+export interface HarnessSessionStore {
+  readonly backend: string;
+
+  /** Reference for a persisted native ID; null when it cannot be this backend's. */
+  ref(nativeId: string | null | undefined): SessionRef | null;
+
+  /** Whether the session has stored history. */
+  exists(ref: SessionRef): boolean;
+
+  /** Cheap: reads at most the storage tail. Null when the session has no history. */
+  metadata(ref: SessionRef): SessionMetadata | null;
+
+  /**
+   * Bounded synchronous read for list views: the first or last maxBytes of the
+   * stored history. Null when the session has no history.
+   */
+  excerpt(ref: SessionRef, options: { from: "start" | "end"; maxBytes: number }): HistoryExcerpt | null;
+
+  /**
+   * Whole history, or only entries inside [from, to] (a persistent session
+   * holds many runs). Without a window, histories above maxBytes are read from
+   * the tail. Asynchronous so large sessions do not block the caller.
+   */
+  load(
+    ref: SessionRef,
+    options?: { window?: { from: string | null; to: string | null }; maxBytes?: number },
+  ): Promise<HistoryExcerpt | null>;
+
+  /**
+   * Incremental reader. `until` bounds every read to an earlier cursor's
+   * position (a consistent full view next to a live tail).
+   */
+  cursor(
+    ref: SessionRef,
+    options?: { initialBytes?: number; until?: HistoryPosition },
+  ): HistoryCursor | null;
+
+  /**
+   * Calls onChange (debounce on the caller's side) when stored history changes.
+   * Returns an unsubscribe function, or null when the backend cannot notify;
+   * callers then rely on runner notifications.
+   */
+  watch(ref: SessionRef, onChange: () => void): (() => void) | null;
+
+  /**
+   * Usage of everything the session and its nested agents stored inside
+   * [from, to]. Each model request is counted once. Cost is estimated from
+   * list prices unless the backend stores reported cost.
+   */
+  usage(ref: SessionRef, window: { from: string; to: string }): UsageSummary;
+
+  /**
+   * The session a file belongs to, for workspace file browsers. `path` is
+   * relative to the workspace home. Null for files outside session storage.
+   */
+  locate(path: string): SessionRef | null;
+}

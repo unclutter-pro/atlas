@@ -186,7 +186,7 @@ export function deleteSession(key: string, opts: { refuseWhileRunning: boolean }
 }
 
 /**
- * Retire the chat's Claude session (like Signal /new): the agent gets a
+ * Retire the chat's agent session (like Signal /new): the agent gets a
  * farewell prompt to save context to memory, then the mapping, the user
  * messages and stream chunks are dropped so the next message starts fresh.
  */
@@ -220,7 +220,7 @@ export async function resetSession(sessionKey: string): Promise<{ farewellSent: 
     }
 
     // A live runner owns this session: hand it the farewell over its control
-    // socket. Never start a second Claude process on the same session while
+    // socket. Never start a second agent process on the same session while
     // the runner is alive, even if its socket doesn't answer.
     if (await trySocketInject(getSocketPath(CHAT_TRIGGER, sessionKey), farewell, "web", sessionKey)) {
       farewellSent = true;
@@ -232,7 +232,6 @@ export async function resetSession(sessionKey: string): Promise<{ farewellSent: 
       // Session not running — resume it with farewell
       try {
         const env = { ...process.env, ATLAS_TRIGGER: CHAT_TRIGGER, ATLAS_TRIGGER_CHANNEL: "web", ATLAS_TRIGGER_SESSION_KEY: sessionKey };
-        delete (env as Record<string, string | undefined>).CLAUDECODE;
         const proc = Bun.spawn(
           ["/atlas/app/triggers/trigger-runner", "--direct", farewell, "--channel", "web", "--resume", session.session_id],
           { stdout: "ignore", stderr: "ignore", env },

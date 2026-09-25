@@ -188,13 +188,13 @@ describe.skipIf(!seeded)("chat hub", () => {
       expect(c.types().slice(0, 2)).toEqual(["reset", "chunks"]);
       const reset = c.events[0]!;
       expect(reset.type === "reset" && reset.snapshot.session.sessionId).toBe(unmapped.sid);
-      expect(hub.file).toBeNull();
+      expect(hub.history).toBeNull();
 
-      // The JSONL shows up later: found on the next ping.
+      // The history shows up later: found on the next ping.
       writeTranscript(unmapped.sid, [assistantLine({ uuid: "l1", streamId: "m1", blocks: [{ type: "text", text: "Hi" }] })]);
       ping(unmapped.key, unmapped.sid, "message");
       await sleep(80);
-      expect(hub.file).not.toBeNull();
+      expect(hub.history).not.toBeNull();
       const added = c.events.filter((e) => e.type === "items_added").flatMap((e) => (e.type === "items_added" ? e.items : []));
       expect(added.map((i) => i.id)).toEqual(["a:l1:0"]);
       expect(hub.snapshot().drafts).toEqual([]);

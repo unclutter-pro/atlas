@@ -39,7 +39,7 @@ async function collect(q: ReturnType<typeof query>) {
 }
 try {
   const before = await collect(factory({ prompt, options: baseline }));
-  const backend = new ClaudeCodeBackend({ query: factory });
+  const backend = new ClaudeCodeBackend({ query: factory, prepareEnvironment: false });
   const after = await collect(backend.openConversation({ prompt, systemPrompt, model: "haiku", mcpServers: {}, cwd, persistSession: false }));
   if (JSON.stringify(before.init) !== JSON.stringify(after.init)) throw new Error("Tool/model init parity mismatch");
   console.log(JSON.stringify({ check: "live compatibility parity", baseline: before, adapter: after }));

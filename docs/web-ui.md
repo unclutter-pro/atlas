@@ -10,7 +10,7 @@ The Web-UI is a `Bun.serve` server with a React frontend. Every page, Chat inclu
 | `app/web-ui/frontend/areas.ts` | Information architecture: areas, their URL prefixes, the grouped nav. Shared by the server and the React shell |
 | `app/web-ui/frontend/` | React app: `App.tsx` (shell), `shell/` (sidebar, status strip), `router.tsx` (pushState router), `api.ts` (`useApi`, mutations), `links.ts` (canonical URLs), `components/`, `pages/<area>/` |
 | `app/web-ui/ui-api/` | JSON endpoints under `/ui/api/*`: `core.ts` (meta, status, kill switch), one module per area, `shared/` (env, HTTP helpers, integration health, status, cron) |
-| `app/web-ui/ui-api/chat/` | Chat service shared by `/ui/api/chat` and `/api/v1/chat`: `service.ts` (sessions, send, stop, reset), `hub.ts` (live per-chat state), `conversation.ts` (transcript JSONL to chat items), `sse.ts`, `legacy.ts` (the `/api/v1` stream and message shapes), `notify-server.ts` (runner pings), `stt.ts`, `types.ts` (wire types shared with the frontend) |
+| `app/web-ui/ui-api/chat/` | Chat service shared by `/ui/api/chat` and `/api/v1/chat`: `service.ts` (sessions, send, stop, reset), `hub.ts` (live per-chat state), `conversation.ts` (stored session history to chat items), `sse.ts`, `legacy.ts` (the `/api/v1` stream and message shapes), `notify-server.ts` (runner pings), `stt.ts`, `types.ts` (wire types shared with the frontend) |
 | `app/web-ui/index.ts` | Hono app: `/api/v1/*`, `/api/webhook/:name`, `/healthz` |
 | `app/web-ui/dev/seed.ts` | Seeds an isolated HOME with fixture data for local development |
 
@@ -202,23 +202,27 @@ Voice messages are `multipart/form-data` with one audio `file`, an optional `mes
 
 The stream starts with `retry: 2000` and a `snapshot` event, then sends `item`, `item_update` (a tool result arrived), `delta` (streamed text per `streamId`), `run`, `session` and `session_deleted` (the server closes the stream after it). A later `snapshot` replaces all state. The stream has no time cap. A `: keepalive` comment goes out every 8 s, under Bun's 10 s idle timeout.
 
+#### Where session data comes from
+
+The web-ui never opens agent backend files. Session history and metadata come from the configured backend's session store (`createSessionStore()` in `lib/harness/stores.ts`, reached through `sessionStore()` in `ui-api/shared/env.ts`): Activity transcripts and error hints, chat history, run state, the overview's "stuck" signal and the Storage browser's session links. The store is SDK-free, so the web-ui binary does not bundle the agent SDK. See [harness-interface.md](harness-interface.md#session-storage).
+
 #### How live updates work
 
 Nothing polls. Each open chat has one in-memory hub (`ui-api/chat/hub.ts`) shared by every stream on that chat, including `/api/v1` streams. The hub re-reads a source only when something says it changed, and a 30 ms coalesced flush then reads each changed source once for all subscribers:
 
 - new user messages by `messages.id`,
 - new rows in `web_chat_stream_chunks` by id (the streamed text deltas),
-- new bytes of the session transcript JSONL from the last byte offset.
+- new session history entries from the last cursor position (`HarnessSessionStore.cursor`).
 
 The signals are:
 
 - **Runner pings.** The web-chat trigger-runner POSTs small JSON hints to a Unix socket at `~/.index/web-ui.sock` (mode 0600, override with `ATLAS_WEB_UI_NOTIFY_SOCKET`): `{v: 1, trigger, sessionKey, sessionId, kind, isError?, interrupted?}` with `kind` one of `session`, `turn_start`, `chunk`, `message`, `turn_end`, `run_end`. The socket accepts only `POST /notify` with a body of at most 1 KiB. Pings carry no data, the hub reads the data itself. The runner side (`lib/web-ui-notify.ts`) never waits for or fails on a ping, sends them in order, throttles `chunk` and `message` pings to one per 40 ms per chat and drops pings when four are queued.
-- **`fs.watch`** on the transcript file.
+- **History watch** (`HarnessSessionStore.watch`, a file watch for Claude Code).
 - **Local changes** in the web-ui: sends, renames, resets, deletes, and the kill switch (`notifyAllChats()`).
 
-The run state (`idle`, `starting`, `running`) follows the pings: `turn_start` means running, `turn_end` or `run_end` means idle. A send that started trigger.sh shows `starting` until the runner reports. One timer does I/O: while a turn is starting or running and someone is watching, 15 s without any signal re-derive the state from the runner's lock file PID, one query and a 64 KiB transcript tail. That catches a runner killed by SIGKILL or OOM, or a trigger.sh that never started. Idle chats cost nothing, and the keepalive timer runs only while a stream is open.
+The run state (`idle`, `starting`, `running`) follows the pings: `turn_start` means running, `turn_end` or `run_end` means idle. A send that started trigger.sh shows `starting` until the runner reports. One timer does I/O: while a turn is starting or running and someone is watching, 15 s without any signal re-derive the state from the runner's lock file PID, one query and the session metadata (`HarnessSessionStore.metadata`, which reads a 64 KiB tail for Claude Code). That catches a runner killed by SIGKILL or OOM, or a trigger.sh that never started. Idle chats cost nothing, and the keepalive timer runs only while a stream is open.
 
-The runner also deletes a chat's old stream chunks at each turn start, so the table holds only the current turn. If the notify socket cannot start, `server.ts` logs a warning and live updates fall back to `fs.watch` plus the safety net.
+The runner also deletes a chat's old stream chunks at each turn start, so the table holds only the current turn. If the notify socket cannot start, `server.ts` logs a warning and live updates fall back to the history watch plus the safety net.
 
 ### External API (`/api/v1/*`)
 

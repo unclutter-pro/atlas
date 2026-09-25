@@ -7,10 +7,14 @@ to the portable run API is a separate step.
 
 ## Current implementation
 
-`app/triggers/harness/registry.ts` registers Claude Code as the only available
-portable backend. Unknown backend names fail explicitly. The implementation has
-separate modules for session lifecycle, run execution, SDK options, model profiles,
-message normalization, usage accounting and transcript access.
+`harness.backend` in config.yml selects the backend; `ATLAS_HARNESS_BACKEND`
+overrides it. The default and only registered backend is `claude-code`. Unknown
+backend names fail explicitly and never fall back to Claude. Execution backends
+are registered in `app/triggers/harness/registry.ts`, their session stores under
+the same IDs in `app/lib/harness/stores.ts`. The Claude adapter has separate
+modules for session lifecycle, run execution, SDK options, process environment,
+model profiles, message normalization and usage accounting; its storage lives in
+`app/lib/harness/claude-store.ts`.
 
 Two entry points share the adapter:
 
@@ -24,9 +28,10 @@ Two entry points share the adapter:
 
 This distinction preserves startup/stop hooks, native Agent delegation, skills,
 MCP configuration, model aliases and the exact system prompt in current deployments.
-It also preserves the web UI's transcript IDs, streaming chunk format, notification
+It also preserves the web UI's item IDs, streaming chunk format, notification
 order, database schema, usage webhook and existing native-child cost aggregation.
-The old helpers remain re-exported from trigger-runner for existing callers.
+The runner fails with `unsupported` when another backend is configured, because
+its conversation loop still interprets the Claude SDK stream.
 
 The portable API currently advertises customTools: false, compactionContext: false
 and usageUpdates: final-only. Requests for unsupported host tools or compaction
@@ -52,7 +57,8 @@ sessions. The portable adapter reads the persisted cost-state before a resumed
 run and reports the counter difference, including internal model calls. If the
 baseline is missing or stale, it reports partial token usage and an unknown cost.
 It never charges the full historical session to a new run. The compatibility
-path keeps the existing JSONL aggregation and pricing behavior unchanged.
+path keeps the existing aggregation and pricing, now behind
+`HarnessSessionStore.usage`.
 
 The sections below describe the full architectural contract. Portable host tools,
 Atlas-owned delegation and moving completion gates into a coordinator remain
@@ -329,11 +335,39 @@ every request. create/resume validate the selected model, requested tools and
 required bindings before use; run/steer validate each input, including its image
 format, before accepting it.
 
+## Session storage
+
+`HarnessSessionStore` (in `app/lib/harness.ts`) is the read side of a backend:
+no model execution and no SDK, so the web-ui can use it without bundling the
+agent SDK. `HarnessBackend.sessions` exposes the same store to the runner. Every
+Atlas reader of session history or metadata goes through it:
+
+| Method | Used for |
+|---|---|
+| `ref`, `exists` | Validating persisted session IDs; "history missing, start fresh" |
+| `metadata` | Last activity including nested agents (stale runners, "stuck" runs), last conversation entry, whether the agent still owes a response (chat run state) |
+| `excerpt` | Bounded synchronous reads for list views: first prompt, last answer, error hint |
+| `load` | Activity transcripts, whole or cut to a run's time window |
+| `cursor` | Incremental live chat reads; `until` reproduces an earlier view |
+| `watch` | Change notification for the live chat, null when unsupported |
+| `usage` | Run cost across the session and its nested agents, each request once |
+| `locate` | File browser links from storage files to the session view |
+
+History entries are normalized: user text, assistant text, reasoning, tool call
+and tool result, each with a stable ID and a `nested` flag for nested agents.
+An assistant entry's `messageId` equals the `messageId` of its live `text.delta`
+events, which lets the chat replace a streamed draft with the stored text.
+Presentation (clipping, pairing results with calls, item IDs) stays with the
+reader. Positions and byte budgets are opaque hints; a backend without byte
+offsets may interpret them approximately.
+
 ## Remaining migration
 
-1. Complete the remaining Claude-specific reader extraction. The invocation,
-   tool policy, message channel and cost aggregation have moved into the adapter;
-   the web UI and some runner recovery checks still read native transcripts.
+1. Move the runner's conversation loop off SDK message shapes: normalized
+   conversation events instead of `stream_event`/`result`, provider error
+   classification in the adapter. Python and shell readers of native transcripts
+   (dreaming's session extraction, cleanup, the validator stop hook) still need a
+   store-backed CLI.
 2. Move completion gates, pending input ownership and normalized event persistence
    into the Atlas coordinator. UI and memory readers consume Atlas data or history().
 3. Introduce Atlas host tools for delegation and persist agent relationships.

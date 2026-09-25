@@ -42,7 +42,7 @@
 import { existsSync } from "fs";
 import { attachmentDiskPath, getAttachment, getAttachmentsForMessage, type Attachment } from "../../lib/attachments";
 import { resolveTimezone, zonedDayStartUtc } from "../../lib/timezone";
-import { getDb, home, toIso } from "./shared/env";
+import { getDb, home, sessionStore, toIso } from "./shared/env";
 import { badRequest, handler, intParam, json, notFound, query, type ApiRoutes } from "./shared/http";
 import {
   getMessage,
@@ -59,7 +59,7 @@ import {
   type Outcome,
   type RunRow,
 } from "./activity/queries";
-import { findSessionFile, lastErrorHint, loadTranscript, SESSION_ID_RE, type Transcript } from "./activity/transcript";
+import { lastErrorHint, loadTranscript, type Transcript } from "./activity/transcript";
 
 export type { ActivityItem, Cause, Outcome } from "./activity/queries";
 export type { Transcript, TranscriptEntry } from "./activity/transcript";
@@ -305,14 +305,15 @@ async function runDetail(id: number): Promise<RunDetailResponse> {
 }
 
 async function sessionDetail(sessionId: string): Promise<SessionDetailResponse> {
-  if (!SESSION_ID_RE.test(sessionId)) badRequest("Invalid session id");
+  const sessions = sessionStore();
+  const ref = sessions.ref(sessionId) ?? badRequest("Invalid session id");
   const db = getDb();
   const rows = db.query("SELECT * FROM session_metrics WHERE session_id = ? ORDER BY started_at ASC").all(sessionId) as Array<
     Parameters<typeof metricsOf>[0] & { trigger_name: string | null }
   >;
   const runs = runsOfSession(sessionId);
-  const hasFile = !!findSessionFile(sessionId);
-  if (rows.length === 0 && runs.length === 0 && !hasFile) notFound("Session not found");
+  const hasHistory = sessions.exists(ref);
+  if (rows.length === 0 && runs.length === 0 && !hasHistory) notFound("Session not found");
 
   const triggerName = runs[0]?.trigger_name ?? rows.find((m) => m.trigger_name && m.trigger_name !== "direct")?.trigger_name ?? null;
   const triggerExists = triggerName ? !!db.query("SELECT 1 FROM triggers WHERE name = ?").get(triggerName) : false;

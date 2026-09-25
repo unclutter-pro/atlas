@@ -86,7 +86,7 @@ function RunView(props: { d: RunDetailResponse }) {
               emptyBody={
                 r.outcome === "running" && !r.sessionId
                   ? "The transcript appears once the session has an id."
-                  : "The session file was not found under ~/.claude/projects. It may have been cleaned up."
+                  : "No stored history for this session. It may have been cleaned up."
               }
             />
           </Section>

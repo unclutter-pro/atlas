@@ -1,7 +1,7 @@
 import { type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentEvent, AgentInput, AgentMessage, HarnessRun, RunOutcome, RunResult, SessionRef, SessionSpec } from "../../../lib/harness.ts";
 import { EventQueue } from "../events.ts";
-import { describeError, harnessError } from "../errors.ts";
+import { describeError, harnessError } from "../../../lib/harness/errors.ts";
 import { emptyUsage, MessageAccumulator, normalizeUsage, object } from "./normalize.ts";
 import { atlasQueryOptions } from "./options.ts";
 import type { QueryFactory } from "./compatibility.ts";

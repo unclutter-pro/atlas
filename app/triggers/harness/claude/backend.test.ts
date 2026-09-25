@@ -6,7 +6,7 @@ import type { AgentEvent, SessionSpec } from "../../../lib/harness.ts";
 import { ClaudeCodeBackend } from "./backend.ts";
 import { MessageAccumulator, normalizeUsage } from "./normalize.ts";
 import type { QueryFactory } from "./compatibility.ts";
-import { createHarnessBackend } from "../registry.ts";
+import { createAtlasHarness, createHarnessBackend } from "../registry.ts";
 
 const spec: SessionSpec = {
   cwd: "/workspace", systemPrompt: "You are Atlas.",
@@ -37,6 +37,25 @@ function mockSdk(script: (args: Parameters<QueryFactory>[0]) => AsyncGenerator<a
 const dirs: string[] = [];
 function home() { const dir = mkdtempSync(join(tmpdir(), "atlas-harness-")); dirs.push(dir); return dir; }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { force: true, recursive: true }); });
+
+describe("backend selection", () => {
+  test("the configured backend drives the registry; the runner refuses non-Claude backends", () => {
+    const dir = home();
+    const saved = process.env.ATLAS_HARNESS_BACKEND;
+    try {
+      delete process.env.ATLAS_HARNESS_BACKEND;
+      writeFileSync(join(dir, "config.yml"), "harness:\n  backend: opencode\n");
+      expect(() => createAtlasHarness({ home: dir })).toThrow("needs the claude-code backend");
+      process.env.ATLAS_HARNESS_BACKEND = "opencode";
+      expect(() => createHarnessBackend()).toThrow("Unknown harness backend: opencode");
+      process.env.ATLAS_HARNESS_BACKEND = "claude-code";
+      expect(createAtlasHarness({ home: dir }).sessions.backend).toBe("claude-code");
+    } finally {
+      if (saved === undefined) delete process.env.ATLAS_HARNESS_BACKEND;
+      else process.env.ATLAS_HARNESS_BACKEND = saved;
+    }
+  });
+});
 
 describe("Claude HarnessBackend contract", () => {
   test("registry rejects unknown names, returns exactly three configurable distinct profiles", async () => {

@@ -17,9 +17,8 @@
  */
 
 import { createAtlasHarness } from "./harness/registry.ts";
-import { findTranscript } from "./harness/claude/history.ts";
 import { createMessageChannel, type PushOptions } from "./harness/claude/message-channel.ts";
-import { aggregateRunCost, type AggregatedUsage } from "./harness/claude/legacy-usage.ts";
+import { createSessionStore } from "../lib/harness/stores.ts";
 import type { ConversationResult, Conversation, QueryFactory } from "./harness/claude/compatibility.ts";
 import { Database } from "bun:sqlite";
 import {
@@ -104,7 +103,6 @@ const HOME = process.env.HOME ?? "/home/agent";
 const APP_DIR = "/atlas/app";
 const PROMPT_DIR = `${APP_DIR}/prompts`;
 const DB_PATH = `${HOME}/.index/atlas.db`;
-const CLAUDE_JSON = `${HOME}/.claude.json`;
 const WORKSPACE = HOME;
 
 // ---------------------------------------------------------------------------
@@ -670,66 +668,20 @@ export function recordMetrics(db: Database, data: MetricsData): void {
   );
 }
 
-// ---------------------------------------------------------------------------
-// JSONL cost aggregation
-// ---------------------------------------------------------------------------
-
-export { aggregateRunCost, resolveClaudeProjectDir, modelFamily, MODEL_PRICING, type AggregatedUsage } from "./harness/claude/legacy-usage.ts";
-
 /**
- * Disable remote MCP connectors that hang on startup by writing to ~/.claude.json.
- */
-export function disableRemoteMcp(): void {
-  if (!existsSync(CLAUDE_JSON)) return;
-  try {
-    const raw = readFileSync(CLAUDE_JSON, "utf8");
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    if (!data.cachedGrowthBookFeatures) {
-      data.cachedGrowthBookFeatures = {};
-    }
-    (
-      data.cachedGrowthBookFeatures as Record<string, unknown>
-    ).tengu_claudeai_mcp_connectors = false;
-    writeFileSync(CLAUDE_JSON, JSON.stringify(data, null, 2));
-  } catch {
-    // Non-fatal — proceed anyway
-  }
-}
-
-/**
- * Seconds since the session last wrote to its transcript or to one of its
- * subagent transcripts (a subagent works in its own file while the parent
- * waits). 0 when the session has no transcript.
+ * Seconds since the session or one of its nested agents last stored
+ * anything (a subagent writes its own history while the parent waits).
+ * 0 when the session has no history.
  */
 export function getSessionIdleSeconds(
   sessionId: string,
   homeDir?: string,
 ): number {
-  let transcript: string | null;
-  try {
-    transcript = findTranscript(homeDir ?? HOME, { backend: "claude-code", nativeId: sessionId });
-  } catch {
-    return 0;
-  }
-  if (!transcript) return 0;
-
-  const files = [transcript];
-  const subagentsDir = join(transcript.slice(0, -".jsonl".length), "subagents");
-  try {
-    for (const entry of readdirSync(subagentsDir)) {
-      if (entry.endsWith(".jsonl")) files.push(join(subagentsDir, entry));
-    }
-  } catch {
-    // No subagents yet
-  }
-
-  let latestMs = 0;
-  for (const file of files) {
-    try {
-      latestMs = Math.max(latestMs, statSync(file).mtimeMs);
-    } catch {}
-  }
-  return latestMs ? Math.max(0, (Date.now() - latestMs) / 1000) : 0;
+  const sessions = createSessionStore({ home: homeDir ?? HOME });
+  const ref = sessions.ref(sessionId);
+  const lastActivityAt = ref ? sessions.metadata(ref)?.lastActivityAt : null;
+  if (!lastActivityAt) return 0;
+  return Math.max(0, (Date.now() - Date.parse(lastActivityAt)) / 1000);
 }
 
 /** Default: 30 minutes without transcript activity while a runner is alive = stale */
@@ -1071,9 +1023,6 @@ export async function runDirect(
 
   const log = makeLogger(triggerName);
 
-  // --- Disable remote MCP ---
-  disableRemoteMcp();
-
   // --- Build system prompt ---
   const systemPrompt = buildSystemPrompt(channel);
 
@@ -1086,7 +1035,6 @@ export async function runDirect(
   // --- Set environment variables ---
   process.env.ATLAS_TRIGGER = triggerName;
   process.env.ATLAS_TRIGGER_CHANNEL = channel;
-  delete process.env.CLAUDECODE;
 
   // Apply any extra env vars from options
   if (options?.env) {
@@ -1368,17 +1316,11 @@ export async function main(): Promise<void> {
   let existingSession: string | null = null;
   let staleRecovery = false;
 
-  function sessionFileExists(sessionId: string): boolean {
-    const projectsDir = join(HOME, ".claude", "projects");
-    if (!existsSync(projectsDir)) return false;
-    try {
-      for (const dir of readdirSync(projectsDir)) {
-        if (existsSync(join(projectsDir, dir, `${sessionId}.jsonl`)))
-          return true;
-      }
-    } catch {}
-    return false;
-  }
+  const sessions = createSessionStore({ home: HOME });
+  const sessionFileExists = (sessionId: string): boolean => {
+    const ref = sessions.ref(sessionId);
+    return !!ref && sessions.exists(ref);
+  };
 
   if (sessionMode === "persistent") {
     const sessionRow = db
@@ -1628,9 +1570,6 @@ export async function main(): Promise<void> {
     }
   }
 
-  // --- Disable remote MCP ---
-  disableRemoteMcp();
-
   // --- Build system prompt ---
   const systemPrompt = buildSystemPrompt(channel);
 
@@ -1649,7 +1588,6 @@ export async function main(): Promise<void> {
   process.env.ATLAS_TRIGGER = triggerName;
   process.env.ATLAS_TRIGGER_CHANNEL = channel;
   process.env.ATLAS_TRIGGER_SESSION_KEY = sessionKey;
-  delete process.env.CLAUDECODE; // avoid nested-session detection
 
   // --- Run the query ---
   // Persistent sessions can run for hours (long tasks) — no hard timeout.
@@ -1994,33 +1932,17 @@ export async function main(): Promise<void> {
   }
 
   // --- Record metrics ---
-  // Aggregate cost from parent JSONL + all subagent JSONLs within the run window.
-  // The Anthropic SDK does NOT aggregate subagent token usage into the parent
-  // resultMsg.usage — each subagent call has its own API request_id.
-  // Scanning the JSONL files directly gives us the true total cost.
-  const usage =
-    (resultMsg as unknown as { usage?: Record<string, number> } | null)?.usage ?? {};
-  let aggregated: AggregatedUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    costUsd: 0,
+  // Usage of the run window across the session and its nested agents: the
+  // result message only covers the parent's own model calls.
+  const sessionRef = capturedSessionId ? sessions.ref(capturedSessionId) : null;
+  const runUsage = sessionRef ? sessions.usage(sessionRef, { from: startedAt, to: endedAt }) : null;
+  const usageTotals = {
+    inputTokens: runUsage?.inputTokens ?? 0,
+    outputTokens: runUsage?.outputTokens ?? 0,
+    cacheReadTokens: runUsage?.cacheReadTokens ?? 0,
+    cacheCreationTokens: runUsage?.cacheWriteTokens ?? 0,
+    costUsd: runUsage?.cost?.amount ?? 0,
   };
-  if (capturedSessionId) {
-    try {
-      aggregated = aggregateRunCost(capturedSessionId, startedAt, endedAt);
-    } catch {
-      // Fall back to SDK-reported values if aggregation fails
-      aggregated = {
-        inputTokens: (usage.input_tokens as number | undefined) ?? 0,
-        outputTokens: (usage.output_tokens as number | undefined) ?? 0,
-        cacheReadTokens: (usage.cache_read_input_tokens as number | undefined) ?? 0,
-        cacheCreationTokens: (usage.cache_creation_input_tokens as number | undefined) ?? 0,
-        costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
-      };
-    }
-  }
   try {
     recordMetrics(db, {
       sessionType: "trigger",
@@ -2030,11 +1952,7 @@ export async function main(): Promise<void> {
       endedAt,
       durationMs:
         (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-      inputTokens: aggregated.inputTokens,
-      outputTokens: aggregated.outputTokens,
-      cacheReadTokens: aggregated.cacheReadTokens,
-      cacheCreationTokens: aggregated.cacheCreationTokens,
-      costUsd: aggregated.costUsd,
+      ...usageTotals,
       numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
       isError,
     });
@@ -2055,11 +1973,7 @@ export async function main(): Promise<void> {
         endedAt,
         durationMs:
           (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-        inputTokens: aggregated.inputTokens,
-        outputTokens: aggregated.outputTokens,
-        cacheReadTokens: aggregated.cacheReadTokens,
-        cacheCreationTokens: aggregated.cacheCreationTokens,
-        costUsd: aggregated.costUsd,
+        ...usageTotals,
         numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
         isError,
       },

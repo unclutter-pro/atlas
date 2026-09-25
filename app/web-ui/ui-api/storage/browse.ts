@@ -18,7 +18,7 @@
 import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, type Stats } from "fs";
 import { dirname, join, resolve, sep } from "path";
 import { HttpError } from "../shared/http";
-import { home } from "../shared/env";
+import { home, sessionStore } from "../shared/env";
 import { maskSecrets } from "../settings/mask";
 
 export const MAX_PREVIEW_BYTES = 256 * 1024;
@@ -81,11 +81,10 @@ const isLogFile = (rel: string) => /\.log(\.\d+)?$/i.test(rel);
 
 export type BetterView = { kind: "memory"; path: string } | { kind: "session"; sessionId: string };
 
-const SESSION_RE = /^\.claude\/projects\/.+\/([^/]+)\.jsonl$/;
-
 export function betterViewFor(rel: string): BetterView | null {
-  const session = rel.match(SESSION_RE);
-  if (session) return { kind: "session", sessionId: session[1]! };
+  // Files of the agent backend's session storage open in the session view.
+  const session = sessionStore().locate(rel);
+  if (session) return { kind: "session", sessionId: session.nativeId };
   if (rel.startsWith("memory/") && rel.length > "memory/".length) return { kind: "memory", path: rel.slice("memory/".length) };
   return null;
 }

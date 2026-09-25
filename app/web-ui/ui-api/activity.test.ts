@@ -14,7 +14,7 @@ import { join } from "path";
 import type { BunRequest } from "bun";
 import { routes, type ActivityListResponse, type MessageDetailResponse, type RunDetailResponse, type SessionDetailResponse } from "./activity";
 import { payloadMessageIds, payloadSummary } from "./activity/queries";
-import { parseTranscript } from "./activity/transcript";
+import { toTranscriptEntries } from "./activity/transcript";
 
 const seeded = existsSync(join(process.env.HOME ?? "", ".atlas-dev-seed"));
 
@@ -62,18 +62,21 @@ describe("pure helpers", () => {
     expect(payloadSummary("plain text")).toBe("plain text");
   });
 
-  test("parseTranscript pairs tool calls with their results", () => {
-    const lines = [
-      { type: "user", timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "do it" } },
-      { type: "assistant", timestamp: "2026-01-01T00:00:01Z", message: { model: "claude-x", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } },
-      { type: "user", timestamp: "2026-01-01T00:00:02Z", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "boom", is_error: true }] } },
-      { type: "assistant", timestamp: "2026-01-01T00:00:03Z", message: { content: [{ type: "text", text: "failed" }] } },
-    ];
-    const { entries, model } = parseTranscript(lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n");
-    expect(model).toBe("claude-x");
-    expect(entries.map((e) => e.kind)).toEqual(["user", "tool", "assistant"]);
+  test("toTranscriptEntries pairs tool calls with their results", () => {
+    const base = (id: string, at: string) => ({ id, at, nested: false });
+    const entries = toTranscriptEntries([
+      { ...base("u:0", "2026-01-01T00:00:00Z"), kind: "user-text", text: "do it" },
+      { ...base("a:0", "2026-01-01T00:00:01Z"), kind: "tool-call", callId: "t1", name: "Bash", input: { command: "ls" } },
+      { ...base("r:0", "2026-01-01T00:00:02Z"), kind: "tool-result", callId: "t1", content: "boom", isError: true },
+      { ...base("r2:0", "2026-01-01T00:00:02Z"), kind: "tool-result", callId: "unknown", content: "orphan", isError: false },
+      { ...base("b:0", "2026-01-01T00:00:03Z"), kind: "assistant-text", text: "failed", messageId: "m" },
+    ]);
+    expect(entries.map((e) => e.kind)).toEqual(["user", "tool", "tool", "assistant"]);
     const tool = entries[1]!;
     expect(tool.kind === "tool" && tool.result === "boom" && tool.isError).toBe(true);
+    expect(tool.kind === "tool" && tool.input).toContain('"command": "ls"');
+    const orphan = entries[2]!;
+    expect(orphan.kind === "tool" && orphan.name === "tool result" && orphan.result === "orphan").toBe(true);
   });
 });
 

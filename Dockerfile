@@ -12,10 +12,12 @@ COPY app/triggers/package.json app/triggers/bun.lock* ./
 RUN bun install --frozen-lockfile
 
 # Copy source files: trigger-runner + lib imports (config.ts, db.ts, timezone.ts,
-# zoned-time.ts, trigger-socket.ts for socket/lock paths, web-ui-notify.ts for chat pings)
+# zoned-time.ts, trigger-socket.ts for socket/lock paths, web-ui-notify.ts for chat pings,
+# harness/ for session storage and backend selection)
 COPY app/triggers/trigger-runner.ts ./triggers/
 COPY app/triggers/harness/ ./triggers/harness/
 COPY app/lib/harness.ts ./lib/
+COPY app/lib/harness/ ./lib/harness/
 COPY app/lib/config.ts ./lib/
 COPY app/lib/db.ts ./lib/
 COPY app/lib/timezone.ts ./lib/
@@ -44,6 +46,7 @@ COPY app/web-ui/package.json app/web-ui/bun.lock* ./web-ui/
 RUN cd web-ui && bun install --frozen-lockfile
 
 COPY app/lib/*.ts ./lib/
+COPY app/lib/harness/ ./lib/harness/
 COPY app/web-ui/ ./web-ui/
 
 RUN ARCH=$(uname -m) && \
