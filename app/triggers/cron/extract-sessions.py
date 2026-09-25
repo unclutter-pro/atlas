@@ -218,10 +218,13 @@ def parse_session(path: Path) -> dict:
     except Exception as e:
         return {"error": str(e), "session_id": session_id}
 
+    turn_count = len(turns)
+
     # Smart truncation: keep first half and last half of turns
-    if len(turns) > MAX_TURNS_PER_SESSION:
+    skipped = 0
+    if turn_count > MAX_TURNS_PER_SESSION:
         half = MAX_TURNS_PER_SESSION // 2
-        skipped = len(turns) - MAX_TURNS_PER_SESSION
+        skipped = turn_count - MAX_TURNS_PER_SESSION
         turns = turns[:half] + [("gap", f"[...{skipped} turns skipped...]", [])] + turns[-half:]
 
     return {
@@ -229,7 +232,8 @@ def parse_session(path: Path) -> dict:
         "is_subagent": sub,
         "first_ts": first_ts,
         "last_ts": last_ts,
-        "turn_count": len(turns),
+        "turn_count": turn_count,
+        "turns_skipped": skipped,
         "tool_counts": tool_counts,
         "files_touched": sorted(files_touched)[:20],
         "turns": turns,
@@ -250,6 +254,15 @@ def format_session_full(session: dict) -> str:
 
     if session["first_ts"] and session["last_ts"]:
         lines.append(f"Time: {session['first_ts'][:19]} → {session['last_ts'][:19]}")
+
+    if session.get("turns_skipped"):
+        lines.append(
+            f"Turns: {session['turn_count']} total, "
+            f"{session['turn_count'] - session['turns_skipped']} shown "
+            f"(middle {session['turns_skipped']} omitted)"
+        )
+    else:
+        lines.append(f"Turns: {session['turn_count']}")
 
     if session["tool_counts"]:
         top = sorted(session["tool_counts"].items(), key=lambda x: -x[1])[:8]
@@ -307,7 +320,9 @@ def format_session_index(session: dict, path: Path) -> str:
 
     sid = session["session_id"][:8]
     tag = "sub" if session["is_subagent"] else "main"
-    turns = session["turn_count"]
+    turns = f"{session['turn_count']} turns"
+    if session.get("turns_skipped"):
+        turns += f" ({session['turn_count'] - session['turns_skipped']} shown)"
     time_range = ""
     if session["first_ts"] and session["last_ts"]:
         time_range = f"{session['first_ts'][:19]} → {session['last_ts'][:19]}"
@@ -322,7 +337,7 @@ def format_session_index(session: dict, path: Path) -> str:
             first_user = text[:120].replace("\n", " ").strip()
             break
 
-    return f"{tag} | {sid} | {turns} turns | {time_range} | {tools_str} | {first_user} | {path}\n"
+    return f"{tag} | {sid} | {turns} | {time_range} | {tools_str} | {first_user} | {path}\n"
 
 
 def main():
