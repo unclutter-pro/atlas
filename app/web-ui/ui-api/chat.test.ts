@@ -35,7 +35,7 @@ import {
   type SendChatMessageResponse,
   type UpdateChatSessionResponse,
 } from "./chat/types";
-import { getDb, home } from "./shared/env";
+import { getDb, home, sessionStore } from "./shared/env";
 
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
@@ -135,7 +135,7 @@ describe.skipIf(!seeded)("/ui/api/chat", () => {
     expect(only.sessions.map((s) => s.key)).toContain(session.key);
 
     // Fresh message, nothing answered it: "starting", but only when a runner can start at all.
-    const derive = () => deriveRunState(chat.key, { file: null, answeredAfter: () => false });
+    const derive = () => deriveRunState(chat.key, { sessions: sessionStore(), history: null, answeredAfter: () => false });
     const runnerAvailable = hubDeps.runnerAvailable;
     try {
       hubDeps.runnerAvailable = () => false;

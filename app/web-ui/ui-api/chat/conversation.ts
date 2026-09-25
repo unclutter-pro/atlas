@@ -1,24 +1,20 @@
 /**
- * Chat conversation model: Claude Code JSONL + web user messages → ChatItem[].
+ * Chat conversation model: stored session history + web user messages → ChatItem[].
  *
- * The JSONL is read incrementally (TranscriptCursor) so a live chat never
- * re-parses the whole file: each read starts at the last byte offset and only
- * parses complete new lines. User turns come from the messages table (the
- * JSONL only holds the wrapped inject template).
+ * History is read incrementally (TranscriptCursor over the session store's
+ * cursor) so a live chat never re-reads the whole session. User turns come
+ * from the messages table (the history only holds the wrapped inject template).
  */
 
-import { closeSync, fstatSync, openSync, readSync } from "fs";
+import type { HistoryCursor, HistoryPosition } from "../../../lib/harness";
 import { attachmentDiskPath, type Attachment } from "../../../lib/attachments";
-import { findSessionFile } from "../activity/transcript";
-import { getDb, toIso } from "../shared/env";
+import { getDb, sessionStore, storedSession, toIso } from "../shared/env";
 import type { ChatAssistantItem, ChatAttachment, ChatItem, ChatThinkingItem, ChatToolItem, ChatUserItem } from "./types";
 import { getMappedSessionId } from "./store";
 
 const MAX_TEXT = 20_000;
 const SUMMARY_MAX = 160;
 const SUMMARY_KEYS = ["command", "file_path", "path", "pattern", "url", "query", "description", "prompt"] as const;
-const READ_CHUNK = 1024 * 1024;
-const NL = 0x0a;
 
 /** Same clip rule as activity/transcript.ts. */
 export function clip(s: string, max = MAX_TEXT): string {
@@ -28,18 +24,6 @@ export function clip(s: string, max = MAX_TEXT): string {
 function oneLine(s: string, max: number): string {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-}
-
-function blocksOf(message: unknown): unknown {
-  // Old format: message is the content; new format: { role, content }.
-  if (message && typeof message === "object" && !Array.isArray(message) && "content" in message) return (message as { content: unknown }).content;
-  return message;
-}
-
-function resultText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((c) => (c && typeof c === "object" && "text" in c ? String((c as { text: unknown }).text ?? "") : "")).join("\n");
-  return content == null ? "" : JSON.stringify(content);
 }
 
 export function toolSummary(input: unknown): string {
@@ -52,229 +36,75 @@ export function toolSummary(input: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Incremental JSONL reader
+// Incremental history reader
 // ---------------------------------------------------------------------------
 
 export interface CursorRead {
   added: ChatItem[];
   /** Items from earlier reads that changed (a tool result arrived). */
   updated: ChatItem[];
-  /** The file shrank (rewritten): state was dropped and `added` is the whole (tail of the) file. */
+  /** The history was rewritten: state was dropped and `added` is the whole (tail of the) history. */
   reset: boolean;
 }
 
+/** Chat items of the main conversation; pairs tool results with their calls. */
 export class TranscriptCursor {
-  /** Bytes consumed so far (a partial last line is buffered, not parsed). */
-  offset = 0;
-  /** The first read started at the tail of a large file; earlier lines were skipped. */
-  truncated = false;
-  private partial: Buffer = Buffer.alloc(0);
-  private started = false;
-  /** Tool calls still waiting for their result, by tool_use_id. */
+  /** Tool calls still waiting for their result, by call id. */
   private pendingTools = new Map<string, ChatToolItem>();
-  private readonly tailBytes: number;
-  private readonly endOffset: number | undefined;
 
-  constructor(
-    readonly file: string,
-    opts: { tailBytes?: number; endOffset?: number } = {},
-  ) {
-    this.tailBytes = opts.tailBytes ?? 8 * 1024 * 1024;
-    this.endOffset = opts.endOffset;
+  constructor(private readonly history: HistoryCursor) {}
+
+  /** Pass as `until` to read the same view again (loadConversation). */
+  get position(): HistoryPosition {
+    return this.history.position;
+  }
+
+  /** The first read started at the tail of a large history. */
+  get truncated(): boolean {
+    return this.history.truncated;
   }
 
   readNew(): CursorRead {
-    const out: CursorRead = { added: [], updated: [], reset: false };
-    let fd: number | null = null;
-    try {
-      fd = openSync(this.file, "r");
-      const size = fstatSync(fd).size;
-      if (size < this.offset) {
-        out.reset = true;
-        this.offset = 0;
-        this.partial = Buffer.alloc(0);
-        this.pendingTools.clear();
-        this.started = false;
-        this.truncated = false;
+    const { entries, reset } = this.history.read();
+    const out: CursorRead = { added: [], updated: [], reset };
+    if (reset) this.pendingTools.clear();
+    const addedIds = new Set<string>();
+    for (const e of entries) {
+      if (e.nested) continue;
+      if (e.kind === "assistant-text") {
+        const item: ChatAssistantItem = { kind: "assistant", id: `a:${e.id}`, at: e.at, text: e.text, streamId: e.messageId };
+        out.added.push(item);
+      } else if (e.kind === "reasoning") {
+        const item: ChatThinkingItem = { kind: "thinking", id: `k:${e.id}`, at: e.at, text: clip(e.text) };
+        out.added.push(item);
+      } else if (e.kind === "tool-call") {
+        const input = typeof e.input === "string" ? e.input : JSON.stringify(e.input ?? {}, null, 2);
+        const item: ChatToolItem = {
+          kind: "tool",
+          id: e.callId ? `t:${e.callId}` : `t:${e.id}`,
+          at: e.at,
+          toolUseId: e.callId,
+          name: e.name,
+          summary: toolSummary(e.input),
+          input: clip(input),
+          result: null,
+          isError: false,
+        };
+        if (e.callId) this.pendingTools.set(e.callId, item);
+        addedIds.add(item.id);
+        out.added.push(item);
+      } else if (e.kind === "tool-result" && e.callId) {
+        const tool = this.pendingTools.get(e.callId);
+        if (!tool) continue;
+        this.pendingTools.delete(e.callId);
+        tool.result = clip(e.content);
+        tool.isError = e.isError;
+        if (!addedIds.has(tool.id)) out.updated.push(tool);
       }
-      const end = this.endOffset !== undefined ? Math.min(size, this.endOffset) : size;
-      let start = this.offset;
-      let dropFirst = false;
-      if (!this.started) {
-        this.started = true;
-        if (end - start > this.tailBytes) {
-          start = end - this.tailBytes;
-          dropFirst = true;
-          this.truncated = true;
-        }
-      }
-      if (end <= start) return out;
-
-      const addedIds = new Set<string>();
-      let lineStart = start - this.partial.length;
-      let pos = start;
-      while (pos < end) {
-        const len = Math.min(READ_CHUNK, end - pos);
-        const buf = Buffer.allocUnsafe(len);
-        const n = readSync(fd, buf, 0, len, pos);
-        if (n <= 0) break;
-        pos += n;
-        const data = this.partial.length ? Buffer.concat([this.partial, buf.subarray(0, n)]) : buf.subarray(0, n);
-        let from = 0;
-        for (let i = data.indexOf(NL); i !== -1; i = data.indexOf(NL, from)) {
-          if (dropFirst) dropFirst = false;
-          else this.parseLine(data.toString("utf8", from, i), lineStart, out, addedIds);
-          lineStart += i + 1 - from;
-          from = i + 1;
-        }
-        this.partial = Buffer.from(data.subarray(from));
-      }
-      // A cut in the middle of the only line: nothing complete yet.
-      if (dropFirst) this.partial = Buffer.alloc(0);
-      this.offset = pos;
-    } catch {
-      // Missing/unreadable file: nothing new.
-    } finally {
-      if (fd !== null) closeSync(fd);
+      // user-text is the inject template; the chat shows the messages table instead.
     }
     return out;
   }
-
-  private parseLine(line: string, lineStart: number, out: CursorRead, addedIds: Set<string>): void {
-    if (!line.trim()) return;
-    let obj: any;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (!obj || typeof obj !== "object" || obj.isSidechain === true) return;
-    const at = typeof obj.timestamp === "string" ? obj.timestamp : null;
-    const lineId = typeof obj.uuid === "string" && obj.uuid ? obj.uuid : `@${lineStart}`;
-
-    if (obj.type === "assistant") {
-      const msg = obj.message;
-      const streamId = msg && typeof msg === "object" && !Array.isArray(msg) && typeof msg.id === "string" ? msg.id : null;
-      const content = blocksOf(msg);
-      if (!Array.isArray(content)) return;
-      content.forEach((block: any, i: number) => {
-        if (!block || typeof block !== "object") return;
-        if (block.type === "text" && typeof block.text === "string" && block.text) {
-          const item: ChatAssistantItem = { kind: "assistant", id: `a:${lineId}:${i}`, at, text: block.text, streamId };
-          out.added.push(item);
-        } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
-          const item: ChatThinkingItem = { kind: "thinking", id: `k:${lineId}:${i}`, at, text: clip(block.thinking) };
-          out.added.push(item);
-        } else if (block.type === "tool_use") {
-          const toolUseId = typeof block.id === "string" && block.id ? block.id : null;
-          const input = typeof block.input === "string" ? block.input : JSON.stringify(block.input ?? {}, null, 2);
-          const item: ChatToolItem = {
-            kind: "tool",
-            id: toolUseId ? `t:${toolUseId}` : `t:${lineId}:${i}`,
-            at,
-            toolUseId,
-            name: typeof block.name === "string" && block.name ? block.name : "tool",
-            summary: toolSummary(block.input),
-            input: clip(input),
-            result: null,
-            isError: false,
-          };
-          if (toolUseId) this.pendingTools.set(toolUseId, item);
-          addedIds.add(item.id);
-          out.added.push(item);
-        }
-      });
-    } else if (obj.type === "user") {
-      // Only tool results; plain user text is the inject template (the real
-      // text comes from the messages table).
-      const content = blocksOf(obj.message);
-      if (!Array.isArray(content)) return;
-      for (const block of content) {
-        if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
-        const tool = this.pendingTools.get(block.tool_use_id);
-        if (!tool) continue;
-        this.pendingTools.delete(block.tool_use_id);
-        tool.result = clip(resultText(block.content));
-        tool.isError = !!block.is_error;
-        if (!addedIds.has(tool.id)) out.updated.push(tool);
-      }
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Turn state from the transcript tail
-// ---------------------------------------------------------------------------
-
-function readTail(file: string, bytes: number): string {
-  let fd: number | null = null;
-  try {
-    fd = openSync(file, "r");
-    const size = fstatSync(fd).size;
-    const len = Math.min(size, bytes);
-    const buf = Buffer.allocUnsafe(len);
-    const n = readSync(fd, buf, 0, len, size - len);
-    return buf.toString("utf8", 0, n);
-  } catch {
-    return "";
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
-}
-
-function userText(message: unknown): string {
-  const content = blocksOf(message);
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const text = content.find((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string");
-    return text ? text.text : "";
-  }
-  return "";
-}
-
-/**
- * Whether the agent still owes a response, judged from the last user/assistant
- * line of the file tail: a user line (prompt or tool result) or an assistant
- * line that stopped for tool_use means more work is coming. An interrupt
- * marker ("[Request interrupted …") ends the turn. Unreadable or empty → active
- * (the session is just starting).
- */
-export function turnActiveFromTail(file: string, bytes = 64 * 1024): boolean {
-  const text = readTail(file, bytes);
-  if (!text) return true;
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.trim();
-    if (!line) continue;
-    let obj: any;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!obj || obj.isSidechain === true) continue;
-    if (obj.type === "user") return !userText(obj.message).startsWith("[Request interrupted");
-    if (obj.type === "assistant") {
-      const msg = obj.message;
-      const stop = msg && typeof msg === "object" && !Array.isArray(msg) ? msg.stop_reason : null;
-      return stop === "tool_use";
-    }
-  }
-  return true;
-}
-
-/** Timestamp of the last assistant/user line in the file tail (null when none). */
-export function lastTranscriptAt(file: string, bytes = 64 * 1024): string | null {
-  const lines = readTail(file, bytes).split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.trim();
-    if (!line) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj && (obj.type === "assistant" || obj.type === "user") && obj.isSidechain !== true && typeof obj.timestamp === "string") return obj.timestamp;
-    } catch {}
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,17 +161,17 @@ export function loadUserItems(key: string, afterId = 0): ChatUserItem[] {
 }
 
 /** Merge two chronological lists; user items go first on equal timestamps. */
-export function mergeByTime(userItems: ChatItem[], jsonlItems: ChatItem[]): ChatItem[] {
+export function mergeByTime(userItems: ChatItem[], storedItems: ChatItem[]): ChatItem[] {
   const out: ChatItem[] = [];
   let u = 0;
   let j = 0;
-  while (u < userItems.length || j < jsonlItems.length) {
-    if (j >= jsonlItems.length) out.push(userItems[u++]!);
-    else if (u >= userItems.length) out.push(jsonlItems[j++]!);
+  while (u < userItems.length || j < storedItems.length) {
+    if (j >= storedItems.length) out.push(userItems[u++]!);
+    else if (u >= userItems.length) out.push(storedItems[j++]!);
     else {
       const tu = Date.parse(userItems[u]!.at ?? "");
-      const tj = Date.parse(jsonlItems[j]!.at ?? "");
-      if (Number.isNaN(tj) || (!Number.isNaN(tu) && tu > tj)) out.push(jsonlItems[j++]!);
+      const tj = Date.parse(storedItems[j]!.at ?? "");
+      if (Number.isNaN(tj) || (!Number.isNaN(tu) && tu > tj)) out.push(storedItems[j++]!);
       else out.push(userItems[u++]!);
     }
   }
@@ -349,13 +179,15 @@ export function mergeByTime(userItems: ChatItem[], jsonlItems: ChatItem[]): Chat
 }
 
 /**
- * Whole conversation of a chat (all user messages + full JSONL up to
- * `endOffset`). For /api/v1 reads and the legacy stream's init when the
- * live snapshot is truncated.
+ * Whole conversation of a chat (all user messages + full history up to
+ * `until`, a live cursor's position). For /api/v1 reads and the legacy
+ * stream's init when the live snapshot is truncated.
  */
-export function loadConversation(key: string, opts: { endOffset?: number } = {}): { items: ChatItem[]; sessionId: string | null } {
+export function loadConversation(key: string, opts: { until?: HistoryPosition } = {}): { items: ChatItem[]; sessionId: string | null } {
   const sessionId = getMappedSessionId(key);
-  const file = findSessionFile(sessionId);
-  const jsonl = file ? new TranscriptCursor(file, { tailBytes: Infinity, endOffset: opts.endOffset }).readNew().added : [];
-  return { items: mergeByTime(loadUserItems(key), jsonl), sessionId };
+  const sessions = sessionStore();
+  const ref = storedSession(sessions, sessionId);
+  const history = ref ? sessions.cursor(ref, { initialBytes: Infinity, until: opts.until }) : null;
+  const items = history ? new TranscriptCursor(history).readNew().added : [];
+  return { items: mergeByTime(loadUserItems(key), items), sessionId };
 }

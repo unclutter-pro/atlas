@@ -3,11 +3,10 @@
  * what comes next, and today's totals.
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readSync, statSync } from "fs";
-import { join } from "path";
 import { getControlStatus } from "../../../lib/kill-switch";
 import { resolveTimezone, zonedDateString, zonedDayStartUtc } from "../../../lib/timezone";
-import { elapsedMs, getDb, home, paths, toIso, toSqlite } from "../shared/env";
+import type { HarnessSessionStore, HistoryEntry, SessionRef } from "../../../lib/harness";
+import { elapsedMs, getDb, home, sessionStore, storedSession, toIso, toSqlite } from "../shared/env";
 import { getIntegrationHealth, type HealthState } from "../shared/integrations";
 import { nextRuns, parseCron } from "../shared/cron";
 import { RUNS_BASE } from "../shared/runs";
@@ -155,46 +154,16 @@ function formatInterval(seconds: number): string {
 // Transcripts
 // ---------------------------------------------------------------------------
 
-function findTranscript(sessionId: string): string | null {
-  const root = paths.claudeProjects();
-  if (!/^[\w-]+$/.test(sessionId) || !existsSync(root)) return null;
-  try {
-    for (const dir of readdirSync(root)) {
-      const candidate = join(root, dir, `${sessionId}.jsonl`);
-      if (existsSync(candidate)) return candidate;
-    }
-  } catch {}
-  return null;
-}
-
-/** Last assistant text in a transcript, reading only its tail. */
-function lastAssistantText(file: string, maxBytes = 64 * 1024): string | null {
-  let fd: number | null = null;
-  try {
-    fd = openSync(file, "r");
-    const size = fstatSync(fd).size;
-    const len = Math.min(size, maxBytes);
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString("utf-8").split("\n").reverse();
-    for (const line of lines) {
-      if (!line.includes('"assistant"')) continue;
-      try {
-        const obj = JSON.parse(line);
-        if (obj.type !== "assistant") continue;
-        const content = obj.message?.content;
-        const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join(" ") : "";
-        if (text.trim()) return truncate(text.trim().replace(/\s+/g, " "), 200);
-      } catch {
-        // partial first line of the tail window
-      }
-    }
-  } catch {
-    return null;
-  } finally {
-    if (fd != null) closeSync(fd);
-  }
-  return null;
+/** Last assistant message text of a session, from the history tail only. */
+function lastAssistantText(sessions: HarnessSessionStore, ref: SessionRef, maxBytes = 64 * 1024): string | null {
+  const texts = (sessions.excerpt(ref, { from: "end", maxBytes })?.entries ?? []).filter(
+    (e): e is Extract<HistoryEntry, { kind: "assistant-text" }> => e.kind === "assistant-text" && !!e.text.trim(),
+  );
+  const last = texts.at(-1);
+  if (!last) return null;
+  // One message can store several text blocks.
+  const message = last.messageId ? texts.filter((e) => e.messageId === last.messageId) : [last];
+  return truncate(message.map((e) => e.text).join(" ").trim().replace(/\s+/g, " "), 200);
 }
 
 function truncate(s: string, n: number): string {
@@ -211,6 +180,7 @@ function tableColumns(table: string): Set<string> {
 }
 
 function failedRuns(now: Date, limit: number): { items: FailedRun[]; total: number } {
+  const sessions = sessionStore();
   const since = toSqlite(new Date(now.getTime() - ATTENTION_WINDOW_MS));
   const db = getDb();
   const where = `FROM (${RUNS_BASE}) WHERE outcome = 'failed' AND started_at >= ?`;
@@ -232,14 +202,14 @@ function failedRuns(now: Date, limit: number): { items: FailedRun[]; total: numb
   return {
     total,
     items: rows.map((r) => {
-      const file = findTranscript(r.session_id);
+      const history = storedSession(sessions, r.session_id);
       return {
         id: r.id,
         triggerName: r.trigger_name,
         startedAt: toIso(r.started_at),
         durationMs: r.duration_ms ?? elapsedMs(r.started_at, r.completed_at),
         costUsd: r.cost_usd,
-        summary: file ? lastAssistantText(file) : null,
+        summary: history ? lastAssistantText(sessions, history) : null,
       };
     }),
   };
@@ -262,6 +232,7 @@ function webhookFailures(): WebhookFailure[] {
 }
 
 export function runningRuns(now: Date): OverviewRun[] {
+  const sessions = sessionStore();
   const rows = getDb()
     .query(
       `SELECT r.id, r.trigger_name, r.session_key, r.session_id, r.payload, r.started_at, t.type, t.channel
@@ -279,15 +250,9 @@ export function runningRuns(now: Date): OverviewRun[] {
     channel: string | null;
   }>;
   return rows.map((r) => {
-    let lastActivity: number | null = null;
-    if (r.session_id) {
-      const file = findTranscript(r.session_id);
-      if (file) {
-        try {
-          lastActivity = statSync(file).mtimeMs;
-        } catch {}
-      }
-    }
+    const ref = sessions.ref(r.session_id);
+    const lastActivityAt = ref ? sessions.metadata(ref)?.lastActivityAt : null;
+    const lastActivity = lastActivityAt ? Date.parse(lastActivityAt) : null;
     const startedIso = toIso(r.started_at);
     const startedMs = startedIso ? Date.parse(startedIso) : null;
     const lastSignal = lastActivity ?? startedMs;

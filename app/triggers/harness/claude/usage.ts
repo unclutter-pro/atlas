@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { SessionRef, UsageReport } from "../../../lib/harness.ts";
+import type { ClaudeSessionStore } from "../../../lib/harness/claude-store.ts";
 import { findTranscript } from "./history.ts";
 import { normalizeUsage, object } from "./normalize.ts";
 
@@ -11,9 +12,9 @@ export interface CostSnapshot {
 export const ZERO_COST: CostSnapshot = { total_cost_usd: 0, modelUsage: {} };
 
 /** Claude persists session-wide counters; take a baseline before resuming. */
-export function readCostSnapshot(home: string, ref: SessionRef): CostSnapshot | null {
+export function readCostSnapshot(store: ClaudeSessionStore, ref: SessionRef): CostSnapshot | null {
   try {
-    const file = findTranscript(home, ref);
+    const file = findTranscript(store, ref);
     if (!file) return null;
     let snapshot: CostSnapshot | null = null;
     for (const line of readFileSync(file, "utf8").split("\n")) {

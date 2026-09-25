@@ -1,6 +1,6 @@
 import type { ModelCatalog, ModelRef, ModelTier } from "../../../lib/harness.ts";
 import { expandModelName } from "../../../lib/config.ts";
-import { harnessError } from "../errors.ts";
+import { harnessError } from "../../../lib/harness/errors.ts";
 
 export const MODEL_TIERS: ModelTier[] = ["strong", "balanced", "fast"];
 

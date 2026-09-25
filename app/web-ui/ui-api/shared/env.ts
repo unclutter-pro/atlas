@@ -8,11 +8,27 @@
 import { existsSync } from "fs";
 import { join } from "path";
 import { getDb } from "../../../lib/atlas-db";
+import type { HarnessSessionStore, SessionRef } from "../../../lib/harness";
+import { createSessionStore } from "../../../lib/harness/stores";
 
 export { getDb };
 
 export function home(): string {
   return process.env.HOME!;
+}
+
+/**
+ * Stored sessions of the configured agent backend (harness.backend). Every
+ * read of session history or metadata goes through this, never backend files.
+ */
+export function sessionStore(): HarnessSessionStore {
+  return createSessionStore({ home: home() });
+}
+
+/** Reference of a persisted session ID that has stored history, else null. */
+export function storedSession(sessions: HarnessSessionStore, sessionId: string | null | undefined): SessionRef | null {
+  const ref = sessions.ref(sessionId);
+  return ref && sessions.exists(ref) ? ref : null;
 }
 
 export const paths = {
@@ -27,7 +43,6 @@ export const paths = {
   secrets: () => join(home(), "secrets"),
   triggers: () => join(home(), "triggers"),
   supervisorD: () => join(home(), "supervisor.d"),
-  claudeProjects: () => join(home(), ".claude", "projects"),
   /** Container-only scripts. Spawns of these must be guarded (absent locally). */
   triggerSh: "/atlas/app/triggers/trigger.sh",
   syncCrontab: "/atlas/app/triggers/sync-crontab.ts",

@@ -1,15 +1,22 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { mergeByTime, toolSummary, TranscriptCursor, turnActiveFromTail } from "./conversation";
+import { ClaudeSessionStore } from "../../../lib/harness/claude-store";
+import { mergeByTime, toolSummary, TranscriptCursor } from "./conversation";
 import type { ChatItem, ChatToolItem } from "./types";
 
-const dir = mkdtempSync(join(tmpdir(), "chat-conv-"));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const home = mkdtempSync(join(tmpdir(), "chat-conv-"));
+const project = join(home, ".claude", "projects", "-home-agent");
+mkdirSync(project, { recursive: true });
+afterAll(() => rmSync(home, { recursive: true, force: true }));
+const sessions = new ClaudeSessionStore(home);
 
 let n = 0;
-const file = () => join(dir, `t${n++}.jsonl`);
+const file = () => join(project, `t${n++}.jsonl`);
+const idOf = (f: string) => f.slice(f.lastIndexOf("/") + 1, -".jsonl".length);
+const cursor = (f: string, opts: { initialBytes?: number; until?: string } = {}) =>
+  new TranscriptCursor(sessions.cursor(sessions.ref(idOf(f))!, opts)!);
 const line = (o: unknown) => JSON.stringify(o) + "\n";
 
 const asst = (uuid: string, id: string, blocks: unknown[], stop: string | null = null, at = "2026-01-01T00:00:01.000Z") =>
@@ -22,7 +29,7 @@ describe("TranscriptCursor", () => {
     const f = file();
     const long = "x".repeat(25_000);
     writeFileSync(f, asst("long", "msg_long", [{ type: "text", text: long }], "end_turn"));
-    const item = new TranscriptCursor(f).readNew().added[0] as { text: string };
+    const item = cursor(f).readNew().added[0] as { text: string };
     expect(item.text).toBe(long);
   });
 
@@ -33,7 +40,7 @@ describe("TranscriptCursor", () => {
       line({ type: "user", uuid: "u1", timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "New event for trigger web-chat ..." } }) +
         asst("l1", "msg_1", [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "Hello" }, { type: "tool_use", id: "tu1", name: "Bash", input: { command: "ls  -la\n/tmp", timeout: 5 } }]),
     );
-    const r = new TranscriptCursor(f).readNew();
+    const r = cursor(f).readNew();
     expect(r.reset).toBe(false);
     expect(r.added.map((i) => [i.kind, i.id])).toEqual([
       ["thinking", "k:l1:0"],
@@ -52,9 +59,9 @@ describe("TranscriptCursor", () => {
     const f = file();
     const full = asst("l1", "msg_1", [{ type: "text", text: "partial ok" }]);
     writeFileSync(f, full.slice(0, 20));
-    const c = new TranscriptCursor(f);
+    const c = cursor(f);
     expect(c.readNew().added).toEqual([]);
-    expect(c.offset).toBe(20);
+    expect(c.position).toBe("20");
     appendFileSync(f, full.slice(20));
     const r = c.readNew();
     expect(r.added.map((i) => i.id)).toEqual(["a:l1:0"]);
@@ -64,7 +71,7 @@ describe("TranscriptCursor", () => {
   test("pairs tool results with their call (same read and later reads)", () => {
     const f = file();
     writeFileSync(f, asst("l1", "m", [{ type: "tool_use", id: "a", name: "Read", input: { file_path: "/x" } }]) + result("r1", "a", [{ type: "text", text: "content" }]));
-    const c = new TranscriptCursor(f);
+    const c = cursor(f);
     const first = c.readNew();
     expect(first.updated).toEqual([]);
     expect((first.added[0] as ChatToolItem).result).toBe("content");
@@ -84,7 +91,7 @@ describe("TranscriptCursor", () => {
   test("skips sidechain lines", () => {
     const f = file();
     writeFileSync(f, line({ type: "assistant", isSidechain: true, uuid: "s", message: { id: "x", content: [{ type: "text", text: "sub" }] } }) + asst("l1", "m", [{ type: "text", text: "main" }]));
-    expect(new TranscriptCursor(f).readNew().added.map((i) => (i as { text: string }).text)).toEqual(["main"]);
+    expect(cursor(f).readNew().added.map((i) => (i as { text: string }).text)).toEqual(["main"]);
   });
 
   test("reads only the tail of a large file and drops the cut line", () => {
@@ -92,7 +99,7 @@ describe("TranscriptCursor", () => {
     let body = "";
     for (let i = 0; i < 50; i++) body += asst(`l${i}`, `m${i}`, [{ type: "text", text: `text ${i} ${"x".repeat(100)}` }]);
     writeFileSync(f, body);
-    const c = new TranscriptCursor(f, { tailBytes: 1000 });
+    const c = cursor(f, { initialBytes: 1000 });
     const r = c.readNew();
     expect(c.truncated).toBe(true);
     expect(r.added.length).toBeGreaterThan(0);
@@ -105,7 +112,7 @@ describe("TranscriptCursor", () => {
   test("a shrunk file resets the cursor", () => {
     const f = file();
     writeFileSync(f, asst("l1", "m", [{ type: "text", text: "one" }]) + asst("l2", "m", [{ type: "text", text: "two" }]));
-    const c = new TranscriptCursor(f);
+    const c = cursor(f);
     expect(c.readNew().added).toHaveLength(2);
     truncateSync(f, 0);
     writeFileSync(f, asst("l3", "m", [{ type: "text", text: "new" }]));
@@ -118,16 +125,16 @@ describe("TranscriptCursor", () => {
     const f = file();
     const first = asst("l1", "m", [{ type: "text", text: "a" }]);
     writeFileSync(f, first + line({ type: "assistant", message: { id: "m", content: [{ type: "thinking", thinking: "y".repeat(25_000) }] } }));
-    const r = new TranscriptCursor(f).readNew();
+    const r = cursor(f).readNew();
     expect(r.added[1]!.id).toBe(`k:@${Buffer.byteLength(first)}:0`);
     expect((r.added[1] as { text: string }).text).toContain("… (5,000 more characters)");
   });
 
-  test("endOffset stops the read there", () => {
+  test("until stops the read there", () => {
     const f = file();
     const a = asst("l1", "m", [{ type: "text", text: "one" }]);
     writeFileSync(f, a + asst("l2", "m", [{ type: "text", text: "two" }]));
-    const r = new TranscriptCursor(f, { endOffset: Buffer.byteLength(a) }).readNew();
+    const r = cursor(f, { until: String(Buffer.byteLength(a)) }).readNew();
     expect(r.added.map((i) => i.id)).toEqual(["a:l1:0"]);
   });
 });
@@ -140,36 +147,6 @@ describe("toolSummary", () => {
     const s = toolSummary({ prompt: "p".repeat(300) });
     expect(s.length).toBe(160);
     expect(s.endsWith("…")).toBe(true);
-  });
-});
-
-describe("turnActiveFromTail", () => {
-  test("user line or tool_use stop means active; end_turn and interrupts are terminal", () => {
-    const f = file();
-    writeFileSync(f, asst("l1", "m", [{ type: "tool_use", id: "x", name: "Bash", input: {} }], "tool_use"));
-    expect(turnActiveFromTail(f)).toBe(true);
-    appendFileSync(f, result("r", "x", "ok"));
-    expect(turnActiveFromTail(f)).toBe(true);
-    appendFileSync(f, asst("l2", "m2", [{ type: "text", text: "done" }], "end_turn") + line({ type: "system", subtype: "x" }));
-    expect(turnActiveFromTail(f)).toBe(false);
-    appendFileSync(f, line({ type: "user", message: { role: "user", content: "next question" } }));
-    expect(turnActiveFromTail(f)).toBe(true);
-    appendFileSync(f, line({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] } }));
-    expect(turnActiveFromTail(f)).toBe(false);
-  });
-
-  test("no file or no entries counts as active (session starting)", () => {
-    expect(turnActiveFromTail(join(dir, "missing.jsonl"))).toBe(true);
-    const f = file();
-    writeFileSync(f, line({ type: "system" }));
-    expect(turnActiveFromTail(f)).toBe(true);
-  });
-
-  test("only the tail is read", () => {
-    const f = file();
-    writeFileSync(f, asst("l1", "m", [{ type: "text", text: "done" }], "end_turn") + line({ type: "system", pad: "z".repeat(70_000) }));
-    // The terminal assistant line is outside the 64 KiB tail → nothing found → active.
-    expect(turnActiveFromTail(f)).toBe(true);
   });
 });
 

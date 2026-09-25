@@ -513,7 +513,6 @@ def _resume_with_farewell(session_id, sender, farewell):
     env["ATLAS_TRIGGER"] = TRIGGER_NAME
     env["ATLAS_TRIGGER_CHANNEL"] = "whatsapp"
     env["ATLAS_TRIGGER_SESSION_KEY"] = sender
-    env.pop("CLAUDECODE", None)
     subprocess.run(
         ["/atlas/app/triggers/trigger-runner",
          "--direct", farewell,

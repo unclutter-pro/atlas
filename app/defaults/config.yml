@@ -104,6 +104,10 @@ usage_reporting:
 workspace:
   projects_dir: "" # Custom projects directory path (default: $HOME/projects). Override with ATLAS_PROJECTS_DIR env var.
 
+# Agent backend that runs sessions and stores their history (docs/harness-interface.md)
+harness:
+  backend: claude-code # Only registered backend today. Override with ATLAS_HARNESS_BACKEND env var.
+
 # Claude Code Plugins — enable/disable marketplace plugins
 # Format: "plugin-id@marketplace-id": true/false
 # The agent can modify this at runtime and re-run settings generation.

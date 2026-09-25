@@ -106,6 +106,14 @@ export interface WorkspaceConfig {
   projects_dir: string;
 }
 
+export interface HarnessConfig {
+  /**
+   * Agent backend that runs sessions and owns their storage
+   * (docs/harness-interface.md). Registered: "claude-code".
+   */
+  backend: string;
+}
+
 export interface AtlasConfig {
   /**
    * IANA time zone ("Europe/Berlin", "America/New_York") used for day
@@ -128,6 +136,7 @@ export interface AtlasConfig {
   webhook: WebhookConfig;
   usage_reporting: UsageReportingConfig;
   workspace: WorkspaceConfig;
+  harness: HarnessConfig;
   plugins: PluginsConfig;
 }
 
@@ -158,6 +167,7 @@ const DEFAULTS: AtlasConfig = {
   webhook: { relay_url: "https://webhooks.unclutter.pro" },
   usage_reporting: { enabled: false, webhook_url: "", webhook_secret: "", include_tokens: false },
   workspace: { projects_dir: "" }, // empty = $HOME/projects (resolved at runtime)
+  harness: { backend: "claude-code" },
   plugins: {
     enabled: {
       // Enabled by default
@@ -234,6 +244,7 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_USAGE_WEBHOOK_SECRET", path: "usage_reporting.webhook_secret", type: "string" },
   { env: "ATLAS_USAGE_INCLUDE_TOKENS", path: "usage_reporting.include_tokens", type: "boolean" },
   { env: "ATLAS_PROJECTS_DIR", path: "workspace.projects_dir", type: "string" },
+  { env: "ATLAS_HARNESS_BACKEND", path: "harness.backend", type: "string" },
 ];
 
 // ---------------------------------------------------------------------------

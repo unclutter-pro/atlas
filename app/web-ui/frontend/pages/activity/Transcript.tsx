@@ -105,7 +105,7 @@ export function TranscriptView(props: { transcript: Transcript | null; emptyTitl
   if (!t || t.entries.length === 0) {
     return (
       <EmptyState compact title={props.emptyTitle ?? "No transcript."}>
-        {props.emptyBody ?? "The session file was not found under ~/.claude/projects. It may still be starting or was cleaned up."}
+        {props.emptyBody ?? "No stored history for this session. It may still be starting or was cleaned up."}
       </EmptyState>
     );
   }

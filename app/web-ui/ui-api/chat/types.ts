@@ -127,10 +127,10 @@ interface ItemBase {
   /**
    * Stable id, unique within a session, identical across snapshots:
    *   user       "u:<messages.id>"
-   *   assistant  "a:<jsonl line uuid>:<block index>"
-   *   thinking   "k:<jsonl line uuid>:<block index>"
-   *   tool       "t:<tool_use_id>"
-   * (lines without uuid use "@<byte offset>" in place of the uuid)
+   *   assistant  "a:<history entry id>"
+   *   thinking   "k:<history entry id>"
+   *   tool       "t:<tool call id>" (else "t:<history entry id>")
+   * History entry ids come from the session store (HistoryEntry.id).
    */
   id: string;
   at: string | null;
@@ -155,7 +155,7 @@ export interface ChatAssistantItem extends ItemBase {
   kind: "assistant";
   /** Markdown. Clipped at 20 000 chars with a "… (N more characters)" suffix. */
   text: string;
-  /** Anthropic message id; equals StreamDraft.streamId of the deltas this text was streamed as. */
+  /** Model message id (HistoryEntry.messageId); equals StreamDraft.streamId of the deltas this text was streamed as. */
   streamId: string | null;
 }
 

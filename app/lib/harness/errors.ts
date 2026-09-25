@@ -1,4 +1,4 @@
-import type { HarnessError, HarnessOperationError } from "../../lib/harness.ts";
+import type { HarnessError, HarnessOperationError } from "../harness.ts";
 
 export function harnessError(code: HarnessError["code"], message: string): HarnessOperationError {
   return Object.assign(new Error(message), { detail: { code, message } });

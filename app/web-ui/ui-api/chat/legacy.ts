@@ -50,7 +50,7 @@ export function legacyMessages(items: ChatItem[], opts: { attachments: boolean }
 function conversationFor(key: string): { items: ChatItem[]; state: ChatRunState } {
   const hub = getHub(key);
   const snap = hub.snapshot();
-  const items = snap.truncated ? loadConversation(key, { endOffset: hub.cursor?.offset }).items : snap.items;
+  const items = snap.truncated ? loadConversation(key, { until: hub.cursor?.position }).items : snap.items;
   return { items, state: snap.run.state };
 }
 
@@ -125,7 +125,7 @@ export function legacyChatStream(key: string, opts: { wantsStreamChunks: boolean
 
     const sub = hub.subscribe(onEvent);
     const snap = sub.snapshot;
-    const items = snap.truncated ? loadConversation(key, { endOffset: hub.cursor?.offset }).items : snap.items;
+    const items = snap.truncated ? loadConversation(key, { until: hub.cursor?.position }).items : snap.items;
     for (const it of snap.items) seen.add(it.id);
     toolSteps = items.filter((it) => it.kind === "tool").length;
     wasRunning = running(snap.run.state);

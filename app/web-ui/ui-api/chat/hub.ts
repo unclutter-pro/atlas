@@ -6,30 +6,30 @@
  * something changed:
  *   - runner pings (notify-server.ts → notifyChat): turn start/end, new
  *     stream chunks, new transcript lines, session id known;
- *   - fs.watch on the session JSONL;
+ *   - the session store's change notification (watch) on the session history;
  *   - local changes from the web-ui itself (notifyLocal: sends, renames,
  *     resets, deletes; notifyAllChats after the kill switch).
  * Each signal only marks parts dirty; one coalesced flush (30 ms) then reads
  * each dirty source once for all subscribers: new user messages by id, new
- * chunk rows by id, new JSONL bytes by offset.
+ * chunk rows by id, new history entries from the cursor position.
  *
  * The only timer doing I/O is the safety net: while a turn is starting or
  * running and someone is watching, 15 s without any ping or watch event
- * re-derive the run state (lock file + kill(pid, 0) + one query + a 64 KiB
- * tail). It catches runners that died without a turn_end (SIGKILL, OOM) or a
+ * re-derive the run state (lock file + kill(pid, 0) + one query + the
+ * session metadata). It catches runners that died without a turn_end (SIGKILL, OOM) or a
  * trigger.sh that never started. Idle chats cost nothing.
  *
  * Hubs live in a registry on globalThis (survives `bun --hot`) and are
  * disposed 30 s after their last subscriber leaves.
  */
 
-import { existsSync, watch, type FSWatcher } from "fs";
+import { existsSync } from "fs";
+import type { HarnessSessionStore, SessionRef } from "../../../lib/harness";
 import { isAtlasPaused } from "../../../lib/kill-switch";
 import { getLockPath, getSocketPath, isPidAlive, readLockPid } from "../../../lib/trigger-socket";
 import type { ChatNotifyEvent } from "../../../lib/web-ui-notify";
-import { findSessionFile } from "../activity/transcript";
-import { home, paths } from "../shared/env";
-import { lastTranscriptAt, loadUserItems, mergeByTime, TranscriptCursor, turnActiveFromTail } from "./conversation";
+import { home, paths, sessionStore, storedSession } from "../shared/env";
+import { loadUserItems, mergeByTime, TranscriptCursor } from "./conversation";
 import * as store from "./store";
 import { CHAT_TRIGGER, type ChunkRow } from "./store";
 import {
@@ -116,16 +116,17 @@ const CLEAN: Dirty = { rebuild: false, relocate: false, users: false, chunks: fa
 
 /**
  * Run state from durable sources (no pings): a live runner → running unless
- * the transcript tail shows the turn ended (no file yet counts as running);
+ * the stored history shows the turn ended (no history yet counts as running);
  * no runner → starting when a message was sent < 60 s ago, nothing answered
  * it yet and Atlas isn't paused; otherwise idle.
  */
 export function deriveRunState(
   key: string,
-  ctx: { file: string | null; answeredAfter: (userAtMs: number) => boolean },
+  ctx: { sessions: HarnessSessionStore; history: SessionRef | null; answeredAfter: (userAtMs: number) => boolean },
 ): ChatRunState {
   if (isPidAlive(readLockPid(getLockPath(CHAT_TRIGGER, key)))) {
-    return !ctx.file || turnActiveFromTail(ctx.file) ? "running" : "idle";
+    const ended = ctx.history !== null && ctx.sessions.metadata(ctx.history)?.turn === "ended";
+    return ended ? "idle" : "running";
   }
   if (hubDeps.runnerAvailable() && !isAtlasPaused(home())) {
     const last = store.lastUserMessage(key);
@@ -139,7 +140,8 @@ export class ChatHub {
   readonly counters: HubCounters = { builds: 0, flushes: 0, userReads: 0, chunkReads: 0, transcriptReads: 0, derives: 0, metaReads: 0 };
   disposed = false;
   sessionId: string | null = null;
-  file: string | null = null;
+  /** The session once it has stored history (it appears after the first turn starts). */
+  history: SessionRef | null = null;
   cursor: TranscriptCursor | null = null;
   run: ChatRun = IDLE;
 
@@ -153,17 +155,18 @@ export class ChatHub {
   private finalized = new Set<string>();
   private lastUserMessageId = 0;
   private lastChunkId = 0;
-  private watcher: FSWatcher | null = null;
+  private readonly sessions = sessionStore();
+  private unwatch: (() => void) | null = null;
   private dirty: Dirty = { ...CLEAN };
   private pendingRun: ChatRunState | null = null;
   private clientIds = new Map<number, string>();
   private flushTimer: Timer | null = null;
   private disposeTimer: Timer | null = null;
   private safetyTimer: Timer | null = null;
-  /** One-shot re-read after a normal turn end, for a final JSONL line written after the ping. */
+  /** One-shot re-read after a normal turn end, for a final history entry stored after the ping. */
   private lateFinalTimer: Timer | null = null;
   private pendingInterrupted = false;
-  /** Last runner ping or JSONL watch event. */
+  /** Last runner ping or history watch event. */
   private lastSignalAt = Date.now();
 
   constructor(readonly key: string) {
@@ -319,10 +322,10 @@ export class ChatHub {
       }
     }
     if (!this.cursor && this.sessionId && (d.transcript || d.relocate)) {
-      // The JSONL of a new session appears after its first ping: retry on each.
-      const file = findSessionFile(this.sessionId);
-      if (file) {
-        this.setFile(file);
+      // A new session's history appears after its first ping: retry on each.
+      const history = storedSession(this.sessions, this.sessionId);
+      if (history) {
+        this.setHistory(history);
         d.transcript = true;
       }
     }
@@ -416,14 +419,14 @@ export class ChatHub {
   private build(): void {
     this.counters.builds++;
     this.sessionId = store.getMappedSessionId(this.key);
-    this.setFile(findSessionFile(this.sessionId), true);
+    this.setHistory(storedSession(this.sessions, this.sessionId), true);
     const users = loadUserItems(this.key);
     this.lastUserMessageId = users.length ? users[users.length - 1]!.messageId : store.maxUserMessageId(this.key);
-    const jsonl = this.cursor ? this.cursor.readNew().added : [];
-    this.items = mergeByTime(users, jsonl);
+    const stored = this.cursor ? this.cursor.readNew().added : [];
+    this.items = mergeByTime(users, stored);
     this.truncated = this.cursor?.truncated ?? false;
     this.trim();
-    this.finalized = new Set(jsonl.flatMap((it) => (it.kind === "assistant" && it.streamId ? [it.streamId] : [])));
+    this.finalized = new Set(stored.flatMap((it) => (it.kind === "assistant" && it.streamId ? [it.streamId] : [])));
     this.drafts.clear();
     this.lastChunkId = this.sessionId ? store.maxChunkId(this.sessionId) : 0;
     this.refreshDetail(true, false);
@@ -437,24 +440,17 @@ export class ChatHub {
     if (streamId && !this.finalized.has(streamId)) this.drafts.set(streamId, rows.map((r) => r.delta).join(""));
   }
 
-  /** Point the cursor (and watcher) at a file; `fresh` re-reads it from the start. */
-  private setFile(file: string | null, fresh = false): void {
-    if (!fresh && file === this.file && (file === null || this.cursor)) return;
-    this.watcher?.close();
-    this.watcher = null;
-    this.file = file;
-    this.cursor = file ? new TranscriptCursor(file) : null;
-    if (!file) return;
-    try {
-      this.watcher = watch(file, { persistent: false }, () => this.onWatch());
-      this.watcher.on("error", () => {
-        // Rely on runner pings from here on.
-        this.watcher?.close();
-        this.watcher = null;
-      });
-    } catch {
-      this.watcher = null;
-    }
+  /** Point the cursor (and watch) at a session's history; `fresh` re-reads it from the start. */
+  private setHistory(history: SessionRef | null, fresh = false): void {
+    const same = history?.nativeId === this.history?.nativeId && history?.backend === this.history?.backend;
+    if (!fresh && same && (history === null || this.cursor)) return;
+    this.unwatch?.();
+    this.unwatch = null;
+    this.history = history;
+    const cursor = history ? this.sessions.cursor(history) : null;
+    this.cursor = cursor ? new TranscriptCursor(cursor) : null;
+    // Without change notifications the hub relies on runner pings.
+    if (history) this.unwatch = this.sessions.watch(history, () => this.onWatch());
   }
 
   private trim(): void {
@@ -466,15 +462,16 @@ export class ChatHub {
 
   private derive(): ChatRunState {
     this.counters.derives++;
-    if (!this.file && this.sessionId) {
-      this.setFile(findSessionFile(this.sessionId));
+    if (!this.history && this.sessionId) {
+      this.setHistory(storedSession(this.sessions, this.sessionId));
       if (this.cursor) {
         this.dirty.transcript = true;
         this.schedule();
       }
     }
     return deriveRunState(this.key, {
-      file: this.file,
+      sessions: this.sessions,
+      history: this.history,
       answeredAfter: (t) => {
         for (let i = this.items.length - 1; i >= 0; i--) {
           const it = this.items[i]!;
@@ -507,7 +504,7 @@ export class ChatHub {
     this.run = next;
     if (next.state === "idle") {
       // A stopped turn never finalizes its drafts. After a normal end the
-      // final JSONL line can land just after the ping: keep the drafts (the
+      // final history entry can land just after the ping: keep the drafts (the
       // item replaces them by streamId) and look once more shortly after.
       if (interrupted) this.drafts.clear();
       else if (this.drafts.size > 0) this.scheduleLateFinalRead();
@@ -605,8 +602,8 @@ export class ChatHub {
     this.disposed = true;
     for (const t of [this.flushTimer, this.disposeTimer, this.safetyTimer, this.lateFinalTimer]) if (t) clearTimeout(t);
     this.flushTimer = this.disposeTimer = this.safetyTimer = this.lateFinalTimer = null;
-    this.watcher?.close();
-    this.watcher = null;
+    this.unwatch?.();
+    this.unwatch = null;
     this.listeners.clear();
     const reg = registry();
     if (reg.get(this.key) === this) reg.delete(this.key);
@@ -664,11 +661,13 @@ export function currentRunState(key: string): ChatRunState {
     hub.snapshot(); // applies pending changes
     return hub.run.state;
   }
-  const file = findSessionFile(store.getMappedSessionId(key));
+  const sessions = sessionStore();
+  const history = storedSession(sessions, store.getMappedSessionId(key));
   return deriveRunState(key, {
-    file,
+    sessions,
+    history,
     answeredAfter: (t) => {
-      const at = file ? lastTranscriptAt(file) : null;
+      const at = history ? sessions.metadata(history)?.lastEntryAt : null;
       return !!at && Date.parse(at) >= t;
     },
   });
