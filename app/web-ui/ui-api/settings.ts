@@ -31,7 +31,8 @@ import { maskSecrets, unmaskSecrets } from "./settings/mask";
 
 export type { ConfigSource, FileDoc, SecretItem, ValidationIssue, ValidationResult };
 
-const GENERATE_SETTINGS = "/atlas/app/hooks/generate-settings.ts";
+/** Writes the configured agent backend's settings (hooks, permissions, plugins). */
+const CONFIGURE_HARNESS = "/atlas/app/triggers/harness/configure.ts";
 
 // --- Response types ----------------------------------------------------------
 
@@ -86,7 +87,7 @@ export interface ConfigSaveResponse {
   file: FileDoc;
   validation: ValidationResult;
   /** Side effects that ran (both only exist inside the container). */
-  applied: { claudeSettings: boolean; crontab: boolean };
+  applied: { harnessSettings: boolean; crontab: boolean };
 }
 
 export interface SecretsResponse {
@@ -251,17 +252,17 @@ function configuration(): ConfigurationResponse {
   };
 }
 
-/** Same side effects as the legacy PATCH /api/v1/config: regenerate Claude settings, then the crontab. */
+/** Same side effects as the legacy PATCH /api/v1/config: regenerate the agent backend's settings, then the crontab. */
 function applyConfig(): ConfigSaveResponse["applied"] {
-  let claudeSettings = false;
-  if (!isTestRun() && existsSync(GENERATE_SETTINGS)) {
+  let harnessSettings = false;
+  if (!isTestRun() && existsSync(CONFIGURE_HARNESS)) {
     try {
-      claudeSettings = Bun.spawnSync(["bun", "run", GENERATE_SETTINGS], { stdout: "ignore", stderr: "pipe", timeout: 30_000 }).exitCode === 0;
+      harnessSettings = Bun.spawnSync(["bun", "run", CONFIGURE_HARNESS], { stdout: "ignore", stderr: "pipe", timeout: 30_000 }).exitCode === 0;
     } catch {}
   }
   const crontab = !isTestRun() && existsSync(paths.syncCrontab);
   syncCrontab();
-  return { claudeSettings, crontab };
+  return { harnessSettings, crontab };
 }
 
 // --- Secrets -----------------------------------------------------------------

@@ -108,6 +108,21 @@ export interface HarnessBackend {
   readonly sessions: HarnessSessionStore;
 
   /**
+   * Backend-specific system prompt section, appended to Atlas' shared prompt:
+   * how its concepts (delegating to agents, loading skills, model tiers) are
+   * invoked in this backend. The shared prompt names concepts, not syntax.
+   */
+  readonly promptExtension: string;
+
+  /**
+   * Write the backend's own configuration for this deployment (hooks,
+   * permissions, plugins, skill and agent locations) from Atlas config.
+   * Idempotent; runs at container start and after settings changes. No model
+   * execution. Returns one line per step for the log.
+   */
+  configure(): string[];
+
+  /**
    * Atlas' long-lived conversation (the trigger runner): the backend's native
    * tools, hooks, skills and delegation, fed by host input. Returns at once;
    * iterate the conversation for its events.

@@ -9,7 +9,7 @@ set -euo pipefail
 # itself. Handled first and in isolation — the validator has no tasks/journal,
 # so the gates below must not run for it.
 if [ "${ATLAS_TRIGGER_CHANNEL:-}" = "validator" ]; then
-  cat | bun /atlas/app/hooks/validator-stop-check.ts 2>/dev/null || true
+  cat | bun /atlas/app/triggers/harness/claude/hooks/validator-stop-check.ts 2>/dev/null || true
   exit 0
 fi
 
@@ -21,7 +21,7 @@ fi
 
 # --- Task completion gate (trigger sessions) ---
 if [ -n "${ATLAS_TRIGGER:-}" ] && [ -n "${ATLAS_TRIGGER_SESSION_KEY:-}" ]; then
-  CHECK_OUTPUT=$(/atlas/app/hooks/task-session.sh check 2>/dev/null) || true
+  CHECK_OUTPUT=$(/atlas/app/triggers/harness/claude/hooks/task-session.sh check 2>/dev/null) || true
   if [ -n "$CHECK_OUTPUT" ]; then
     echo "$CHECK_OUTPUT"
     exit 0

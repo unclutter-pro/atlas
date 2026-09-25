@@ -622,7 +622,7 @@ describe("Hook integration (unit level)", () => {
   function resolveAppDir(): string {
     const { existsSync } = require("fs");
     // In production container, /atlas/app has task-session.sh
-    if (existsSync("/atlas/app/hooks/task-session.sh")) return "/atlas/app";
+    if (existsSync("/atlas/app/triggers/harness/claude/hooks/task-session.sh")) return "/atlas/app";
     // In dev/test, use the repo directly
     return REPO_APP_DIR;
   }
@@ -630,17 +630,25 @@ describe("Hook integration (unit level)", () => {
   test("task-session.sh exists and is a non-empty file", async () => {
     const { existsSync, readFileSync } = await import("fs");
     const appDir = resolveAppDir();
-    const scriptPath = `${appDir}/hooks/task-session.sh`;
+    const scriptPath = `${appDir}/triggers/harness/claude/hooks/task-session.sh`;
     expect(existsSync(scriptPath)).toBe(true);
     const content = readFileSync(scriptPath, "utf8");
     expect(content.length).toBeGreaterThan(50);
     expect(content).toContain("task-session.sh");
   });
 
+  test("task-session.sh resolves the task and reminder CLIs next to it", () => {
+    const script = `${REPO_APP_DIR}triggers/harness/claude/hooks/task-session.sh`;
+    const probe = Bun.spawnSync(["bash", "-c",
+      `SCRIPT_DIR="$(dirname "${script}")"; eval "$(grep '^TRIGGERS_DIR=' "${script}")"; ` +
+      `test -f "$TRIGGERS_DIR/manage-tasks.ts" && test -f "$TRIGGERS_DIR/manage-reminders.ts"`]);
+    expect(probe.exitCode).toBe(0);
+  });
+
   test("post-compact.sh exists", async () => {
     const { existsSync } = await import("fs");
     const appDir = resolveAppDir();
-    expect(existsSync(`${appDir}/hooks/post-compact.sh`)).toBe(true);
+    expect(existsSync(`${appDir}/triggers/harness/claude/hooks/post-compact.sh`)).toBe(true);
   });
 
   test("task binary exists at app/bin/task", async () => {

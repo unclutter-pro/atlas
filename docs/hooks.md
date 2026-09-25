@@ -2,6 +2,8 @@
 
 Claude Code hooks inject context at lifecycle events. Hooks are shell scripts or prompts that execute automatically — their output becomes part of Claude's context.
 
+Hooks belong to the Claude Code harness adapter: the scripts live in `app/triggers/harness/claude/hooks/`, and `HarnessBackend.configure()` (`app/triggers/harness/claude/settings.ts`, run by `app/triggers/harness/configure.ts` at container start and after config changes) registers them in `~/.claude/settings.json`. Another backend brings its own equivalents.
+
 ## session-start.sh
 
 Runs when any Claude Code session starts (trigger sessions and subagents).
@@ -95,15 +97,18 @@ Runs before manual context compaction (when user runs `/compact`). Same behavior
 
 Configured in `settings.json` as a prompt-type hook. Fires in the trigger session when a subagent finishes. Asks the trigger session to evaluate whether the subagent's result is complete and acceptable, or needs rework.
 
-Configured via `generate-settings.ts` — the model used for this review is set by `subagent_review` in `config.yml`.
+Configured in `settings.ts` — the model used for this review is set by `subagent_review` in `config.yml`.
 
 ## Source
 
-- `app/hooks/session-start.sh` — Context loading
-- `app/hooks/stop.sh` — Session lifecycle + task gate (calls task-session.sh check) + validator format gate (calls validator-stop-check.ts)
-- `app/hooks/validator-stop-check.ts` — Validator JSON-verdict gate (Stop hook, validator session only)
-- `app/hooks/task-session.sh` — Task context management (SessionStart, PreCompact, Stop)
-- `app/hooks/post-compact.sh` — PostCompact task context re-injection
-- `app/hooks/pre-compact-auto.sh` — Memory flush (auto compaction)
-- `app/hooks/pre-compact-manual.sh` — Memory flush (manual compaction)
-- `app/hooks/generate-settings.ts` — Generates `~/.claude/settings.json` with hook config
+All under `app/triggers/harness/claude/`:
+
+- `hooks/session-start.sh` — Context loading
+- `hooks/stop.sh` — Session lifecycle + task gate (calls task-session.sh check) + validator format gate (calls validator-stop-check.ts)
+- `hooks/validator-stop-check.ts` — Validator JSON-verdict gate (Stop hook, validator session only)
+- `hooks/task-session.sh` — Task context management (SessionStart, PreCompact, Stop)
+- `hooks/post-compact.sh` — PostCompact task context re-injection
+- `hooks/pre-compact-auto.sh` — Memory flush (auto compaction)
+- `hooks/pre-compact-manual.sh` — Memory flush (manual compaction)
+- `hooks/remind-use-reminders.sh` — Advisory nudge toward the reminder CLI (PreToolUse on Bash)
+- `settings.ts` — Writes `~/.claude/settings.json` with the hook config, permissions and plugins

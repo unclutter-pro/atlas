@@ -13,12 +13,7 @@ sessions --hours 24 --list --exclude-trigger dreaming --exclude-trigger memory-c
 This outputs a lightweight index; its last column is the session reference. For each **main session** (not subagents):
 
 1. **Pre-process** it via `sessions --session <session>` — this strips tool inputs/outputs, truncates long messages, and produces a condensed transcript (~5-15k tokens instead of 500k+ raw)
-2. **Spawn a `session-analyzer` subagent** with that text as input:
-
-```
-result=$(sessions --session <session>)
-Agent(subagent_type="session-analyzer", prompt="Analyze this session transcript:\n\n$result")
-```
+2. **Spawn a `session-analyzer` subagent** with that text as input ("Analyze this session transcript:" followed by the output of `sessions --session <session>`).
 
 Launch these **in parallel** — send them all in one message, then wait for all results. The analyzers do the extraction; you do the thinking.
 
@@ -50,7 +45,7 @@ Then fold what you learned into the rest of memory. You decide what form that ta
 When a workflow or playbook gains a new lesson, **append it** as a dated line rather than rewriting the file. Rewriting a playbook every night erodes the detail that made it useful; small additive deltas preserve it. Only restructure such a file when it has genuinely become unwieldy, and then deliberately.
 
 ### Skills
-Skills are for **tool-specific operating knowledge** — when a particular tool or service must be driven in a specific, non-obvious way (kubeseal with certain flags, an API with an unusual auth flow, a CLI with required argument patterns). Create or update them in `~/.claude/skills/` against the `writing-for-agents` skill, and only for patterns you have now seen **at least twice**. General procedures belong in memory, not in skills.
+Skills are for **tool-specific operating knowledge** — when a particular tool or service must be driven in a specific, non-obvious way (kubeseal with certain flags, an API with an unusual auth flow, a CLI with required argument patterns). Create or update them in your custom skills directory (see the `<harness>` section) against the `writing-for-agents` skill, and only for patterns you have now seen **at least twice**. General procedures belong in memory, not in skills.
 
 ## Phase 4: Reconcile with reality
 

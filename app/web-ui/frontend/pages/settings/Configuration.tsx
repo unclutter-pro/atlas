@@ -235,8 +235,8 @@ function ConfigEditor({ data, onSaved }: { data: ConfigurationResponse; onSaved:
           {saved && !editor.dirty && (
             <Alert tone="ok">
               Saved.{" "}
-              {saved.applied.claudeSettings || saved.applied.crontab
-                ? [saved.applied.claudeSettings && "Claude settings regenerated", saved.applied.crontab && "crontab synced"].filter(Boolean).join(", ") + "."
+              {saved.applied.harnessSettings || saved.applied.crontab
+                ? [saved.applied.harnessSettings && "Agent settings regenerated", saved.applied.crontab && "crontab synced"].filter(Boolean).join(", ") + "."
                 : "Settings regeneration and crontab sync only run inside the container."}{" "}
               Integration changes (Signal, email) apply on the next restart.
             </Alert>

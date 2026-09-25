@@ -131,9 +131,9 @@ describe("configuration", () => {
   test("PUT saves valid YAML; container side effects are skipped under test", async () => {
     const res = await send("PUT", "/configuration", { content: CONFIG });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; applied: { claudeSettings: boolean; crontab: boolean } };
+    const body = (await res.json()) as { ok: boolean; applied: { harnessSettings: boolean; crontab: boolean } };
     expect(body.ok).toBe(true);
-    expect(body.applied).toEqual({ claudeSettings: false, crontab: false });
+    expect(body.applied).toEqual({ harnessSettings: false, crontab: false });
     expect(readFileSync(join(H, "config.yml"), "utf-8")).toBe(CONFIG);
   });
 

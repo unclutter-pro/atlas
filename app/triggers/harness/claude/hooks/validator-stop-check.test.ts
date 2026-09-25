@@ -1,6 +1,6 @@
 /**
  * Tests for the validator Stop-hook gate (validator-stop-check.ts).
- * Run with: cd app && bun test hooks/validator-stop-check.test.ts
+ * Run with: cd app/triggers && bun test harness/claude/hooks/validator-stop-check.test.ts
  *
  * The hook is exercised as a subprocess (matching how Claude Code invokes it):
  * stdin = hook JSON, stdout = "" (allow stop) or {"decision":"block",...}.

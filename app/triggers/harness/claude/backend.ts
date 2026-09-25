@@ -11,6 +11,8 @@ import { findTranscript, readHistory, validateRef } from "./history.ts";
 import { openConversation, type QueryFactory } from "./conversation.ts";
 import { NATIVE_TOOLS } from "./policy.ts";
 import { prepareClaudeEnvironment } from "./environment.ts";
+import { configureClaude } from "./settings.ts";
+import promptExtension from "./prompt.md" with { type: "text" };
 import { startClaudeRun, validateInput } from "./run.ts";
 import { readCostSnapshot, ZERO_COST } from "./usage.ts";
 
@@ -33,6 +35,7 @@ export class ClaudeCodeBackend implements HarnessBackend {
     customTools: false, compactionContext: false, usageUpdates: "final-only",
   };
   readonly sessions: ClaudeSessionStore;
+  readonly promptExtension = promptExtension;
   private readonly home: string;
   private readonly factory: QueryFactory;
   private readonly running = new Set<string>();
@@ -81,6 +84,8 @@ export class ClaudeCodeBackend implements HarnessBackend {
   }
 
   history(ref: SessionRef, cursor?: string) { return readHistory(this.sessions, ref, cursor); }
+
+  configure(): string[] { return configureClaude(this.home); }
 
   /** Claude Code's native tools, hooks and subagents behind normalized events. */
   openConversation(request: ConversationRequest): Conversation {

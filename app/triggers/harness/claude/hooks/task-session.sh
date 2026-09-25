@@ -11,7 +11,7 @@ set -euo pipefail
 
 # Resolve the task CLI — works both in container and in dev
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TRIGGERS_DIR="$SCRIPT_DIR/../triggers"
+TRIGGERS_DIR="$SCRIPT_DIR/../../.."
 TASK_CLI="bun $TRIGGERS_DIR/manage-tasks.ts"
 
 # ---------------------------------------------------------------------------

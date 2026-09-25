@@ -344,6 +344,23 @@ every request. create/resume validate the selected model, requested tools and
 required bindings before use; run/steer validate each input, including its image
 format, before accepting it.
 
+## Configuration and prompts
+
+`HarnessBackend.configure()` writes the backend's own configuration for the
+deployment. `app/triggers/harness/configure.ts` runs it at container start
+(`init.sh`) and after config changes (web-ui). For Claude Code that is
+`~/.claude/settings.json` (hooks from `harness/claude/hooks/`, permissions,
+plugins, attribution), the skill and agent directories and their installs from
+`ATLAS_DEFAULT_SKILLS_DIR` / `ATLAS_DEFAULT_AGENTS_DIR`.
+
+Prompts and skills are shared across backends. The shared system prompt names
+concepts: delegate to the `memory-searcher` agent, a general-purpose subagent
+on the fast/balanced/strong tier, load a skill by name. Each backend appends
+`HarnessBackend.promptExtension` with the invocation syntax; Claude's
+(`harness/claude/prompt.md`, embedded in the runner binary) maps the concepts to
+`Agent(...)`, `Skill(...)`, `haiku`/`sonnet`/`opus`, `~/.claude/skills/` and the
+`Workflow` tool. The runner places it right after the shared prompt.
+
 ## Session storage
 
 `HarnessSessionStore` (in `app/lib/harness.ts`) is the read side of a backend:
@@ -374,8 +391,9 @@ offsets may interpret them approximately.
 
 ## Remaining migration
 
-1. Move Claude Code hooks and settings generation behind the adapter (the
-   validator stop hook still reads the native transcript it is handed).
+1. Hooks as Atlas policy: the Claude hooks (task gate, memory flush, context
+   loading) still carry Atlas logic in Claude's hook protocol. A second backend
+   needs the same policy, so it belongs in the coordinator with thin adapters.
 2. Move completion gates, pending input ownership and normalized event persistence
    into the Atlas coordinator. UI and memory readers consume Atlas data or history().
 3. Introduce Atlas host tools for delegation and persist agent relationships.
