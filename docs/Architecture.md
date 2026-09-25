@@ -2,6 +2,12 @@
 
 Atlas is a single-container system that turns Claude Code into a persistent, event-driven agent. This document provides a high-level component overview.
 
+Agent execution now goes through a modular Claude Code adapter. The existing
+runner uses its compatibility entry point to preserve prompts, tools, hooks and
+multi-turn behavior. A portable session/run API is available for the next stage
+of the migration. See [the harness interface](harness-interface.md) for ownership,
+model tiers, usage accounting and the remaining integration steps.
+
 ## System Overview
 
 ```

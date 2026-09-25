@@ -14,6 +14,8 @@ RUN bun install --frozen-lockfile
 # Copy source files: trigger-runner + lib imports (config.ts, db.ts, timezone.ts,
 # zoned-time.ts, trigger-socket.ts for socket/lock paths, web-ui-notify.ts for chat pings)
 COPY app/triggers/trigger-runner.ts ./triggers/
+COPY app/triggers/harness/ ./triggers/harness/
+COPY app/lib/harness.ts ./lib/
 COPY app/lib/config.ts ./lib/
 COPY app/lib/db.ts ./lib/
 COPY app/lib/timezone.ts ./lib/
@@ -127,7 +129,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   # --- Python packages (messaging addons + office skills: defusedxml/lxml power docx/pptx/xlsx unpack·pack·validate) ---
   && pip install --break-system-packages pyyaml html2text factur-x lxml defusedxml openpyxl pandas pillow pdf2image pdfplumber \
   # --- Claude Code CLI ---
-  && npm install -g @anthropic-ai/claude-code@2.1.220 \
+  && npm install -g @anthropic-ai/claude-code@2.1.282 \
   && claude --version \
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse \
@@ -182,6 +184,11 @@ COPY app/ /atlas/app/
 # Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/
 COPY app/defaults/skill-support/ /etc/claude-code/.claude/skill-support/
+# Office skills share one helper package. The links are created here instead of
+# being committed, because symlinked directories break some git-based file trees.
+RUN for skill in docx pptx xlsx; do \
+      ln -sfn ../../../skill-support/office /etc/claude-code/.claude/skills/$skill/scripts/office; \
+    done
 COPY app/defaults/agents/ /etc/claude-code/.claude/agents/
 COPY .claude/settings.json /atlas/app/.claude/settings.json
 COPY supervisord.conf /etc/supervisor/conf.d/atlas.conf
