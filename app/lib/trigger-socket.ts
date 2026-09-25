@@ -11,12 +11,21 @@ import { createHash } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { createConnection } from "net";
 
+/**
+ * Control messages instead of an injected message:
+ *   interrupt — stop the running turn;
+ *   retire    — hand (trigger, key) over to the next runner at once (socket and
+ *               lock are released), run `message` as the session's last turn
+ *               (the /new farewell), then exit.
+ */
+export type SocketControl = "interrupt" | "retire";
+
 /** Socket message protocol: newline-delimited JSON */
 export type SocketMessage = {
   message: string;
   channel: string;
   sessionKey: string;
-  control?: "interrupt"; // send instead of injecting a message
+  control?: SocketControl;
 };
 
 export type SocketAck = {
@@ -54,6 +63,14 @@ export function getLockPath(triggerName: string, sessionKey: string): string {
   return candidate;
 }
 
+/**
+ * PID file of a retiring runner (see SocketControl): it no longer holds the
+ * lock, but the kill switch must still find it.
+ */
+export function getRetiringPath(triggerName: string, sessionKey: string): string {
+  return `${getLockPath(triggerName, sessionKey)}.retiring`;
+}
+
 /** PID written to a lock file, or null when missing/unreadable. */
 export function readLockPid(path: string): number | null {
   try {
@@ -85,14 +102,14 @@ export async function trySocketInject(
   message: string,
   channel: string,
   sessionKey: string,
-  control?: "interrupt",
+  control?: SocketControl,
 ): Promise<boolean> {
   if (!existsSync(socketPath)) return false;
 
   return new Promise<boolean>((resolve) => {
     const client = createConnection(socketPath, () => {
       const payload: SocketMessage = control
-        ? { message: "", channel, sessionKey, control }
+        ? { message: control === "retire" ? message : "", channel, sessionKey, control }
         : { message, channel, sessionKey };
       client.write(JSON.stringify(payload) + "\n");
     });

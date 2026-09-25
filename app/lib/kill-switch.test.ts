@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { stopAllSessions } from "./kill-switch";
-import { getLockPath, isPidAlive } from "./trigger-socket";
+import { getLockPath, getRetiringPath, isPidAlive } from "./trigger-socket";
 
 const home = mkdtempSync(join(tmpdir(), "kill-switch-"));
 afterAll(() => rmSync(home, { recursive: true, force: true }));
@@ -44,6 +44,26 @@ describe("stopAllSessions", () => {
       runner.kill();
       try {
         unlinkSync(lock);
+      } catch {}
+    }
+  });
+
+  test("also kills a runner still finishing its farewell after /new (retiring, no lock)", async () => {
+    const key = `ks-retire-${process.pid}`;
+    const retiring = Bun.spawn(["bash", "-c", "exec -a trigger-runner-test sleep 30"]);
+    const path = getRetiringPath("kill-test", key);
+    writeFileSync(path, String(retiring.pid));
+    const d = db();
+    d.run("INSERT INTO trigger_runs (trigger_name, session_key, session_id) VALUES ('kill-test', ?, 'sid-old')", [key]);
+    try {
+      await Bun.sleep(100);
+      expect(stopAllSessions(d, home)).toEqual({ killed: 1, closed: 1 });
+      await retiring.exited;
+      expect(isPidAlive(retiring.pid)).toBe(false);
+    } finally {
+      retiring.kill();
+      try {
+        unlinkSync(path);
       } catch {}
     }
   });
