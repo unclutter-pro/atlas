@@ -149,7 +149,7 @@ export function openConversation(
     [Symbol.asyncIterator]: () => iterator,
     push(text: string) {
       if (!channel) throw harnessError("unsupported", "A single-turn conversation takes no further input");
-      channel.push(text);
+      return channel.push(text);
     },
     interrupt: async () => {
       await q.interrupt();

@@ -1695,9 +1695,12 @@ export async function main(): Promise<void> {
           injectionQueue.push(text);
         } else {
           // Between turns: trigger a new turn.
-          conversation.push(text);
-          inTurn = true;
-          beginTurn();
+          if (conversation.push(text)) {
+            inTurn = true;
+            beginTurn();
+          } else {
+            log.log(`Dropped message — conversation channel already closed for session ${sessionKey}`);
+          }
         }
         // Each new injected message gets a typing flash.
         sendTypingOnce();
@@ -1715,10 +1718,11 @@ export async function main(): Promise<void> {
             conversation.stop();
           }, RETIRE_TIMEOUT_MS);
           if (inTurn) pendingFarewell = message;
-          else {
-            conversation.push(message);
+          else if (conversation.push(message)) {
             inTurn = true;
             farewellRunning = true;
+          } else {
+            log.log(`Farewell dropped — conversation channel already closed for session ${sessionKey}`);
           }
           return;
         }
@@ -1776,7 +1780,9 @@ export async function main(): Promise<void> {
               `End-of-turn flush: ${leftover.length} queued message(s) → new turn`,
             );
             for (const text of leftover) {
-              conversation.push(text);
+              if (!conversation.push(text)) {
+                log.log(`Dropped queued message — conversation channel already closed for session ${sessionKey}`);
+              }
             }
             inTurn = true;
             beginTurn();
@@ -1786,10 +1792,14 @@ export async function main(): Promise<void> {
               log.log("Farewell done — exiting");
               conversation.stop();
             } else if (pendingFarewell !== null) {
-              conversation.push(pendingFarewell);
+              const farewell = pendingFarewell;
               pendingFarewell = null;
-              inTurn = true;
-              farewellRunning = true;
+              if (conversation.push(farewell)) {
+                inTurn = true;
+                farewellRunning = true;
+              } else {
+                log.log(`Farewell dropped — conversation channel already closed for session ${sessionKey}`);
+              }
             }
           }
           continue;

@@ -519,8 +519,8 @@ export type ConversationEvent =
 
 /** Single consumer. Iteration ends when the conversation is over. */
 export interface Conversation extends AsyncIterable<ConversationEvent> {
-  /** Queue a user message for the next turn (multi-turn only). */
-  push(text: string): void;
+  /** Queue a user message for the next turn (multi-turn only). Returns false without queuing if the conversation already ended. */
+  push(text: string): boolean;
   /** Stop the running turn; the conversation stays open for input. */
   interrupt(): Promise<void>;
   /** End now: drop pending input and release the backend. Idempotent. */

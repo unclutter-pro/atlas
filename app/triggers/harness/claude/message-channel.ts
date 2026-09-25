@@ -89,7 +89,9 @@ export function createMessageChannel(
     if (idleTimer) clearTimeout(idleTimer);
   }
 
-  function push(text: string, opts?: PushOptions) {
+  /** Returns false without queuing when the channel is already closed. */
+  function push(text: string, opts?: PushOptions): boolean {
+    if (closed) return false;
     const msg = buildUserMessage(text, opts);
     if (waiters.length > 0) {
       const waiter = waiters.shift()!;
@@ -98,6 +100,7 @@ export function createMessageChannel(
     } else {
       pending.push(msg);
     }
+    return true;
   }
 
   function close() {
