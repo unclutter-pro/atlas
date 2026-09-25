@@ -1859,12 +1859,9 @@ export async function main(): Promise<void> {
         }
       } catch (err) {
         if (handedOver) {
-          // (trigger, key) already belongs to the successor — nothing left
-          // to retry. Retrying here would delete the successor's session
-          // mapping and steal its socket.
+          // Retrying would delete the successor's mapping and steal its socket.
           log.log(`Resume failed after hand-over for session ${existingSession} — not retrying: ${err}`);
         } else {
-          // Resume failed — retry as fresh session
           log.log(
             `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
           );
