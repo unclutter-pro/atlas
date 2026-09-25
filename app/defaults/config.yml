@@ -76,12 +76,6 @@ web_ui:
   # that may reach the UI (DNS-rebinding guard), e.g. a Tailscale name:
   # allowed_hosts: ["atlas.example.ts.net"]
 
-failure_handling:
-  notification_command: "" # Shell command run once after threshold (e.g. "signal send '+1...' 'API unavailable'")
-  backoff_initial_seconds: 30
-  backoff_max_seconds: 900 # Cap at 15 minutes
-  notification_threshold_minutes: 30
-
 # Speech-to-Text (STT) service
 # Used for transcribing voice messages from Signal/WhatsApp.
 # Default sidecar: Parakeet (docker-compose.yml). Override for shared/external STT.

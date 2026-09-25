@@ -74,13 +74,6 @@ export interface WebUiConfig {
   allowed_hosts: string[];
 }
 
-export interface FailureHandlingConfig {
-  notification_command: string;
-  backoff_initial_seconds: number;
-  backoff_max_seconds: number;
-  notification_threshold_minutes: number;
-}
-
 export interface SttConfig {
   enabled: boolean;
   url: string;
@@ -131,7 +124,6 @@ export interface AtlasConfig {
   email: EmailConfig;
   daily_cleanup: DailyCleanupConfig;
   web_ui: WebUiConfig;
-  failure_handling: FailureHandlingConfig;
   stt: SttConfig;
   webhook: WebhookConfig;
   usage_reporting: UsageReportingConfig;
@@ -159,10 +151,6 @@ const DEFAULTS: AtlasConfig = {
   },
   daily_cleanup: { enabled: true, retention_days: 30, metrics_retention_days: 90 },
   web_ui: { port: 8080, bind: "127.0.0.1", allowed_hosts: [] },
-  failure_handling: {
-    notification_command: "", backoff_initial_seconds: 30,
-    backoff_max_seconds: 900, notification_threshold_minutes: 30,
-  },
   stt: { enabled: true, url: "http://stt:5092/v1/audio/transcriptions" },
   webhook: { relay_url: "https://webhooks.unclutter.pro" },
   usage_reporting: { enabled: false, webhook_url: "", webhook_secret: "", include_tokens: false },
@@ -232,10 +220,6 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_WEB_UI_PORT", path: "web_ui.port", type: "number" },
   { env: "ATLAS_WEB_UI_BIND", path: "web_ui.bind", type: "string" },
   { env: "ATLAS_WEB_UI_ALLOWED_HOSTS", path: "web_ui.allowed_hosts", type: "string[]" },
-  { env: "ATLAS_FAILURE_NOTIFICATION_COMMAND", path: "failure_handling.notification_command", type: "string" },
-  { env: "ATLAS_FAILURE_BACKOFF_INITIAL", path: "failure_handling.backoff_initial_seconds", type: "number" },
-  { env: "ATLAS_FAILURE_BACKOFF_MAX", path: "failure_handling.backoff_max_seconds", type: "number" },
-  { env: "ATLAS_FAILURE_NOTIFICATION_THRESHOLD", path: "failure_handling.notification_threshold_minutes", type: "number" },
   { env: "ATLAS_STT_ENABLED", path: "stt.enabled", type: "boolean" },
   { env: "ATLAS_STT_URL", aliases: ["STT_URL"], path: "stt.url", type: "string" },
   { env: "ATLAS_WEBHOOK_RELAY_URL", path: "webhook.relay_url", type: "string" },
