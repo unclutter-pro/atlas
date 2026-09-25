@@ -637,6 +637,14 @@ describe("Hook integration (unit level)", () => {
     expect(content).toContain("task-session.sh");
   });
 
+  test("task-session.sh resolves the task and reminder CLIs next to it", () => {
+    const script = `${REPO_APP_DIR}triggers/harness/claude/hooks/task-session.sh`;
+    const probe = Bun.spawnSync(["bash", "-c",
+      `SCRIPT_DIR="$(dirname "${script}")"; eval "$(grep '^TRIGGERS_DIR=' "${script}")"; ` +
+      `test -f "$TRIGGERS_DIR/manage-tasks.ts" && test -f "$TRIGGERS_DIR/manage-reminders.ts"`]);
+    expect(probe.exitCode).toBe(0);
+  });
+
   test("post-compact.sh exists", async () => {
     const { existsSync } = await import("fs");
     const appDir = resolveAppDir();
