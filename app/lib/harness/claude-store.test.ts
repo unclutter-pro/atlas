@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { ClaudeSessionStore, modelFamily } from "./claude-store.ts";
+import { ClaudeSessionStore } from "./claude-store.ts";
 import { configuredHarnessBackend, createSessionStore } from "./stores.ts";
 
 let home: string;
@@ -244,11 +244,67 @@ describe("usage", () => {
     expect(store.usage(ref("s1"), window)).toMatchObject({ inputTokens: 0, outputTokens: 0 });
   });
 
-  test("modelFamily prices unknown models as sonnet", () => {
-    expect(modelFamily("claude-opus-4-5")).toBe("opus");
-    expect(modelFamily("claude-haiku-3-5")).toBe("haiku");
-    expect(modelFamily("claude-3-5-sonnet-20241022")).toBe("sonnet");
-    expect(modelFamily("")).toBe("sonnet");
+  test("1-hour cache writes and fast mode use their own rates", () => {
+    write("s1", line({ type: "assistant", timestamp: "2026-01-01T10:00:10Z", message: { id: "m", model: "claude-opus-4-8", usage: {
+      input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 1_000_000,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 }, speed: "fast",
+    } } }));
+    // Opus 4.8: 1h write $10/MTok, fast mode 2x
+    expect(store.usage(ref("s1"), window).cost!.amount).toBeCloseTo(20, 9);
+  });
+});
+
+describe("listing and retention", () => {
+  const age = (file: string, seconds: number) => {
+    const t = new Date(Date.now() - seconds * 1000);
+    utimesSync(file, t, t);
+  };
+
+  test("list returns recently active sessions with their nested agents, least recent first", () => {
+    const old = write("old", user("old", "2026-01-01T10:00:00Z"));
+    age(old, 7200);
+    const recent = write("recent", user("recent", "2026-01-01T10:00:00Z"));
+    age(recent, 600);
+    const quiet = write("quiet", user("quiet", "2026-01-01T10:00:00Z"));
+    age(quiet, 7200);
+    mkdirSync(join(project, "quiet", "subagents"), { recursive: true });
+    writeFileSync(join(project, "quiet", "subagents", "agent-a1.jsonl"), user("sub", "2026-01-01T10:00:01Z", { isSidechain: true }));
+
+    const since = new Date(Date.now() - 3600_000).toISOString();
+    const listed = store.list({ activeSince: since });
+    expect(listed.map((s) => s.ref.nativeId)).toEqual(["recent", "quiet"]);
+    expect(listed[1]!.nestedAgents.map((a) => a.id)).toEqual(["agent-a1"]);
+  });
+
+  test("load reads a nested agent's history", async () => {
+    write("s1", user("main", "2026-01-01T10:00:00Z"));
+    mkdirSync(join(project, "s1", "subagents"), { recursive: true });
+    writeFileSync(join(project, "s1", "subagents", "agent-a1.jsonl"), user("sub task", "2026-01-01T10:00:01Z", { isSidechain: true }));
+    const read = await store.load(ref("s1"), { agent: "agent-a1" });
+    expect(read!.entries).toMatchObject([{ kind: "user-text", text: "sub task", nested: true }]);
+    expect(await store.load(ref("s1"), { agent: "missing" })).toBeNull();
+    expect(await store.load(ref("s1"), { agent: "../s1" })).toBeNull();
+  });
+
+  test("prune removes inactive sessions with their directory and keeps active ones", () => {
+    const stale = write("stale", user("x", "2026-01-01T10:00:00Z"));
+    mkdirSync(join(project, "stale", "subagents"), { recursive: true });
+    const staleSub = join(project, "stale", "subagents", "agent-a.jsonl");
+    writeFileSync(staleSub, "{}\n");
+    age(stale, 20 * 86400);
+    age(staleSub, 20 * 86400);
+    const busy = write("busy", user("x", "2026-01-01T10:00:00Z"));
+    age(busy, 20 * 86400);
+    mkdirSync(join(project, "busy", "subagents"), { recursive: true });
+    writeFileSync(join(project, "busy", "subagents", "agent-b.jsonl"), "{}\n");
+    mkdirSync(join(project, "memory"), { recursive: true });
+
+    const removed = store.prune({ inactiveBefore: new Date(Date.now() - 14 * 86400_000).toISOString() });
+    expect(removed).toBe(1);
+    expect(store.exists(ref("stale"))).toBe(false);
+    expect(existsSync(join(project, "stale"))).toBe(false);
+    expect(store.exists(ref("busy"))).toBe(true);
+    expect(existsSync(join(project, "memory"))).toBe(true);
   });
 });
 

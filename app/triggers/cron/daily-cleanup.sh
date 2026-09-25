@@ -14,13 +14,9 @@ SQL
   echo "[$(date)] DB pruned (30-day retention, 90-day metrics)"
 fi
 
-# Prune old JSONL session files (>14 days)
-# Dreaming runs at 03:00 and analyzes recent sessions, so by 06:00 they're consolidated.
-# 14-day window gives enough buffer for re-analysis if needed.
-CLAUDE_DIR="$HOME/.claude/projects"
-if [ -d "$CLAUDE_DIR" ]; then
-  DELETED=$(find "$CLAUDE_DIR" -name "*.jsonl" -mtime +14 -delete -print 2>/dev/null | wc -l)
-  echo "[$(date)] JSONL pruned: $DELETED files older than 14 days removed"
-fi
+# Prune agent sessions inactive for more than 14 days (through the backend's
+# session store). Dreaming runs at 03:00 and analyzes recent sessions, so by
+# 06:00 they're consolidated; 14 days leave room for re-analysis.
+echo "[$(date)] $(/atlas/app/bin/sessions --prune-days 14)"
 
 echo "[$(date)] Daily cleanup done" >> /atlas/logs/cleanup.log

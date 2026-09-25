@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { responseCost } from "../../lib/harness/claude-pricing";
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
@@ -215,7 +216,6 @@ plans.push({ trigger: "research", startMs: NOW - 7 * MIN, durationMs: 0, running
 plans.push({ trigger: "signal-chat", startMs: NOW - 40_000, durationMs: 0, running: true, noSessionYet: true });
 plans.sort((a, b) => a.startMs - b.startMs);
 
-const MODEL_PRICE: Record<string, [number, number]> = { opus: [15, 75], sonnet: [3, 15], haiku: [0.8, 4] };
 const triggerModel = (name: string) => TRIGGERS.find((t) => t.name === name)?.model_key ?? (TRIGGERS.find((t) => t.name === name)?.type === "cron" ? "sonnet" : "opus");
 
 const runCounts = new Map<string, { count: number; last: number }>();
@@ -273,13 +273,15 @@ for (const plan of plans) {
   if (plan.running || !sessionId) continue;
 
   const model = triggerModel(t.name);
-  const [pin, pout] = MODEL_PRICE[model] ?? MODEL_PRICE.sonnet!;
+  const modelId = `claude-${model}`;
   const turns = Math.max(1, Math.round(plan.durationMs / 12_000));
   const input = Math.round(between(800, 4000) * turns);
   const output = Math.round(between(150, 900) * turns);
   const cacheRead = Math.round(between(8_000, 30_000) * turns);
   const cacheCreate = Math.round(between(2_000, 12_000));
-  const cost = (input * pin + output * pout + cacheRead * pin * 0.1 + cacheCreate * pin * 1.25) / 1e6;
+  const cost = responseCost(modelId, {
+    input_tokens: input, output_tokens: output, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheCreate,
+  });
   insMetric.run("trigger", sessionId, t.name, isoTime(plan.startMs), isoTime(plan.startMs + plan.durationMs), plan.durationMs, input, output, cacheRead, cacheCreate, Number(cost.toFixed(6)), turns, plan.error ? 1 : 0, sqlTime(plan.startMs + plan.durationMs));
 
   writeTranscript(sessionId, plan, userText, plan.error ? pick(ERRORS) : null);

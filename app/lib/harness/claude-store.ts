@@ -5,12 +5,13 @@
  * SDK-free so the web UI can use it.
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync, watch } from "fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, watch } from "fs";
 import { join } from "path";
 import type {
   HistoryCursor, HistoryEntry, HistoryExcerpt, HistoryPosition, HarnessSessionStore, JsonValue,
-  SessionMetadata, SessionRef, UsageSummary,
+  SessionMetadata, SessionRef, StoredSession, UsageSummary,
 } from "../harness.ts";
+import { responseCost } from "./claude-pricing.ts";
 
 export const CLAUDE_BACKEND = "claude-code";
 
@@ -21,21 +22,6 @@ const NL = 0x0a;
 const READ_CHUNK = 1024 * 1024;
 const METADATA_TAIL_BYTES = 64 * 1024;
 const DEFAULT_LOAD_BYTES = 8 * 1024 * 1024;
-
-/** List prices per 1M tokens by model family, for estimated cost. */
-export const MODEL_PRICING: Record<string, { in: number; out: number; cacheRead: number; cacheCreate: number }> = {
-  opus: { in: 15.0, out: 75.0, cacheRead: 1.5, cacheCreate: 18.75 },
-  sonnet: { in: 3.0, out: 15.0, cacheRead: 0.3, cacheCreate: 3.75 },
-  haiku: { in: 1.0, out: 5.0, cacheRead: 0.1, cacheCreate: 1.25 },
-};
-
-/** Pricing tier of a model string (e.g. "claude-sonnet-4-5"). */
-export function modelFamily(model: string): keyof typeof MODEL_PRICING {
-  const m = model.toLowerCase();
-  if (m.includes("opus")) return "opus";
-  if (m.includes("haiku")) return "haiku";
-  return "sonnet";
-}
 
 // ---------------------------------------------------------------------------
 // Line format
@@ -287,20 +273,82 @@ export class ClaudeSessionStore implements HarnessSessionStore {
     return null;
   }
 
+  /** Nested agent transcripts of a session transcript, by agent id. */
+  private nestedFiles(transcript: string): Array<{ id: string; file: string }> {
+    const dir = join(transcript.slice(0, -".jsonl".length), "subagents");
+    try {
+      return readdirSync(dir)
+        .filter((entry) => entry.endsWith(".jsonl") && SESSION_ID_RE.test(entry.slice(0, -".jsonl".length)))
+        .map((entry) => ({ id: entry.slice(0, -".jsonl".length), file: join(dir, entry) }));
+    } catch {
+      return []; // No nested agents yet
+    }
+  }
+
   /** Transcript plus nested agent transcripts. */
   private files(ref: SessionRef): string[] {
     const transcript = this.transcriptPath(ref);
-    if (!transcript) return [];
-    const files = [transcript];
-    const nested = join(transcript.slice(0, -".jsonl".length), "subagents");
+    return transcript ? [transcript, ...this.nestedFiles(transcript).map((n) => n.file)] : [];
+  }
+
+  /** Every session transcript, with its project directory. */
+  private transcripts(): Array<{ id: string; file: string; dir: string }> {
+    const root = join(this.home, ".claude", "projects");
+    const out: Array<{ id: string; file: string; dir: string }> = [];
     try {
-      for (const entry of readdirSync(nested)) {
-        if (entry.endsWith(".jsonl")) files.push(join(nested, entry));
+      for (const project of readdirSync(root, { withFileTypes: true })) {
+        if (!project.isDirectory()) continue;
+        const dir = join(root, project.name);
+        for (const entry of readdirSync(dir)) {
+          const id = entry.slice(0, -".jsonl".length);
+          if (entry.endsWith(".jsonl") && SESSION_ID_RE.test(id)) out.push({ id, file: join(dir, entry), dir });
+        }
       }
+    } catch {}
+    return out;
+  }
+
+  private static mtime(file: string): number {
+    try {
+      return statSync(file).mtimeMs;
     } catch {
-      // No nested agents yet
+      return 0;
     }
-    return files;
+  }
+
+  list(options: { activeSince: string }): StoredSession[] {
+    const since = Date.parse(options.activeSince);
+    const out: Array<StoredSession & { ms: number }> = [];
+    for (const { id, file } of this.transcripts()) {
+      const nested = this.nestedFiles(file).map((n) => ({ id: n.id, ms: ClaudeSessionStore.mtime(n.file) }));
+      const ms = Math.max(ClaudeSessionStore.mtime(file), ...nested.map((n) => n.ms));
+      if (!ms || ms < since) continue;
+      out.push({
+        ref: { backend: this.backend, nativeId: id },
+        lastActivityAt: new Date(ms).toISOString(),
+        nestedAgents: nested.sort((a, b) => a.ms - b.ms).map((n) => ({ id: n.id, lastActivityAt: new Date(n.ms).toISOString() })),
+        ms,
+      });
+    }
+    return out.sort((a, b) => a.ms - b.ms).map(({ ms: _ms, ...session }) => session);
+  }
+
+  prune(options: { inactiveBefore: string }): number {
+    const before = Date.parse(options.inactiveBefore);
+    if (Number.isNaN(before)) return 0;
+    let removed = 0;
+    for (const { file } of this.transcripts()) {
+      const nested = this.nestedFiles(file);
+      const ms = Math.max(ClaudeSessionStore.mtime(file), ...nested.map((n) => ClaudeSessionStore.mtime(n.file)));
+      if (!ms || ms >= before) continue;
+      try {
+        // The session directory holds nested agents and tool-result spill files.
+        rmSync(file.slice(0, -".jsonl".length), { recursive: true, force: true });
+        rmSync(file, { force: true });
+        removed++;
+      } catch {}
+    }
+    return removed;
   }
 
   exists(ref: SessionRef): boolean {
@@ -353,9 +401,13 @@ export class ClaudeSessionStore implements HarnessSessionStore {
 
   async load(
     ref: SessionRef,
-    options: { window?: { from: string | null; to: string | null }; maxBytes?: number } = {},
+    options: { window?: { from: string | null; to: string | null }; maxBytes?: number; agent?: string } = {},
   ): Promise<HistoryExcerpt | null> {
-    const file = this.transcriptPath(ref);
+    const transcript = this.transcriptPath(ref);
+    if (!transcript) return null;
+    const file = options.agent === undefined
+      ? transcript
+      : this.nestedFiles(transcript).find((n) => n.id === options.agent)?.file;
     if (!file) return null;
     const window = options.window;
     const maxBytes = options.maxBytes ?? DEFAULT_LOAD_BYTES;
@@ -456,8 +508,7 @@ export class ClaudeSessionStore implements HarnessSessionStore {
         if (seen.has(message.id)) continue;
         seen.add(message.id);
 
-        const usage = message.usage as Record<string, number | undefined>;
-        const pricing = MODEL_PRICING[modelFamily(typeof message.model === "string" ? message.model : "")]!;
+        const usage = message.usage as Record<string, any>;
         const i = usage.input_tokens ?? 0;
         const o = usage.output_tokens ?? 0;
         const r = usage.cache_read_input_tokens ?? 0;
@@ -466,7 +517,7 @@ export class ClaudeSessionStore implements HarnessSessionStore {
         output += o;
         cacheRead += r;
         cacheWrite += w;
-        cost += (i * pricing.in + o * pricing.out + r * pricing.cacheRead + w * pricing.cacheCreate) / 1_000_000;
+        cost += responseCost(typeof message.model === "string" ? message.model : "", usage);
       }
     }
     return {

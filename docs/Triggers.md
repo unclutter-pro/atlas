@@ -295,7 +295,7 @@ Prompt:         Run a system health check (disk, memory, services).
 
 Nightly cognitive consolidation — inspired by how memory consolidation works during sleep. Runs a multi-phase process:
 
-1. **Session Replay** — Extracts the last 24h of Claude Code sessions using `extract-sessions.py` and hands each to a `session-analyzer` subagent (haiku, in parallel) for extraction
+1. **Session Replay** — Extracts the last 24h of agent sessions with the `sessions` tool and hands each to a `session-analyzer` subagent (haiku, in parallel) for extraction
 2. **Synthesis** — The consolidation session itself works out what the day *meant*: patterns across sessions and across days, user corrections, second-order consequences, open loops
 3. **Writing** — Journal entry (mandatory), then folding new knowledge into memory; the agent chooses the form, extends existing files over creating near-duplicates, and appends dated lines to playbooks rather than rewriting them
 4. **Reconciliation** — Verifies memory against external reality and supersedes outdated facts (`invalidated`, `superseded_by`) instead of overwriting them
@@ -306,15 +306,20 @@ Nightly cognitive consolidation — inspired by how memory consolidation works d
 - **Session Mode:** ephemeral
 - **Model:** `model_key='dreaming'` → `models.dreaming` (opus by default). The nightly synthesis is where reasoning depth pays off, and it runs offline once a day with no user waiting.
 - **Default prompt:** `app/defaults/triggers/dreaming/prompt.md`
-- **Session extractor:** `app/triggers/cron/extract-sessions.py`
+- **Session extractor:** `sessions` (`app/triggers/sessions.ts`)
 
 The workspace copy at `workspace/triggers/dreaming/prompt.md` is user-customizable. On upgrade, `init.sh` refreshes it only when it is byte-identical to the default previously shipped (tracked in `.prompt.shipped.md`); customized prompts are left untouched and the new default is logged instead.
 
-The session extractor (`extract-sessions.py`) parses JSONL session files, filtering out system messages and tool results to produce a condensed conversation summary within a configurable token budget:
+The session extractor reads sessions through the configured backend's session store (`HarnessSessionStore`, see [harness-interface.md](harness-interface.md#session-storage)), drops system messages and tool results, and produces a condensed conversation summary within a configurable token budget:
 
 ```bash
-python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --max-tokens 30000
+sessions --hours 24 --max-tokens 30000                      # extract for consolidation
+sessions --hours 24 --list --exclude-trigger dreaming       # index; last column is the session reference
+sessions --session <session>                                # one session, or <session>/<agent> for a nested agent
+sessions --prune-days 14                                    # retention (daily-cleanup)
 ```
+
+`--session` also accepts a transcript path, for dreaming prompts written against the earlier extractor.
 
 ## Managing Triggers
 
