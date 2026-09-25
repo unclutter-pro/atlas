@@ -37,6 +37,14 @@ function stubTaskGate(reason: string | null) {
   chmodSync(script, 0o755);
 }
 
+// Simulates a crash inside task-session.sh: neither "nothing open" (0) nor
+// "block" (2) — an exit code the gate was never meant to produce.
+function stubTaskGateCrash(code: number) {
+  const script = join(lifecycle, "task-session.sh");
+  writeFileSync(script, `#!/bin/bash\n[ "$1" = check ] && exit ${code}\nexit 0\n`);
+  chmodSync(script, 0o755);
+}
+
 function run(cmd: string[], env: Record<string, string> = {}, stdin = "") {
   const proc = Bun.spawnSync(cmd, {
     env: { PATH: process.env.PATH!, HOME: home, ...env },
@@ -74,6 +82,13 @@ describe("stop policy", () => {
     stubTaskGate("You have 1 open task(s).");
     expect(run([join(lifecycle, "stop.sh")], { ...trigger, ATLAS_TRIGGER_CHANNEL: "validator" })).toEqual({ code: 0, out: "" });
   });
+
+  test("blocks instead of allowing stop when task-session.sh check crashes with an unexpected exit code", () => {
+    stubTaskGateCrash(3);
+    const r = run([join(lifecycle, "stop.sh")], trigger);
+    expect(r.code).toBe(2);
+    expect(r.out).toContain("exit 3");
+  });
 });
 
 describe("Claude Stop hook", () => {
@@ -89,6 +104,31 @@ describe("Claude Stop hook", () => {
     const r = run([join(hooks, "stop.sh")], trigger, "{}");
     expect(r.code).toBe(0);
     expect(r.out).toContain("JOURNAL REMINDER");
+  });
+
+  test("still blocks if jq is unavailable to render the decision JSON", () => {
+    stubTaskGate("You have 1 open task(s).");
+    // A PATH with no jq on it at all.
+    const binDir = join(root, "bin-no-jq");
+    mkdirSync(binDir);
+    for (const bin of ["bash", "cat", "date", "ls", "grep", "sed", "bun", "dirname"]) {
+      const real = Bun.spawnSync(["which", bin]).stdout.toString().trim();
+      if (real) writeFileSync(join(binDir, bin), `#!/bin/bash\nexec ${real} "$@"\n`), chmodSync(join(binDir, bin), 0o755);
+    }
+    const r = run([join(hooks, "stop.sh")], { ...trigger, PATH: binDir }, "{}");
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).decision).toBe("block");
+  });
+
+  test("still blocks if jq itself fails", () => {
+    stubTaskGate("You have 1 open task(s).");
+    const binDir = join(root, "bin-broken-jq");
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, "jq"), "#!/bin/bash\nexit 1\n");
+    chmodSync(join(binDir, "jq"), 0o755);
+    const r = run([join(hooks, "stop.sh")], { ...trigger, PATH: `${binDir}:${process.env.PATH}` }, "{}");
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).decision).toBe("block");
   });
 });
 

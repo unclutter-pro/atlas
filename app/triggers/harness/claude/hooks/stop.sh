@@ -16,7 +16,11 @@ fi
 CODE=0
 OUTPUT=$("$LIFECYCLE_DIR/stop.sh" </dev/null) || CODE=$?
 if [ "$CODE" -eq 2 ]; then
-  jq -n --arg reason "$OUTPUT" '{decision: "block", reason: $reason}'
+  DECISION=$(jq -n --arg reason "$OUTPUT" '{decision: "block", reason: $reason}' 2>&1) || {
+    echo "ERROR: jq failed to render the block decision ($DECISION) — blocking with a fixed reason instead" >&2
+    DECISION='{"decision": "block", "reason": "Session end blocked: the task gate reported open work, but jq failed to render the reason. Run `task list` and `task goal list` to check before ending the session."}'
+  }
+  echo "$DECISION"
 elif [ -n "$OUTPUT" ]; then
   echo "$OUTPUT"
 fi

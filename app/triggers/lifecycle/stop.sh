@@ -24,6 +24,10 @@ if [ -n "${ATLAS_TRIGGER:-}" ] && [ -n "${ATLAS_TRIGGER_SESSION_KEY:-}" ]; then
   if [ "$CODE" -eq 2 ] && [ -n "$REASON" ]; then
     echo "$REASON"
     exit 2
+  elif [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
+    echo "ERROR: task-session.sh check exited $CODE (expected 0 or 2) — blocking stop instead of treating it as no open work" >&2
+    echo "The task gate failed unexpectedly (exit $CODE) instead of confirming that no goals or tasks are open. Blocking to be safe — check manually with \`task list\` and \`task goal list\`."
+    exit 2
   fi
 fi
 
