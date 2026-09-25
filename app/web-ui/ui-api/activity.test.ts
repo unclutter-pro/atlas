@@ -66,7 +66,7 @@ describe("pure helpers", () => {
     const base = (id: string, at: string) => ({ id, at, nested: false });
     const entries = toTranscriptEntries([
       { ...base("u:0", "2026-01-01T00:00:00Z"), kind: "user-text", text: "do it" },
-      { ...base("a:0", "2026-01-01T00:00:01Z"), kind: "tool-call", callId: "t1", name: "Bash", input: { command: "ls" } },
+      { ...base("a:0", "2026-01-01T00:00:01Z"), kind: "tool-call", callId: "t1", name: "Bash", input: { command: "ls" }, messageId: "m" },
       { ...base("r:0", "2026-01-01T00:00:02Z"), kind: "tool-result", callId: "t1", content: "boom", isError: true },
       { ...base("r2:0", "2026-01-01T00:00:02Z"), kind: "tool-result", callId: "unknown", content: "orphan", isError: false },
       { ...base("b:0", "2026-01-01T00:00:03Z"), kind: "assistant-text", text: "failed", messageId: "m" },

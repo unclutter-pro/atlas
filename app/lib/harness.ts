@@ -329,8 +329,20 @@ export type HistoryEntry = {
        */
       messageId: string | null;
     }
-  | { kind: "reasoning"; text: string }
-  | { kind: "tool-call"; callId: string | null; name: string; input: JsonValue }
+  | {
+      kind: "reasoning";
+      text: string;
+      /** Same correlation as assistant-text's messageId: groups this block with its assistant message. */
+      messageId: string | null;
+    }
+  | {
+      kind: "tool-call";
+      callId: string | null;
+      name: string;
+      input: JsonValue;
+      /** Same correlation as assistant-text's messageId: groups this block with its assistant message. */
+      messageId: string | null;
+    }
   | { kind: "tool-result"; callId: string | null; content: string; isError: boolean }
 );
 

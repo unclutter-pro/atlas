@@ -91,6 +91,20 @@ describe("sessions CLI", () => {
     expect(missing.err).toContain("Session not found");
   });
 
+  test("consecutive tool-only assistant messages are separate turns, not merged into one", async () => {
+    session("toolonly-1",
+      user("Do three things"),
+      assistant("t1", [{ type: "tool_use", id: "c1", name: "Read", input: { file_path: "/a.txt" } }]),
+      assistant("t2", [{ type: "tool_use", id: "c2", name: "Write", input: { file_path: "/b.txt" } }]),
+      assistant("t3", [{ type: "tool_use", id: "c3", name: "Bash", input: { command: "ls" } }]),
+    );
+    const { code, out } = await run("--session", "toolonly-1");
+    expect(code).toBe(0);
+    expect(out).toContain("Turns: 4");
+    const toolLines = out.split("\n").filter((l) => l.startsWith("  🔧 "));
+    expect(toolLines).toEqual(["  🔧 Read", "  🔧 Write", "  🔧 Bash"]);
+  });
+
   test("the extract lists main sessions in detail, nested agents condensed, and tool totals", async () => {
     seed();
     const { out } = await run("--hours", "24", "--exclude-trigger", "dreaming");

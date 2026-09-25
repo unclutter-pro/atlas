@@ -90,13 +90,14 @@ function entriesOf(obj: Line, offset: number): HistoryEntry[] {
       if (block.type === "text" && typeof block.text === "string" && block.text) {
         out.push({ ...base(i), kind: "assistant-text", text: block.text, messageId });
       } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
-        out.push({ ...base(i), kind: "reasoning", text: block.thinking });
+        out.push({ ...base(i), kind: "reasoning", text: block.thinking, messageId });
       } else if (block.type === "tool_use") {
         out.push({
           ...base(i), kind: "tool-call",
           callId: typeof block.id === "string" && block.id ? block.id : null,
           name: typeof block.name === "string" && block.name ? block.name : "tool",
           input: (block.input ?? {}) as JsonValue,
+          messageId,
         });
       }
     });
@@ -337,7 +338,7 @@ export class ClaudeSessionStore implements HarnessSessionStore {
     const before = Date.parse(options.inactiveBefore);
     if (Number.isNaN(before)) return 0;
     let removed = 0;
-    for (const { file } of this.transcripts()) {
+    for (const { id, file } of this.transcripts()) {
       const nested = this.nestedFiles(file);
       const ms = Math.max(ClaudeSessionStore.mtime(file), ...nested.map((n) => ClaudeSessionStore.mtime(n.file)));
       if (!ms || ms >= before) continue;
@@ -346,7 +347,11 @@ export class ClaudeSessionStore implements HarnessSessionStore {
         rmSync(file.slice(0, -".jsonl".length), { recursive: true, force: true });
         rmSync(file, { force: true });
         removed++;
-      } catch {}
+      } catch (err) {
+        // Best-effort cleanup: skip and keep pruning, but name the session so a
+        // permanently failing removal (permissions, busy file) is not invisible.
+        console.error(`Prune failed for session ${id}: ${(err as Error).message}`);
+      }
     }
     return removed;
   }
