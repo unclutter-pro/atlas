@@ -360,7 +360,8 @@ deployment. `app/triggers/harness/configure.ts` runs it at container start
 plugins, attribution), the skill and agent directories and their installs from
 `ATLAS_DEFAULT_SKILLS_DIR` / `ATLAS_DEFAULT_AGENTS_DIR`. Model aliases in Atlas
 config (`opus`, `sonnet`, `haiku`, `fable`) resolve to current model IDs in the
-adapter (`harness/claude/models.ts`), not in Atlas config.
+adapter (`harness/claude/models.ts`: Opus 5.5, Sonnet 5, Haiku 4.5, Fable 5.1),
+not in Atlas config.
 
 Prompts and skills are shared across backends. The shared system prompt names
 concepts: delegate to the `memory-searcher` agent, a general-purpose subagent

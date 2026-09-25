@@ -21,11 +21,11 @@ describe("modelPrice", () => {
     expect(modelPrice("us.anthropic.claude-sonnet-5")).toMatchObject({ input: 2 });
     expect(modelPrice("anthropic.claude-opus-4-1-20250805-v1:0")).toMatchObject({ input: 15 });
     expect(modelPrice("claude-opus-4-5@20251101")).toMatchObject({ input: 5 });
-    expect(modelPrice("claude-opus-4-50")).toMatchObject({ input: 5, output: 25 }); // unknown → family fallback
+    expect(modelPrice("claude-opus-4-50")).toMatchObject({ input: 4, output: 20 }); // unknown → family fallback (Opus 5.5)
   });
 
   test("unknown IDs fall back to their family's current model, else Sonnet", () => {
-    expect(modelPrice("claude-opus-9")).toMatchObject({ input: 5 });
+    expect(modelPrice("claude-opus-9")).toMatchObject({ input: 4 });
     expect(modelPrice("claude-haiku-7")).toMatchObject({ input: 1 });
     expect(modelPrice("<synthetic>")).toMatchObject({ input: 2 });
   });

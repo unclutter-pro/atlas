@@ -48,7 +48,7 @@ export const MODEL_PRICES: ReadonlyArray<readonly [id: string, price: ModelPrice
 const FAMILY_FALLBACK: ReadonlyArray<readonly [keyword: string, id: string]> = [
   ["fable", "claude-fable-5-1"],
   ["mythos", "claude-mythos-5-1"],
-  ["opus", "claude-opus-5"],
+  ["opus", "claude-opus-5-5"],
   ["haiku", "claude-haiku-4-5"],
   ["sonnet", "claude-sonnet-5"],
 ];
