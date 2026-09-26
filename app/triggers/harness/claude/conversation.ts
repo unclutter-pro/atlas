@@ -11,7 +11,7 @@ import type {
 import { CLAUDE_BACKEND } from "../../../lib/harness/claude-store.ts";
 import { harnessError } from "../../../lib/harness/errors.ts";
 import { createMessageChannel } from "./message-channel.ts";
-import { object } from "./normalize.ts";
+import { isSubagentHook, object } from "./normalize.ts";
 import { atlasQueryOptions } from "./options.ts";
 import { runUsage, ZERO_COST, type CostSnapshot } from "./usage.ts";
 
@@ -74,7 +74,8 @@ export function openConversation(
   channel?.push(request.prompt);
   const { nextToolContext } = request;
   const hooks: Options["hooks"] | undefined = nextToolContext ? {
-    PostToolBatch: [{ hooks: [async () => {
+    PostToolBatch: [{ hooks: [async (hookInput) => {
+      if (isSubagentHook(hookInput)) return {};
       const context = nextToolContext();
       return context ? {
         hookSpecificOutput: { hookEventName: "PostToolBatch" as const, additionalContext: context },

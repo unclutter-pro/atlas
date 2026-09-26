@@ -124,6 +124,37 @@ describe("Claude HarnessBackend contract", () => {
     expect(await run.steer(input("late"))).toEqual({ status: "rejected", reason: "run-ended" });
   });
 
+  test("PostToolBatch ignores a subagent's batch: steering is neither delivered nor marked applied by it", async () => {
+    let next!: () => void;
+    const boundary = new Promise<void>((r) => { next = r; });
+    let subagentContext: unknown;
+    let parentContext: unknown;
+    const sdk = mockSdk(async function* ({ options }) {
+      const sid = options!.sessionId!;
+      yield assistant(sid);
+      await boundary;
+      const hook = options!.hooks!.PostToolBatch![0].hooks[0];
+      const opts = { signal: new AbortController().signal };
+      subagentContext = await hook({ agent_id: "sub-1", agent_type: "general-purpose" } as any, undefined, opts);
+      parentContext = await hook({} as any, undefined, opts);
+      yield assistant(sid, "msg-2");
+      yield result(sid);
+    });
+    const session = await new ClaudeCodeBackend({ query: sdk.factory }).create(spec, bindings);
+    const run = session.run({ runId: "r", input: [input()] });
+    await Bun.sleep(1);
+    expect(await run.steer(input("steer"))).toEqual({ status: "accepted" });
+    next();
+    const finished = await run.finished;
+    // Bug: if the subagent's firing drained `steering`, this would already carry the content.
+    expect(subagentContext).toEqual({});
+    // The message wasn't dropped: the parent's own firing still delivers it.
+    expect(parentContext).toEqual({
+      hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "Hello" },
+    });
+    expect(finished.appliedInputIds).toEqual(["input-1", "steer"]);
+  });
+
   test("unused steering remains unapplied at the last boundary", async () => {
     let next!: () => void;
     const boundary = new Promise<void>((r) => { next = r; });
