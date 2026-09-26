@@ -2,7 +2,7 @@
 /**
  * Sync crontab from database triggers + static defaults.
  * Run after any trigger create/update/delete.
- * supercronic auto-detects file changes.
+ * Writes in place so supercronic's -inotify watch survives and reloads.
  */
 import { Database } from "bun:sqlite";
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
