@@ -1,7 +1,13 @@
+import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentMessage, MessagePart, UsageReport, UsageSummary } from "../../../lib/harness.ts";
 
 export function object(value: unknown): Record<string, any> {
   return value && typeof value === "object" ? value as Record<string, any> : {};
+}
+
+/** PostToolBatch also fires for a subagent's own batches; injected context must reach the parent loop only. */
+export function isSubagentHook(input: HookInput): boolean {
+  return !!input.agent_id;
 }
 
 const number = (value: unknown): number | null =>

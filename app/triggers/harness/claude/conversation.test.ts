@@ -76,6 +76,24 @@ test("existing direct and persistent SDK options preserve prompt, tools, setting
   chat.stop();
 });
 
+test("PostToolBatch ignores a subagent's batch, leaving queued context for the parent's own firing", async () => {
+  const sdk = fakeSdk();
+  let queued: string | undefined = "steering message";
+  const conversation = openConversation({
+    prompt: "hi", systemPrompt: "s", model: "m", cwd: "/w", turns: "multi", idleTimeoutMs: 50,
+    nextToolContext: () => { const value = queued; queued = undefined; return value; },
+  }, sdk.factory);
+  const hook = sdk.calls[0]!.options!.hooks!.PostToolBatch![0]!.hooks[0]!;
+  const opts = { signal: new AbortController().signal };
+  // A subagent's tool batch resolving must not drain or deliver the queued context.
+  expect(await hook({ agent_id: "sub-1", agent_type: "general-purpose" } as any, undefined, opts)).toEqual({});
+  // The parent's own batch resolving still finds the message intact.
+  expect(await hook({} as any, undefined, opts)).toEqual({
+    hookSpecificOutput: { hookEventName: "PostToolBatch", additionalContext: "steering message" },
+  });
+  conversation.stop();
+});
+
 test("SDK messages become session, message, text.delta and turn.finished events", async () => {
   const events = await collect([
     { type: "system", subtype: "init", session_id: "s1" },

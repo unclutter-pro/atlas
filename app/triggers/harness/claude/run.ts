@@ -2,7 +2,7 @@ import { type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { AgentEvent, AgentInput, AgentMessage, HarnessRun, RunOutcome, RunResult, SessionRef, SessionSpec } from "../../../lib/harness.ts";
 import { EventQueue } from "../events.ts";
 import { describeError, harnessError } from "../../../lib/harness/errors.ts";
-import { emptyUsage, MessageAccumulator, normalizeUsage, object } from "./normalize.ts";
+import { emptyUsage, isSubagentHook, MessageAccumulator, normalizeUsage, object } from "./normalize.ts";
 import { atlasQueryOptions } from "./options.ts";
 import type { QueryFactory } from "./conversation.ts";
 import { NATIVE_TOOLS } from "./policy.ts";
@@ -69,7 +69,8 @@ export function startClaudeRun(
           ...options, ...(resume ? {} : { sessionId: ref.nativeId }), env,
           tools: [...new Set(spec.nativeTools.flatMap((capability) => NATIVE_TOOLS[capability]))],
           strictMcpConfig: true, mcpServers: {},
-          hooks: { PostToolBatch: [{ hooks: [async () => {
+          hooks: { PostToolBatch: [{ hooks: [async (hookInput) => {
+            if (isSubagentHook(hookInput)) return {};
             const pending = steering.splice(0);
             if (!pending.length) return {};
             awaitingApplication.push(...pending.map((input) => input.id));
