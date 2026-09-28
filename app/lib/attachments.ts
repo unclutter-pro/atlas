@@ -175,3 +175,19 @@ export function attachmentExists(attachment: Attachment): boolean {
 export function attachmentUrl(id: string): string {
   return `/api/v1/attachments/${id}`;
 }
+
+const INLINE_MIME_RE = /^(audio|video)\/|^image\/(png|jpeg|gif|webp)$|^application\/pdf$|^text\/plain$/;
+
+/** Response headers for streaming an attachment back to a browser. The stored
+ *  mime type is whatever the uploader declared, so only inert media types may
+ *  render inline; anything else (html, svg, …) downloads as an opaque blob. */
+export function attachmentResponseHeaders(attachment: Attachment): Record<string, string> {
+  const inline = INLINE_MIME_RE.test(attachment.mime_type);
+  const name = attachment.file_name.replace(/["\\\r\n]/g, "");
+  return {
+    "Content-Type": inline ? attachment.mime_type : "application/octet-stream",
+    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${name}"`,
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "private, max-age=3600",
+  };
+}

@@ -39,7 +39,7 @@ import { legacyChatStream, legacyMessagesResponse } from "./ui-api/chat/legacy";
 import { notifyAllChats } from "./ui-api/chat/hub";
 import { resolveConfig, redactConfig, getConfigSources } from "../lib/config";
 import { pauseAtlas, resumeAtlas, stopAllSessions, getControlStatus, isAtlasPaused } from "../lib/kill-switch";
-import { getAttachment, attachmentDiskPath, attachmentExists, attachmentUrl } from "../lib/attachments";
+import { getAttachment, attachmentDiskPath, attachmentExists, attachmentResponseHeaders, attachmentUrl } from "../lib/attachments";
 import { fireTrigger, paths, syncCrontab, trySpawnSync } from "./ui-api/shared/env";
 
 // --- Config ---
@@ -510,12 +510,7 @@ api.get("/attachments/:id", async (c) => {
   const path = attachmentDiskPath(a);
   const file = Bun.file(path);
   return new Response(file, {
-    headers: {
-      "Content-Type": a.mime_type,
-      "Content-Length": String(a.file_size),
-      "Content-Disposition": `inline; filename="${a.file_name.replace(/"/g, "")}"`,
-      "Cache-Control": "private, max-age=3600",
-    },
+    headers: { ...attachmentResponseHeaders(a), "Content-Length": String(a.file_size) },
   });
 });
 
