@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readStoredToken } from "../../../lib/harness/claude/auth.ts";
 
 /**
  * Process-level preparation before a Claude Code session starts.
@@ -8,9 +9,15 @@ import { join } from "node:path";
  *   process.env to the CLI, which would then treat the session as nested.
  * - Remote MCP connectors (claude.ai) hang on startup. The CLI reads the
  *   switch from its feature cache in ~/.claude.json.
+ * - A long-lived token created in the web UI reaches the CLI as
+ *   CLAUDE_CODE_OAUTH_TOKEN, unless the container environment sets one.
  */
 export function prepareClaudeEnvironment(home: string): void {
   delete process.env.CLAUDECODE;
+  if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    const stored = readStoredToken(home);
+    if (stored) process.env.CLAUDE_CODE_OAUTH_TOKEN = stored.token;
+  }
   const file = join(home, ".claude.json");
   if (!existsSync(file)) return;
   try {

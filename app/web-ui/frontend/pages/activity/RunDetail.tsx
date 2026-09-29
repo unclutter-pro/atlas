@@ -1,11 +1,12 @@
 /** /activity/:id — one trigger run: outcome, cause, transcript, metrics. */
 
 import { useEffect, useState } from "react";
-import { useApi } from "../../api";
-import { ApiView, ButtonLink, Card, CodeBlock, DataTable, Duration, KeyValue, Money, NotFound, PageHeader, Section, Stat, StatGrid, Time, formatDuration, formatMoney, prettyJson, OutcomeBadge } from "../../components";
+import { apiPost, useApi, useMutation } from "../../api";
+import { Alert, ApiView, Button, ButtonLink, Card, CodeBlock, DataTable, Duration, KeyValue, Money, NotFound, PageHeader, Section, Stat, StatGrid, Time, formatDuration, formatMoney, prettyJson, OutcomeBadge } from "../../components";
 import { links } from "../../links";
-import { Link, type Params } from "../../router";
-import type { RunDetailResponse, RunSummary } from "../../../ui-api/activity";
+import { Link, navigate, type Params } from "../../router";
+import { useStatus } from "../../shell/status";
+import type { RetryResponse, RunDetailResponse, RunSummary } from "../../../ui-api/activity";
 import { CauseTag, MessageCard, MetricsList, causeLabel } from "./shared";
 import { TranscriptView } from "./Transcript";
 
@@ -26,6 +27,13 @@ function RunView(props: { d: RunDetailResponse }) {
   const { d } = props;
   const r = d.run;
   const tone = r.outcome === "failed" ? "error" : r.outcome === "running" ? "running" : "ok";
+  const auth = useStatus().data?.auth;
+  const loginBroken = !!auth && auth.state !== "ok" && auth.state !== "expiring";
+  const [retried, setRetried] = useState<RetryResponse | null>(null);
+  // A new run opens directly; one that went into a live session has no page of its own.
+  const retry = useMutation(() => apiPost<RetryResponse>(`/ui/api/activity/runs/${r.id}/retry`, {}), {
+    onSuccess: (res) => (res.runId !== null ? navigate(links.run(res.runId)) : setRetried(res)),
+  });
   return (
     <>
       <PageHeader
@@ -46,6 +54,11 @@ function RunView(props: { d: RunDetailResponse }) {
               </ButtonLink>
             )}
             {d.trigger.exists && <ButtonLink href={links.trigger(r.triggerName)}>Trigger settings</ButtonLink>}
+            {r.outcome === "failed" && d.trigger.exists && (
+              <Button variant="primary" pending={retry.pending} onClick={() => retry.run()} title="Run the trigger again with the same payload and session key">
+                Retry
+              </Button>
+            )}
           </>
         }
       />
@@ -57,9 +70,22 @@ function RunView(props: { d: RunDetailResponse }) {
         <Stat label="Turns" value={d.metrics?.numTurns ?? "—"} />
       </StatGrid>
 
+      {retry.error && <Alert tone="error">Retry failed: {retry.error}</Alert>}
+      {retried && (
+        <Alert tone="ok">
+          Retry started. No new run appeared yet; the payload may have gone into a session that was still running.{" "}
+          <Link href={links.activity({ trigger: r.triggerName })}>Show activity of {r.triggerName}</Link>
+        </Alert>
+      )}
+
       {r.outcome === "failed" && (
         <Card tone="error" title="Why it failed">
           {d.error ? <div className="activity-pre">{d.error}</div> : <span className="muted">The session reported an error, but its transcript has no final message.</span>}
+          {loginBroken && (
+            <Alert tone="warn">
+              {auth!.summary}. <Link href={links.settings("login")}>Log in again</Link> before retrying, or the retry fails the same way.
+            </Alert>
+          )}
         </Card>
       )}
 

@@ -72,4 +72,4 @@ export interface UsageFilter extends QueryPatch {
   type?: string;
 }
 
-export type SettingsSection = "personality" | "integrations" | "configuration" | "secrets" | "extensions";
+export type SettingsSection = "personality" | "login" | "integrations" | "configuration" | "secrets" | "extensions";

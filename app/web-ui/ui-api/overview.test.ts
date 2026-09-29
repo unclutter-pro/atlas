@@ -35,7 +35,7 @@ describe("GET /ui/api/overview", () => {
     expect(Array.isArray(data.upcoming)).toBe(true);
     expect(Array.isArray(data.waiting)).toBe(true);
     expect(Object.keys(data.attention).sort()).toEqual(
-      ["failedRuns", "failedRunsTotal", "integrationsDown", "invalidSchedules", "overdueReminders", "stuckRuns", "volumesFull", "webhookFailures"].sort(),
+      ["failedRuns", "failedRunsTotal", "integrationsDown", "invalidSchedules", "login", "overdueReminders", "stuckRuns", "volumesFull", "webhookFailures"].sort(),
     );
     for (const u of data.upcoming) expect(u.at).toMatch(/Z$/);
     for (const r of data.running) if (r.startedAt) expect(r.startedAt).toMatch(/Z$/);

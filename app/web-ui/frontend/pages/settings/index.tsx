@@ -1,6 +1,6 @@
 /**
  * Settings — "How is Atlas set up?"
- * Sections: personality, integrations, configuration, secrets, extensions.
+ * Sections: personality, login, integrations, configuration, secrets, extensions.
  * Server side: ui-api/settings.ts.
  */
 
@@ -11,12 +11,14 @@ import { Redirect, Routes, type Params } from "../../router";
 import Configuration from "./Configuration";
 import Extensions from "./Extensions";
 import Integrations from "./Integrations";
+import Login from "./Login";
 import Personality from "./Personality";
 import Secrets from "./Secrets";
 import "./settings.css";
 
 const SECTIONS: { key: SettingsSection; label: string; component: ComponentType }[] = [
   { key: "personality", label: "Personality", component: Personality },
+  { key: "login", label: "Login", component: Login },
   { key: "integrations", label: "Integrations", component: Integrations },
   { key: "configuration", label: "Configuration", component: Configuration },
   { key: "secrets", label: "Secrets", component: Secrets },

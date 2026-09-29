@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { AuthState } from "../../../lib/harness/auth";
 import type { HealthState } from "../../ui-api/shared/integrations";
 
 export type Status = "ok" | "warn" | "error" | "idle" | "running";
@@ -35,6 +36,33 @@ export function healthBadge(state: HealthState): { status: Status; label: string
     case "not_configured":
       return { status: "idle", label: "Not configured" };
   }
+}
+
+/** Login state of the agent backend → badge status + label. */
+export function authBadge(state: AuthState): { status: Status; label: string } {
+  switch (state) {
+    case "ok":
+      return { status: "ok", label: "Logged in" };
+    case "expiring":
+      return { status: "warn", label: "Expiring" };
+    case "expired":
+      return { status: "error", label: "Expired" };
+    case "failed":
+      return { status: "error", label: "Rejected" };
+    case "missing":
+      return { status: "error", label: "Not logged in" };
+  }
+}
+
+/** Small key glyph for login state; inherits the text color. */
+export function KeyIcon(props: { title?: string }) {
+  return (
+    <svg className="key-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden={props.title ? undefined : true} role={props.title ? "img" : undefined}>
+      {props.title && <title>{props.title}</title>}
+      <circle cx="5" cy="11" r="3" />
+      <path d="M7.2 8.8 14 2M11.5 4.5l2 2M9.8 6.2l1.5 1.5" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 /**

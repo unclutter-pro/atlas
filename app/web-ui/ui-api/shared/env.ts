@@ -9,7 +9,8 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { getDb } from "../../../lib/atlas-db";
 import type { HarnessSessionStore, SessionRef } from "../../../lib/harness";
-import { createSessionStore } from "../../../lib/harness/stores";
+import type { HarnessAuth } from "../../../lib/harness/auth";
+import { createHarnessAuth, createSessionStore } from "../../../lib/harness/stores";
 
 export { getDb };
 
@@ -23,6 +24,11 @@ export function home(): string {
  */
 export function sessionStore(): HarnessSessionStore {
   return createSessionStore({ home: home() });
+}
+
+/** Login handling of the configured agent backend; null when it has none. */
+export function harnessAuth(): HarnessAuth | null {
+  return createHarnessAuth({ home: home(), db: getDb() });
 }
 
 /** Reference of a persisted session ID that has stored history, else null. */

@@ -18,11 +18,13 @@ The Web-UI is available at http://localhost:8080.
 
 ## OAuth Login (One-Time)
 
+Open Settings > Login in the Web-UI (see [web-ui.md](web-ui.md#agent-login)), or from a terminal:
+
 ```bash
 docker run -it --rm -v $(pwd)/volume:/home/agent atlas claude login
 ```
 
-This stores credentials in `volume/.claude/` for persistence across restarts.
+Both store credentials in `volume/.claude/` for persistence across restarts.
 
 ## View Logs
 

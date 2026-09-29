@@ -31,18 +31,18 @@ Every area answers one question. Pages put state first, then what needs attentio
 | System | Storage | `/storage/*` | What is on disk, and how full is it? |
 | System | Settings | `/settings/*` | How is Atlas set up? |
 
-A status strip sits on top of every page: Active or Paused, how many runs are running (links to Activity), integrations that are down, and the kill switch. **Pause** stops new trigger runs, **Resume** re-enables them, and **Stop** kills all running sessions and pauses. Stop asks for confirmation first.
+A status strip sits on top of every page: Active or Paused, how many runs are running (links to Activity), the agent login (a key with the days left while it works, a badge when it expires within 30 days or needs a new login), integrations that are down, and the kill switch. **Pause** stops new trigger runs, **Resume** re-enables them, and **Stop** kills all running sessions and pauses. Stop asks for confirmation first.
 
 ### Areas
 
-- **Overview** (`/`): headline state, a "Needs attention" list (integrations down, stuck runs, failed runs in the last 24h, overdue reminders, cron schedules that never run, failing usage webhooks), running runs, what fires next (cron triggers and pending reminders), and today's runs, failures, cost and inbound messages.
+- **Overview** (`/`): headline state, a "Needs attention" list (a login that is expiring, expired or rejected, integrations down, stuck runs, failed runs in the last 24h, overdue reminders, cron schedules that never run, failing usage webhooks), running runs, what fires next (cron triggers and pending reminders), and today's runs, failures, cost and inbound messages.
 - **Chat**: web chats with the agent (trigger `web-chat`, one Claude session per chat).
   - `/chat/:key` shows one chat: a sidebar with the chats grouped by Today, Yesterday and Earlier, search, archived chats, rename, archive and delete; a header with the title, run state ("Starting", "Working · m:ss"), cost, run count, **Stop turn** and a link to the session in Activity; the conversation with markdown replies, collapsed thinking, tool calls with input and result, and live streamed text; a composer with voice recording where the browser supports it.
   - `/chat` opens the last chat used in this browser, else the newest one, else `_default`. The old `/chat?session=<key>` and `?sessionKey=<key>` URLs redirect to `/chat/<key>`.
   - Stop turn interrupts only the current turn through the runner's control socket. The session stays alive. The global Stop in the status strip still kills everything.
   - Markdown goes through `marked` and DOMPurify, both bundled (no CDN).
 - **Activity**: one timeline of events, each with its cause (message on a channel, cron, webhook, manual, direct session), outcome, duration and cost. An inbound message that started a run shows as that run's cause.
-  - `/activity/:id`: one trigger run with its payload, transcript and tool calls. Raw token counts appear only here.
+  - `/activity/:id`: one trigger run with its payload, transcript and tool calls. Raw token counts appear only here. A failed run has **Retry**: it fires the trigger again with the run's payload and session key, the same way the original event did (a keyless webhook delivery gets a new `webhook-<runId>` key). The page opens the new run when it starts within 5 seconds; a persistent session with a live runner takes the payload without a new run. When the login is broken, the failure card links to Settings > Login first.
   - `/activity/session/:sessionId` and `/activity/message/:id`: detail pages for a session and a message.
   - Filters are query parameters: `trigger`, `status=running|ok|failed`, `channel`, `type=cron|webhook|manual|direct|trigger`, `from`/`to` and `q`. `from` and `to` are inclusive calendar days (`YYYY-MM-DD`) in the resolved Atlas zone (see [Time zone](#time-zone)), the same days Usage and Overview count in.
 - **Automations**: triggers grouped by type, plus reminders (`?view=reminders`, pending first, each with Cancel).
@@ -57,6 +57,7 @@ A status strip sits on top of every page: Active or Paused, how many runs are ru
   - `/storage/browse/<path>` is rooted at HOME: a directory listing, or a file's metadata and a text preview (capped, tail shown for `.log` files). Secrets (`~/secrets/**`, `.ssh/**`, `.claude/.credentials.json`, `*.pem`/`*.key`, `.env*`, `*.credentials*`) are listed but their content and download are denied; `config.yml` is shown masked instead, the same as Settings. Files link to their better view where one exists (memory files → Knowledge, session transcripts → Activity).
 - **Settings**: `/settings/<section>`, with `/settings` redirecting to Personality.
   - `personality`: edit IDENTITY.md and SOUL.md.
+  - `login`: how the agent backend authenticates, until when, and a new login from the browser. See [Agent login](#agent-login).
   - `integrations`: Signal, Email, WhatsApp, Telegram and Web. Shows whether each is configured and running, and the triggers on its channel.
   - `configuration`: effective values and where each came from (env, runtime, config.yml or default), plus a validated config.yml editor (`?view=edit`).
   - `secrets`: names only. Values can be set and deleted but are never returned.
@@ -76,6 +77,23 @@ The server-rendered pages were removed. Their URLs redirect (302) to the page th
 | `/analytics`, `/analytics.csv` | `/usage`, `/ui/api/usage/export.csv` (keeps `from`, `to`, `trigger`, `status`; the legacy `types` and `min_cost` filters are dropped, and `trigger` now matches exactly instead of by substring) |
 | `/memory`, `/memory/search?q=`, `/memory/view?file=` | `/knowledge`, `/knowledge?q=`, `/knowledge/file/<file>` |
 | `/journal`, `/journal?date=` | `/knowledge/journal`, `/knowledge/journal/<date>` |
+
+## Agent login
+
+Settings > Login renews the agent backend's login without a terminal in the container. The contract is `lib/harness/auth.ts`; backends register their SDK-free implementation in `lib/harness/stores.ts` next to their session store. Today only Claude Code has one (`lib/harness/claude/auth.ts`).
+
+Atlas never speaks OAuth itself. It runs the Claude CLI's own login in a pseudo-terminal (`Bun.spawn` with `terminal`, flag `--ax-screen-reader` for flat output), shows the sign-in URL the CLI prints, and types the code from the sign-in page into it:
+
+| Method | CLI | Stored in | End date |
+|--------|-----|-----------|----------|
+| Long-lived token (default) | `claude setup-token` | `~/.claude/atlas-token.credentials.json` (0600); the Claude adapter exports it as `CLAUDE_CODE_OAUTH_TOKEN` when a session starts | 1 year, shown in the UI |
+| Subscription login | `claude auth login --claudeai` | `~/.claude/.credentials.json`, renewed by the CLI | unknown |
+
+A login waits 10 minutes for its code; a refused code ends it. A successful subscription login removes a dashboard token, which would otherwise keep precedence. Running sessions keep the credential they started with; new runs use the new one.
+
+Claude Code prefers `ANTHROPIC_API_KEY`, then `CLAUDE_CODE_OAUTH_TOKEN`, then the stored login. When either variable is set in the container environment, the page says so, because a login made here does not take effect until it is removed.
+
+State: `missing`, `expired` (past the end date), `failed`, `expiring` (ends within 30 days), `ok`. `failed` comes from the runner: a turn the provider refuses (the SDK's `authentication_failed`, or error texts like "Please run /login") is recorded in `system_state` (`harness_auth_failure`) and cleared by the next completed turn. A failure older than the current credential is ignored. The runner then ends that session instead of letting it idle, so the next message starts a process with the current login. Without any login the container starts normally; runs fail fast with "Not logged in" until someone logs in.
 
 ## Time zone
 
@@ -145,6 +163,7 @@ GET  /ui/api/overview?upcoming=1..50
 GET  /ui/api/activity?trigger&status&channel&type&from&to&q&cursor&limit
 GET  /ui/api/activity/filters
 GET  /ui/api/activity/runs/:id | sessions/:sessionId | messages/:id
+POST /ui/api/activity/runs/:id/retry               body {}; failed runs only; 202 {runId|null}
 GET  /ui/api/activity/attachments/:id
 
 GET  /ui/api/automations                           triggers + summary
@@ -181,6 +200,11 @@ GET  /ui/api/settings/secrets
 PUT|DELETE /ui/api/settings/secrets/:name          PUT body {value}; values are never returned
 GET|PUT /ui/api/settings/extensions
 POST /ui/api/settings/extensions/validate
+GET  /ui/api/settings/login                        state, credential, end date, last rejection, pending login
+POST /ui/api/settings/login/start                  body {method: "token"|"subscription"}; returns {id, url, expiresAt}
+POST /ui/api/settings/login/complete               body {id, code}; 400 with the CLI's error when the code is refused
+POST /ui/api/settings/login/cancel                 body {id}
+DELETE /ui/api/settings/login/token                forgets the token created here
 ```
 
 ### Chat (`/ui/api/chat/*`)

@@ -35,9 +35,11 @@ import {
   type TriggerConfig,
   type MetricsData,
   type StreamChunkState,
+  noteAuthOutcome,
 } from "./trigger-runner.ts";
 import { migrateSchema } from "../lib/atlas-db.ts";
 import type { TurnResult } from "../lib/harness.ts";
+import { readAuthFailure } from "../lib/harness/auth.ts";
 import { createMessageChannel } from "./harness/claude/message-channel.ts";
 import { getLockPath, getSocketPath as socketPathFor } from "../lib/trigger-socket.ts";
 
@@ -1482,5 +1484,25 @@ describe("clearRejectedSession", () => {
     // ephemeral triggers: no session table entry to worry about
     expect(cleared).toBeNull();
     expect(logMessages.length).toBe(0);
+  });
+});
+
+describe("noteAuthOutcome", () => {
+  const turn = (over: Partial<TurnResult>): TurnResult => ({
+    outcome: "completed", text: "ok", error: null, session: null, turns: 1, durationMs: 1,
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cost: null, completeness: "complete" } as TurnResult["usage"],
+    ...over,
+  });
+
+  test("an authentication failure is recorded; the next completed turn clears it", () => {
+    const db = new Database(":memory:");
+    db.run("CREATE TABLE system_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)");
+    noteAuthOutcome(db, "claude-code", turn({ outcome: "failed", error: { code: "authentication", message: "OAuth token has expired" } }));
+    expect(readAuthFailure(db, "claude-code")?.message).toBe("OAuth token has expired");
+    // Other failures leave it alone.
+    noteAuthOutcome(db, "claude-code", turn({ outcome: "failed", error: { code: "execution", message: "boom" } }));
+    expect(readAuthFailure(db, "claude-code")).not.toBeNull();
+    noteAuthOutcome(db, "claude-code", turn({}));
+    expect(readAuthFailure(db, "claude-code")).toBeNull();
   });
 });

@@ -22,6 +22,7 @@
 
 import { createHarnessBackend } from "./harness/registry.ts";
 import { createSessionStore } from "../lib/harness/stores.ts";
+import { clearAuthFailure, recordAuthFailure } from "../lib/harness/auth.ts";
 import type { Conversation, HarnessBackend, SessionRef, TurnResult } from "../lib/harness.ts";
 import { Database } from "bun:sqlite";
 import {
@@ -983,6 +984,19 @@ export type RunDirectOptions = {
  * @param prompt - The user prompt to send
  * @param options - Optional overrides for channel, modelKey, and extra env vars
  */
+/**
+ * Keep the web UI's login status current: a turn the provider refused as
+ * unauthenticated marks the login as failed, a completed turn clears that.
+ */
+export function noteAuthOutcome(db: Database, backend: string, turn: TurnResult): void {
+  try {
+    if (turn.error?.code === "authentication") recordAuthFailure(db, backend, turn.error.message);
+    else if (turn.outcome === "completed") clearAuthFailure(db);
+  } catch {
+    // system_state may not exist in very old DBs
+  }
+}
+
 export async function runDirect(
   prompt: string,
   options?: RunDirectOptions,
@@ -1044,6 +1058,9 @@ export async function runDirect(
         turn = event.result;
         capturedSessionId = turn.session?.nativeId ?? capturedSessionId;
         isError = turn.outcome === "failed";
+        try {
+          noteAuthOutcome(openDb(), backend.id, turn);
+        } catch {}
         break;
       }
     }
@@ -1774,9 +1791,19 @@ export async function main(): Promise<void> {
           lastTurn = event.result;
           capturedSessionId = event.result.session?.nativeId ?? null;
           isError = event.result.outcome === "failed";
+          noteAuthOutcome(db, backend.id, event.result);
           inTurn = false;
           notify("turn_end", { isError });
           if (event.result.text) log.log(`Turn result: ${event.result.text}`);
+
+          // The process keeps the credential it started with, so every further
+          // message would fail the same way. End it; the next message starts a
+          // runner that uses the current login.
+          if (event.result.error?.code === "authentication") {
+            log.log("Credential refused — ending the session so the next message uses the current login");
+            conversation.stop();
+            continue;
+          }
 
           // Flush any messages that arrived AFTER the last tool boundary
           // (nextToolContext never got a chance to drain them) — push them
@@ -1861,8 +1888,10 @@ export async function main(): Promise<void> {
       log.log(`Resuming session for key=${sessionKey}: ${existingSession}`);
       try {
         await runQuery(sessions.ref(existingSession) ?? undefined);
-        // Check for silent failure: error with 0 turns means resume failed
-        if (isError && lastTurn?.turns === 0) {
+        // Check for silent failure: error with 0 turns means resume failed.
+        // A refused credential fails any session the same way; starting fresh
+        // would only drop this one's history.
+        if (isError && lastTurn?.turns === 0 && lastTurn.error?.code !== "authentication") {
           throw new Error("Resume returned error with 0 turns");
         }
       } catch (err) {

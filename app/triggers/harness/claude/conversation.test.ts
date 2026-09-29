@@ -148,6 +148,35 @@ test("provider rejections and failed turns are classified", async () => {
   });
 });
 
+test("refused credentials are authentication failures", async () => {
+  const finished = async (messages: unknown[]) =>
+    (await collect(messages)).flatMap((e) => (e.type === "turn.finished" ? [e.result] : []))[0]!;
+  const loginText = "Invalid API key · Please run /login";
+
+  // Claude Code marks the assistant message and ends the turn with is_error.
+  expect(await finished([
+    { type: "assistant", session_id: "s1", error: "authentication_failed", message: { content: [{ type: "text", text: loginText }] } },
+    { type: "result", subtype: "success", is_error: true, session_id: "s1", result: loginText },
+  ])).toMatchObject({ outcome: "failed", error: { code: "authentication", message: loginText } });
+
+  // Without the marker the error text decides.
+  expect(await finished([
+    { type: "result", subtype: "success", is_error: true, session_id: "s1", result: "OAuth token has expired. Please obtain a new token." },
+  ])).toMatchObject({ outcome: "failed", error: { code: "authentication" } });
+  expect(await finished([
+    { type: "result", subtype: "success", is_error: true, session_id: "s1", result: 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}' },
+  ])).toMatchObject({ outcome: "failed", error: { code: "authentication" } });
+
+  // A normal answer that talks about logging in is no failure; nor is a subagent's error.
+  expect(await finished([
+    { type: "result", subtype: "success", is_error: false, session_id: "s1", result: "Please run /login on the server." },
+  ])).toMatchObject({ outcome: "completed", error: null });
+  expect(await finished([
+    { type: "assistant", session_id: "s1", parent_tool_use_id: "t1", error: "authentication_failed", message: { content: [] } },
+    { type: "result", subtype: "success", session_id: "s1", result: "done" },
+  ])).toMatchObject({ outcome: "completed", error: null });
+});
+
 test("turn usage subtracts the session totals before the turn", async () => {
   const usage = (i: number, o: number) => ({ input_tokens: i, output_tokens: o, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
   const model = (i: number, o: number, cost: number) => ({ haiku: { inputTokens: i, outputTokens: o, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: cost } });

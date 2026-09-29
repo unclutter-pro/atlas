@@ -1,5 +1,5 @@
 export { PageHeader, Section, Card, Stat, StatGrid, EmptyState, Alert, KeyValue, Loading, ApiView, type Tone } from "./layout";
-export { StatusBadge, OutcomeBadge, healthBadge, type Status, type Outcome } from "./StatusBadge";
+export { StatusBadge, OutcomeBadge, healthBadge, authBadge, KeyIcon, type Status, type Outcome } from "./StatusBadge";
 export { DataTable, type Column } from "./DataTable";
 export { Tabs, type TabItem } from "./Tabs";
 export { Button, ButtonLink, ConfirmButton, CopyButton, buttonClass, type ButtonVariant } from "./Button";
