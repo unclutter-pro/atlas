@@ -84,8 +84,8 @@ code { font-family: inherit; font-size: 0.95em; background: var(--bg-sunken); bo
 .status-strip-state { display: flex; align-items: center; gap: var(--sp-2); font-weight: 600; color: var(--text-strong); }
 .status-strip-sep { width: 1px; height: 18px; background: var(--border); }
 .status-strip-item { color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
-.status-strip-item a { color: inherit; }
-.status-strip-item a:hover { color: var(--text); }
+.status-strip-item a:not(.btn) { color: inherit; }
+.status-strip-item a:not(.btn):hover { color: var(--text); }
 .status-strip-auth { display: inline-flex; align-items: center; gap: 4px; }
 .status-strip-actions { margin-left: auto; display: flex; align-items: center; gap: var(--sp-2); }
 

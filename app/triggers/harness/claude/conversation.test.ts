@@ -167,6 +167,10 @@ test("refused credentials are authentication failures", async () => {
     { type: "result", subtype: "success", is_error: true, session_id: "s1", result: 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}' },
   ])).toMatchObject({ outcome: "failed", error: { code: "authentication" } });
 
+  expect(await finished([
+    { type: "result", subtype: "success", is_error: true, session_id: "s1", result: "Failed to authenticate: OAuth session expired and could not be refreshed" },
+  ])).toMatchObject({ outcome: "failed", error: { code: "authentication" } });
+
   // A normal answer that talks about logging in is no failure; nor is a subagent's error.
   expect(await finished([
     { type: "result", subtype: "success", is_error: false, session_id: "s1", result: "Please run /login on the server." },
@@ -175,6 +179,28 @@ test("refused credentials are authentication failures", async () => {
     { type: "assistant", session_id: "s1", parent_tool_use_id: "t1", error: "authentication_failed", message: { content: [] } },
     { type: "result", subtype: "success", session_id: "s1", result: "done" },
   ])).toMatchObject({ outcome: "completed", error: null });
+});
+
+test("a CLI that ends because it cannot authenticate raises an authentication error", async () => {
+  const message = "Failed to authenticate: OAuth session expired and could not be refreshed";
+  const factory = (() => {
+    async function* gen() { throw new Error(message); }
+    return Object.assign(gen(), { close() {}, async interrupt() {} });
+  }) as unknown as QueryFactory;
+  const conversation = openConversation({ prompt: "hi", systemPrompt: "s", model: "m", cwd: "/w", turns: "single" }, factory);
+  const err = await (async () => { for await (const _ of conversation) {} })().catch((e) => e);
+  expect(err.detail).toEqual({ code: "authentication", message });
+
+  // Other crashes stay as they are.
+  const crash = (() => {
+    async function* gen() { throw new Error("spawn ENOENT"); }
+    return Object.assign(gen(), { close() {}, async interrupt() {} });
+  }) as unknown as QueryFactory;
+  const other = await (async () => {
+    for await (const _ of openConversation({ prompt: "hi", systemPrompt: "s", model: "m", cwd: "/w", turns: "single" }, crash)) {}
+  })().catch((e) => e);
+  expect(other.detail).toBeUndefined();
+  expect(other.message).toBe("spawn ENOENT");
 });
 
 test("turn usage subtracts the session totals before the turn", async () => {

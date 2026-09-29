@@ -42,6 +42,16 @@ export function isAuthenticationFailure(result: Record<string, any>, assistantEr
 }
 
 /**
+ * The CLI can also end without a result when it cannot authenticate at all,
+ * e.g. "Failed to authenticate: OAuth session expired and could not be
+ * refreshed". Such errors surface as HarnessError "authentication".
+ */
+function authenticationError(err: unknown): unknown {
+  const message = err instanceof Error ? err.message : String(err);
+  return !(err instanceof Error && "detail" in err) && AUTH_TEXT_RE.test(message) ? harnessError("authentication", message) : err;
+}
+
+/**
  * A turn's SDK result message as a TurnResult. Claude reports session totals;
  * `baseline` (the totals before this turn) turns them into turn usage.
  */
@@ -169,6 +179,8 @@ export function openConversation(
           }
         }
       }
+    } catch (err) {
+      throw authenticationError(err);
     } finally {
       stop();
     }

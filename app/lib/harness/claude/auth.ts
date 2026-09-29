@@ -340,7 +340,7 @@ function summarize(state: AuthStatus["state"], credential: AuthCredential | null
     case "expired":
       return "Login expired";
     case "failed":
-      return "Login rejected, log in again";
+      return "Login rejected";
     case "expiring":
       return `Login expires in ${days} ${days === 1 ? "day" : "days"}`;
     case "ok":

@@ -23,6 +23,7 @@
 import { createHarnessBackend } from "./harness/registry.ts";
 import { createSessionStore } from "../lib/harness/stores.ts";
 import { clearAuthFailure, recordAuthFailure } from "../lib/harness/auth.ts";
+import { describeError } from "../lib/harness/errors.ts";
 import type { Conversation, HarnessBackend, SessionRef, TurnResult } from "../lib/harness.ts";
 import { Database } from "bun:sqlite";
 import {
@@ -997,6 +998,16 @@ export function noteAuthOutcome(db: Database, backend: string, turn: TurnResult)
   }
 }
 
+/** An error the backend raised because it refused the credential; recorded like a refused turn. */
+export function noteAuthError(db: Database, backend: string, err: unknown): boolean {
+  const detail = describeError(err);
+  if (detail.code !== "authentication") return false;
+  try {
+    recordAuthFailure(db, backend, detail.message);
+  } catch {}
+  return true;
+}
+
 export async function runDirect(
   prompt: string,
   options?: RunDirectOptions,
@@ -1066,6 +1077,9 @@ export async function runDirect(
     }
   } catch (err) {
     log.log(`ERROR in direct session: ${err}`);
+    try {
+      noteAuthError(openDb(), backend.id, err);
+    } catch {}
     isError = true;
   } finally {
     clearTimeout(timeoutHandle);
@@ -1898,6 +1912,10 @@ export async function main(): Promise<void> {
         if (handedOver) {
           // Retrying would delete the successor's mapping and steal its socket.
           log.log(`Resume failed after hand-over for session ${existingSession} — not retrying: ${err}`);
+        } else if (noteAuthError(db, backend.id, err)) {
+          // A fresh session fails the same way; keep this one for after the next login.
+          log.log(`Resume refused, credential not accepted — keeping session ${existingSession}: ${err}`);
+          isError = true;
         } else {
           log.log(
             `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
@@ -1922,6 +1940,7 @@ export async function main(): Promise<void> {
     }
   } catch (err) {
     log.log(`ERROR running trigger: ${err}`);
+    noteAuthError(db, backend.id, err);
     isError = true;
     closeSocket();
   }

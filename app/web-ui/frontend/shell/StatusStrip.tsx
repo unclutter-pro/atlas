@@ -2,10 +2,10 @@ import { useState } from "react";
 import { apiPost, useMutation } from "../api";
 import type { StopResponse } from "../../ui-api/core";
 import type { AuthBadge } from "../../ui-api/shared/status";
-import { authBadge, Button, ConfirmButton, KeyIcon, StatusBadge, formatDuration } from "../components";
+import { authBadge, Button, ButtonLink, ConfirmButton, KeyIcon, StatusBadge, formatDuration } from "../components";
 import { links } from "../links";
 import { Link } from "../router";
-import { useStatus, type StatusResponse } from "./status";
+import { isLoginBroken, useStatus, type StatusResponse } from "./status";
 
 /** Persistent strip above every page: state, running runs, trouble, kill switch. */
 export function StatusStrip() {
@@ -120,9 +120,16 @@ function AuthItem(props: { auth: AuthBadge }) {
     );
   }
   return (
-    <Link href={links.settings("login")} title={title}>
-      <StatusBadge status={authBadge(a.state).status}>{a.summary}</StatusBadge>
-    </Link>
+    <>
+      <Link href={links.settings("login")} title={title}>
+        <StatusBadge status={authBadge(a.state).status}>{a.summary}</StatusBadge>
+      </Link>
+      {isLoginBroken(a) && (
+        <ButtonLink size="sm" variant="primary" href={links.settings("login")}>
+          Log in
+        </ButtonLink>
+      )}
+    </>
   );
 }
 

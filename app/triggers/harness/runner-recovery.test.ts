@@ -98,3 +98,47 @@ process.exit(0);
     expect(stdout).toContain("AUTH_OK");
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 30_000);
+
+test("a CLI that cannot authenticate on resume keeps the session instead of starting fresh", async () => {
+  const home = mkdtempSync(join(tmpdir(), "atlas-resume-authcrash-"));
+  const driver = join(home, "driver.ts");
+  const key = `authcrash-${Date.now()}`;
+  writeFileSync(driver, `
+import { mkdirSync, writeFileSync } from "node:fs";
+import { getDb } from ${JSON.stringify(join(import.meta.dir, "../../lib/atlas-db.ts"))};
+import { readAuthFailure } from ${JSON.stringify(join(import.meta.dir, "../../lib/harness/auth.ts"))};
+import { main, runnerDeps } from ${JSON.stringify(join(import.meta.dir, "../trigger-runner.ts"))};
+import { ClaudeCodeBackend } from ${JSON.stringify(join(import.meta.dir, "claude/backend.ts"))};
+const db = getDb();
+db.prepare("INSERT INTO triggers (name, type, channel, prompt, session_mode) VALUES ('crash-check', 'manual', 'internal', '{{payload}}', 'persistent')").run();
+db.prepare("INSERT INTO trigger_sessions (trigger_name, session_key, session_id) VALUES ('crash-check', ?, 'kept-session')").run(${JSON.stringify(key)});
+const dir = process.env.HOME + "/.claude/projects/p";
+mkdirSync(dir, {recursive: true});
+writeFileSync(dir + "/kept-session.jsonl", "{}\\n");
+let attempts = 0;
+const query = ((request) => {
+  attempts++;
+  async function* events() {
+    await request.prompt[Symbol.asyncIterator]().next();
+    throw new Error("Failed to authenticate: OAuth session expired and could not be refreshed");
+  }
+  return Object.assign(events(), {close() {}, async interrupt() {}});
+}) as any;
+runnerDeps.createBackend = () => new ClaudeCodeBackend({ query });
+process.argv = [process.argv[0], "trigger-runner.ts", "crash-check", "hello", ${JSON.stringify(key)}];
+await main();
+const row = db.query("SELECT session_id FROM trigger_sessions WHERE trigger_name='crash-check' AND session_key=?").get(${JSON.stringify(key)});
+const failure = readAuthFailure(db, "claude-code");
+if (attempts !== 1) throw new Error("Retried a refused credential: " + attempts);
+if (row?.session_id !== "kept-session") throw new Error("Session mapping lost");
+if (!failure?.message.includes("could not be refreshed")) throw new Error("Failure not recorded");
+console.log("CRASH_OK");
+process.exit(0);
+`);
+  try {
+    const proc = Bun.spawn(["bun", driver], { env: { ...process.env, HOME: home }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(stdout).toContain("CRASH_OK");
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 30_000);

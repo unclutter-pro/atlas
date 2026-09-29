@@ -5,7 +5,7 @@ import { apiPost, useApi, useMutation } from "../../api";
 import { Alert, ApiView, Button, ButtonLink, Card, CodeBlock, DataTable, Duration, KeyValue, Money, NotFound, PageHeader, Section, Stat, StatGrid, Time, formatDuration, formatMoney, prettyJson, OutcomeBadge } from "../../components";
 import { links } from "../../links";
 import { Link, navigate, type Params } from "../../router";
-import { useStatus } from "../../shell/status";
+import { isLoginBroken, useStatus } from "../../shell/status";
 import type { RetryResponse, RunDetailResponse, RunSummary } from "../../../ui-api/activity";
 import { CauseTag, MessageCard, MetricsList, causeLabel } from "./shared";
 import { TranscriptView } from "./Transcript";
@@ -28,7 +28,6 @@ function RunView(props: { d: RunDetailResponse }) {
   const r = d.run;
   const tone = r.outcome === "failed" ? "error" : r.outcome === "running" ? "running" : "ok";
   const auth = useStatus().data?.auth;
-  const loginBroken = !!auth && auth.state !== "ok" && auth.state !== "expiring";
   const [retried, setRetried] = useState<RetryResponse | null>(null);
   // A new run opens directly; one that went into a live session has no page of its own.
   const retry = useMutation(() => apiPost<RetryResponse>(`/ui/api/activity/runs/${r.id}/retry`, {}), {
@@ -81,9 +80,12 @@ function RunView(props: { d: RunDetailResponse }) {
       {r.outcome === "failed" && (
         <Card tone="error" title="Why it failed">
           {d.error ? <div className="activity-pre">{d.error}</div> : <span className="muted">The session reported an error, but its transcript has no final message.</span>}
-          {loginBroken && (
+          {isLoginBroken(auth) && (
             <Alert tone="warn">
-              {auth!.summary}. <Link href={links.settings("login")}>Log in again</Link> before retrying, or the retry fails the same way.
+              <span className="spacer">{auth.summary}. Log in again before retrying, or the retry fails the same way.</span>
+              <ButtonLink size="sm" variant="primary" href={links.settings("login")}>
+                Log in again
+              </ButtonLink>
             </Alert>
           )}
         </Card>
