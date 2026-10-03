@@ -96,6 +96,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   # --- Node.js 22 ---
   && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y nodejs \
+  && npm install -g npm@12 \
   && rm -rf /var/lib/apt/lists/* \
   # --- Bun ---
   && ARCH=$(dpkg --print-architecture) \
