@@ -37,5 +37,5 @@ Attachment paths are listed in the incoming message payload. The email handler p
 - **Never `Read` videos directly** — this will fail or exceed API limits. Instead:
   - Use `stt <path>` to transcribe the audio track.
   - Use `unclutter-video-analyze <path>` to extract visual scene descriptions.
-- **For PDFs, DOCX, PPTX, XLSX** use the `document-parse` skill (`Skill(name="document-parse")`) rather than reading the raw bytes.
+- **For PDFs, DOCX, PPTX, XLSX** load the `document-parse` skill rather than reading the raw bytes.
 - **If the user sends an oversized file** that cannot be processed (e.g. a raw video >100 MB), ask them to upload it to Google Drive and share the link instead.

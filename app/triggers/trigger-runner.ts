@@ -11,18 +11,21 @@
  *   - No key + persistent    → uses "_default" (one global session per trigger)
  *   - Ephemeral triggers     → key is ignored, always a new session
  *
- * For persistent sessions: if the session is already running (IPC socket alive),
- * the message is injected directly into the running session via the Claude Code
- * IPC socket. No new process is spawned.
+ * For persistent sessions: if the session is already running (control socket
+ * alive), the message is injected directly into the running session. No new
+ * process is spawned.
+ *
+ * Sessions run on the configured harness backend (harness.backend in
+ * config.yml, ATLAS_HARNESS_BACKEND). This file sees normalized conversation
+ * events and the backend's session store, never backend files or SDK types.
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  SDKResultMessage,
-  SDKUserMessage,
-} from "@anthropic-ai/claude-agent-sdk";
+import { createHarnessBackend } from "./harness/registry.ts";
+import { createSessionStore } from "../lib/harness/stores.ts";
+import { clearAuthFailure, recordAuthFailure } from "../lib/harness/auth.ts";
+import { describeError } from "../lib/harness/errors.ts";
+import type { Conversation, HarnessBackend, SessionRef, TurnResult } from "../lib/harness.ts";
 import { Database } from "bun:sqlite";
-import { createHash } from "crypto";
 import {
   existsSync,
   readFileSync,
@@ -33,12 +36,28 @@ import {
   statSync,
 } from "fs";
 import os from "node:os";
-import { createConnection, createServer } from "net";
+import { createServer } from "net";
 import type { Server } from "net";
 import { join, dirname } from "path";
 import yaml from "js-yaml";
 import { resolveConfig } from "../lib/config.ts";
+import { applyProcessTimeZone } from "../lib/timezone.ts";
 import { openDb as openSharedDb } from "../lib/db.ts";
+import {
+  getLockPath,
+  getRetiringPath,
+  getSocketPath,
+  isPidAlive,
+  readLockPid,
+  trySocketInject,
+  type SocketAck,
+  type SocketControl,
+  type SocketMessage,
+} from "../lib/trigger-socket.ts";
+import { createWebUiNotifier, type ChatNotifyKind, type WebUiNotifier } from "../lib/web-ui-notify.ts";
+
+// Moved to lib/trigger-socket.ts; re-exported for existing importers and tests.
+export { getSocketPath, trySocketInject, type SocketAck, type SocketMessage };
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,7 +72,7 @@ export type TriggerConfig = {
   session_mode: "ephemeral" | "persistent";
   /**
    * Optional per-trigger model override. When non-empty, takes precedence
-   * over the ATLAS_CRON-based default ("cron" | "trigger") in resolveModel.
+   * over the default model key ("cron" | "trigger") in resolveModel.
    * Maps to a `models.<key>` entry in config.yml. NULL ⇒ use the default.
    */
   model_key: string | null;
@@ -91,86 +110,14 @@ const HOME = process.env.HOME ?? "/home/agent";
 const APP_DIR = "/atlas/app";
 const PROMPT_DIR = `${APP_DIR}/prompts`;
 const DB_PATH = `${HOME}/.index/atlas.db`;
-const CLAUDE_JSON = `${HOME}/.claude.json`;
 const WORKSPACE = HOME;
 
-// Resolve path to Claude Code executable for the SDK.
-// In compiled Bun binaries, import.meta.url points to a virtual FS (/$bunfs/...),
-// so the SDK cannot auto-resolve cli.js. We resolve it explicitly here.
-function resolveClaudeCodePath(): string | undefined {
-  // 1. SDK's bundled cli.js (older SDK versions ship this)
-  const sdkCli = `${APP_DIR}/triggers/node_modules/@anthropic-ai/claude-agent-sdk/cli.js`;
-  if (existsSync(sdkCli)) return sdkCli;
-  // 2. Native binary installed globally (check common paths)
-  for (const bin of ["/usr/local/bin/claude", "/usr/bin/claude"]) {
-    if (existsSync(bin)) return bin;
-  }
-  // 3. Let the SDK resolve it (works when not compiled)
-  return undefined;
-}
-
-const CLAUDE_CODE_PATH = resolveClaudeCodePath();
-
 // ---------------------------------------------------------------------------
-// Tool policy
+// Control socket for message injection
 // ---------------------------------------------------------------------------
 
-/**
- * Built-in Claude Code tools we never want a trigger session to see or use.
- *
- * settings.json `permissions.deny` only blocks execution — the model is still
- * told the tool exists, which leaks into the system prompt. `disallowedTools`
- * on the SDK query options removes the tool from the disclosure entirely.
- *
- * Keep in sync with the deny list in app/hooks/generate-settings.ts.
- */
-const DISALLOWED_BUILTIN_TOOLS = [
-  // Cron management — exposed via dedicated trigger commands, not LLM tools
-  "CronCreate",
-  "CronDelete",
-  "CronList",
-  // Scheduling - we have reminder cli for that
-  "ScheduleWakeup",
-  // Plan mode is a Claude Code interactive UX concept; trigger sessions are headless
-  "EnterPlanMode",
-  "ExitPlanMode",
-  // Worktrees are managed by the harness, not by the agent
-  "EnterWorktree",
-  "ExitWorktree",
-  // Atlas tracks tasks via its own CLI, never via Claude Code's built-ins
-  "TodoWrite",
-  "TaskCreate",
-  "TaskUpdate",
-  "TaskList",
-  "TaskGet",
-  // No interactive user-question loop in trigger sessions
-  "AskUserQuestion",
-  // Teams feature disabled — agent runs without teammate coordination
-  "TeamCreate",
-  "TeamDelete",
-  "SendMessage",
-];
-
-/**
- * Tools disallowed for the validator session.
- * The validator is read-only — it may inspect files but must not write anything,
- * spawn agents, or access task/goal/reminder state.
- */
-export const DISALLOWED_VALIDATOR_TOOLS = [
-  ...DISALLOWED_BUILTIN_TOOLS,
-  // Write tools — validator is strictly read-only
-  "Edit",
-  "Write",
-  "NotebookEdit",
-  // MCP tools — no external access
-  "mcp__*",
-  // Agent spawning
-  "Agent",
-];
-
-// ---------------------------------------------------------------------------
-// Message Channel (AsyncIterable + IPC socket for message injection)
-// ---------------------------------------------------------------------------
+/** A retired session gets this long to finish its running turn and farewell. */
+const RETIRE_TIMEOUT_MS = parseInt(process.env.TRIGGER_RETIRE_TIMEOUT ?? "600000", 10);
 
 /** Default idle timeout: 5 minutes of no new messages → session ends */
 const IDLE_TIMEOUT_MS = parseInt(
@@ -179,146 +126,8 @@ const IDLE_TIMEOUT_MS = parseInt(
 );
 
 /**
- * Options for pushing a user message into the channel.
- *
- * - `shouldQuery: false` — SDK v0.2.110+: append the message to the transcript
- *   without triggering a new assistant turn. The message merges into the
- *   current turn's next LLM call. Use for mid-turn steering (the agent
- *   reacts to new info without restarting work).
- * - `priority` — present in SDK type but undocumented. We set `'now'` as a
- *   hint for mid-turn steering.
- */
-export type PushOptions = {
-  shouldQuery?: boolean;
-  priority?: "now" | "next" | "later";
-};
-
-/** Socket message protocol: newline-delimited JSON */
-export type SocketMessage = {
-  message: string;
-  channel: string;
-  sessionKey: string;
-  control?: "interrupt"; // NEW: send instead of injecting message
-};
-
-export type SocketAck = {
-  ok: boolean;
-  error?: string;
-};
-
-/**
- * Create an async message channel backed by a simple queue + promise resolver pattern.
- * Returns an AsyncGenerator that yields SDKUserMessages and a push function for injection.
- * The generator will return (end) after idleTimeoutMs of inactivity.
- */
-export function createMessageChannel(
-  sessionId: string,
-  idleTimeoutMs = IDLE_TIMEOUT_MS,
-) {
-  type Waiter = { resolve: (msg: SDKUserMessage) => void };
-  const waiters: Waiter[] = [];
-  const pending: SDKUserMessage[] = [];
-  let closed = false;
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  let idleReject: (() => void) | null = null;
-
-  function resetIdleTimer() {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      closed = true;
-      // Wake any waiting consumer so it can exit
-      if (idleReject) idleReject();
-    }, idleTimeoutMs);
-  }
-
-  function buildUserMessage(
-    text: string,
-    opts?: PushOptions,
-  ): SDKUserMessage {
-    const msg: SDKUserMessage = {
-      type: "user",
-      message: { role: "user", content: text },
-      parent_tool_use_id: null,
-      session_id: sessionId,
-    };
-    // shouldQuery: false → append context without triggering a new assistant
-    // turn (SDK v0.2.110+). Used for mid-turn steering: the message merges
-    // into the current turn's next LLM call, so the agent reacts to the new
-    // info without restarting work.
-    if (opts?.shouldQuery !== undefined) {
-      (msg as unknown as { shouldQuery: boolean }).shouldQuery = opts.shouldQuery;
-    }
-    // priority: 'now' | 'next' | 'later' — present in SDK type but undocumented.
-    // Setting 'now' for mid-turn steering as a hint; SDK may or may not honor.
-    if (opts?.priority !== undefined) {
-      (msg as unknown as { priority: PushOptions["priority"] }).priority = opts.priority;
-    }
-    return msg;
-  }
-
-  async function* generator(): AsyncGenerator<SDKUserMessage> {
-    resetIdleTimer();
-    while (!closed) {
-      if (pending.length > 0) {
-        resetIdleTimer();
-        yield pending.shift()!;
-      } else {
-        try {
-          const msg = await new Promise<SDKUserMessage>((resolve, reject) => {
-            idleReject = reject;
-            waiters.push({ resolve });
-          });
-          resetIdleTimer();
-          yield msg;
-        } catch {
-          // Idle timeout triggered — exit generator
-          break;
-        }
-      }
-    }
-    if (idleTimer) clearTimeout(idleTimer);
-  }
-
-  function push(text: string, opts?: PushOptions) {
-    const msg = buildUserMessage(text, opts);
-    if (waiters.length > 0) {
-      const waiter = waiters.shift()!;
-      idleReject = null;
-      waiter.resolve(msg);
-    } else {
-      pending.push(msg);
-    }
-  }
-
-  function close() {
-    closed = true;
-    if (idleTimer) clearTimeout(idleTimer);
-    if (idleReject) idleReject();
-  }
-
-  return { generator: generator(), push, close, buildUserMessage };
-}
-
-/**
- * Compute the socket path for a given trigger name + session key.
- */
-export function getSocketPath(triggerName: string, sessionKey: string): string {
-  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
-  const candidate = `/tmp/.trigger-${triggerName}-${safeKey}.sock`;
-  // Unix domain sockets have a 108-char path limit; hash long keys to stay under
-  if (candidate.length > 104) {
-    const hash = createHash("sha256")
-      .update(`${triggerName}-${sessionKey}`)
-      .digest("hex")
-      .slice(0, 16);
-    return `/tmp/.trigger-${triggerName}-${hash}.sock`;
-  }
-  return candidate;
-}
-
-/**
- * Start a Unix domain socket server that accepts incoming messages and pushes
- * them into the message channel. Protocol: newline-delimited JSON.
+ * Start a Unix domain socket server that accepts incoming messages and hands
+ * them to the running conversation. Protocol: newline-delimited JSON.
  *
  * Client sends: {"message":"...", "channel":"signal", "sessionKey":"..."}\n
  * Client sends (control): {"message":"", "channel":"signal", "sessionKey":"...", "control":"interrupt"}\n
@@ -326,8 +135,8 @@ export function getSocketPath(triggerName: string, sessionKey: string): string {
  */
 export function startSocketServer(
   socketPath: string,
-  pushFn: (text: string, opts?: PushOptions) => void,
-  controlFn: (control: "interrupt") => Promise<void> | void,
+  pushFn: (text: string) => void,
+  controlFn: (control: SocketControl, message: string) => Promise<void> | void,
   logger?: { log: (msg: string) => void },
 ): Server {
   // Clean up stale socket file
@@ -350,10 +159,10 @@ export function startSocketServer(
       (async () => {
         try {
           const msg = JSON.parse(line) as SocketMessage;
-          if (msg.control === "interrupt") {
-            await controlFn("interrupt");
+          if (msg.control === "interrupt" || msg.control === "retire") {
+            await controlFn(msg.control, msg.message);
             logger?.log(
-              `Socket: interrupt control from ${msg.channel}/${msg.sessionKey}`,
+              `Socket: ${msg.control} control from ${msg.channel}/${msg.sessionKey}`,
             );
           } else {
             pushFn(msg.message);
@@ -375,49 +184,6 @@ export function startSocketServer(
 
   server.listen(socketPath);
   return server;
-}
-
-/**
- * Try to inject a message into a running session via the custom Unix domain socket.
- * If control is set, sends a control message instead of injecting a message.
- * Returns true if the operation succeeded, false otherwise.
- */
-export async function trySocketInject(
-  socketPath: string,
-  message: string,
-  channel: string,
-  sessionKey: string,
-  control?: "interrupt",
-): Promise<boolean> {
-  if (!existsSync(socketPath)) return false;
-
-  return new Promise<boolean>((resolve) => {
-    const client = createConnection(socketPath, () => {
-      const payload: SocketMessage = control
-        ? { message: "", channel, sessionKey, control }
-        : { message, channel, sessionKey };
-      client.write(JSON.stringify(payload) + "\n");
-    });
-
-    let buffer = "";
-    client.on("data", (chunk) => {
-      buffer += chunk.toString();
-      const newlineIdx = buffer.indexOf("\n");
-      if (newlineIdx === -1) return;
-      try {
-        const ack = JSON.parse(buffer.slice(0, newlineIdx)) as SocketAck;
-        resolve(ack.ok === true);
-      } catch {
-        resolve(false);
-      }
-    });
-
-    client.on("error", () => resolve(false));
-    client.setTimeout(5000, () => {
-      client.destroy();
-      resolve(false);
-    });
-  });
 }
 
 /**
@@ -472,6 +238,8 @@ export function buildSystemPrompt(
   options?: {
     appDir?: string;
     workspace?: string;
+    /** The harness backend's prompt section (HarnessBackend.promptExtension). */
+    harnessPrompt?: string;
   },
 ): string {
   const appDir = options?.appDir ?? APP_DIR;
@@ -494,6 +262,12 @@ export function buildSystemPrompt(
   const triggerSystemPromptFile = `${promptDir}/trigger-system-prompt.md`;
   if (existsSync(triggerSystemPromptFile)) {
     systemPrompt += `\n---\n\n${readFileSync(triggerSystemPromptFile, "utf8")}`;
+  }
+
+  // How the shared prompt's concepts (agents, skills, model tiers) are invoked
+  // in the configured backend.
+  if (options?.harnessPrompt) {
+    systemPrompt += `\n---\n\n${options.harnessPrompt}`;
   }
 
   // Channel-specific prompt
@@ -564,7 +338,8 @@ export function resolveModel(
 
 /**
  * Model key a trigger uses when it carries no explicit `model_key` override.
- * Cron-type triggers get `models.cron`; everything else gets `models.trigger`.
+ * Cron-type triggers and ATLAS_CRON=1 invocations get `models.cron`.
+ * Other invocations get `models.trigger`.
  *
  * @param triggerType - `type` column of the trigger row, or undefined for
  *   `--direct` invocations, which signal cron via the ATLAS_CRON env var.
@@ -576,10 +351,10 @@ export function defaultModelKeyFor(triggerType?: string): string {
 }
 
 /**
- * Returns the MCP servers config object for the query() call.
+ * Returns the MCP servers config for the conversation (common `mcpServers` format).
  * Merges user servers from:
  *   1. ~/.atlas-mcp/user.json (Atlas-managed user config)
- *   2. ~/.mcp.json (standard Claude MCP config)
+ *   2. ~/.mcp.json (standard MCP config)
  * Only stdio-based servers are included (URL-based cause silent exit issues with --mcp-config).
  */
 export function getMcpServers(): Record<string, Record<string, unknown>> {
@@ -917,298 +692,83 @@ export function recordMetrics(db: Database, data: MetricsData): void {
   );
 }
 
-// ---------------------------------------------------------------------------
-// JSONL cost aggregation
-// ---------------------------------------------------------------------------
-
-/** Pricing per 1M tokens for each model family. */
-export const MODEL_PRICING: Record<
-  string,
-  { in: number; out: number; cacheRead: number; cacheCreate: number }
-> = {
-  opus:    { in: 15.0,  out: 75.0,  cacheRead: 1.50,  cacheCreate: 18.75 },
-  sonnet:  { in: 3.0,   out: 15.0,  cacheRead: 0.30,  cacheCreate: 3.75 },
-  haiku:   { in: 1.0,   out: 5.0,   cacheRead: 0.10,  cacheCreate: 1.25 },
-};
-
-/** Determine pricing tier from a model string (e.g. "claude-sonnet-4-5"). */
-export function modelFamily(model: string): keyof typeof MODEL_PRICING {
-  const m = model.toLowerCase();
-  if (m.includes("opus")) return "opus";
-  if (m.includes("haiku")) return "haiku";
-  return "sonnet"; // default
-}
-
 /**
- * Resolve the Claude project directory name for the current working directory.
- * Claude Code derives this by replacing every '/' with '-' and stripping the
- * leading '-'. This matches the directory naming used by Claude Code itself.
- */
-export function resolveClaudeProjectDir(): string {
-  const projectDir =
-    process.env.CLAUDE_PROJECT_DIR ??
-    process.cwd().replace(/\//g, "-").replace(/^-/, "");
-  return projectDir;
-}
-
-export type AggregatedUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  costUsd: number;
-};
-
-/**
- * Aggregate cost+tokens for a trigger run by scanning the parent session JSONL
- * plus all subagent JSONL files, filtering by timestamp window and deduping
- * by message.id. Uses Anthropic API list pricing per model family.
- *
- * Window: [startedAt, endedAt + 60s buffer] — buffer accommodates async tool_results.
- *
- * Returns zero-valued result if files missing or parse fails (never throws).
- */
-export function aggregateRunCost(
-  parentSessionId: string,
-  startedAt: string,
-  endedAt: string,
-  homeDir?: string,
-): AggregatedUsage {
-  const zero: AggregatedUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    costUsd: 0,
-  };
-
-  try {
-    const base = homeDir ?? HOME;
-    const projectDir = resolveClaudeProjectDir();
-    const projectBase = `${base}/.claude/projects/${projectDir}`;
-
-    // Build time window
-    const windowStart = new Date(startedAt).getTime();
-    const windowEnd = new Date(endedAt).getTime() + 60_000; // +60s buffer
-
-    if (isNaN(windowStart) || isNaN(windowEnd)) return zero;
-
-    // Collect files to scan: parent JSONL + all subagent JSONLs
-    const filesToScan: string[] = [];
-
-    const parentJsonl = `${projectBase}/${parentSessionId}.jsonl`;
-    if (existsSync(parentJsonl)) {
-      filesToScan.push(parentJsonl);
-    }
-
-    const subagentsDir = `${projectBase}/${parentSessionId}/subagents`;
-    if (existsSync(subagentsDir)) {
-      try {
-        const entries = readdirSync(subagentsDir);
-        for (const entry of entries) {
-          if (entry.startsWith("agent-") && entry.endsWith(".jsonl")) {
-            filesToScan.push(`${subagentsDir}/${entry}`);
-          }
-        }
-      } catch {
-        // Subagents dir unreadable — proceed with parent only
-      }
-    }
-
-    if (filesToScan.length === 0) return zero;
-
-    // Single dedup set shared across all files
-    const seenMessageIds = new Set<string>();
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheCreationTokens = 0;
-    let costUsd = 0;
-
-    for (const filePath of filesToScan) {
-      let content: string;
-      try {
-        content = readFileSync(filePath, "utf8");
-      } catch {
-        continue;
-      }
-
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let obj: any;
-        try {
-          obj = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-
-        // Filter by time window
-        if (!obj.timestamp) continue;
-        const ts = new Date(obj.timestamp as string).getTime();
-        if (isNaN(ts) || ts < windowStart || ts > windowEnd) continue;
-
-        // Must have message.usage and message.id
-        const msg = obj.message;
-        if (!msg || typeof msg !== "object") continue;
-        if (!msg.usage) continue;
-        if (!msg.id) continue;
-
-        // Deduplicate by message.id across all files
-        const msgId = msg.id as string;
-        if (seenMessageIds.has(msgId)) continue;
-        seenMessageIds.add(msgId);
-
-        const usage = msg.usage as Record<string, number>;
-        const family = modelFamily((msg.model as string | undefined) ?? "");
-        const pricing = MODEL_PRICING[family];
-
-        const inTok = (usage.input_tokens as number | undefined) ?? 0;
-        const outTok = (usage.output_tokens as number | undefined) ?? 0;
-        const cacheReadTok = (usage.cache_read_input_tokens as number | undefined) ?? 0;
-        const cacheCreateTok = (usage.cache_creation_input_tokens as number | undefined) ?? 0;
-
-        inputTokens += inTok;
-        outputTokens += outTok;
-        cacheReadTokens += cacheReadTok;
-        cacheCreationTokens += cacheCreateTok;
-        costUsd +=
-          (inTok * pricing.in +
-            outTok * pricing.out +
-            cacheReadTok * pricing.cacheRead +
-            cacheCreateTok * pricing.cacheCreate) /
-          1_000_000;
-      }
-    }
-
-    return { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
-  } catch {
-    // Never throw — return zeros on any unexpected failure
-    return zero;
-  }
-}
-
-
-/**
- * Disable remote MCP connectors that hang on startup by writing to ~/.claude.json.
- */
-export function disableRemoteMcp(): void {
-  if (!existsSync(CLAUDE_JSON)) return;
-  try {
-    const raw = readFileSync(CLAUDE_JSON, "utf8");
-    const data = JSON.parse(raw) as Record<string, unknown>;
-    if (!data.cachedGrowthBookFeatures) {
-      data.cachedGrowthBookFeatures = {};
-    }
-    (
-      data.cachedGrowthBookFeatures as Record<string, unknown>
-    ).tengu_claudeai_mcp_connectors = false;
-    writeFileSync(CLAUDE_JSON, JSON.stringify(data, null, 2));
-  } catch {
-    // Non-fatal — proceed anyway
-  }
-}
-
-/**
- * Find the JSONL file for a session across all project directories.
- */
-export function findSessionJsonl(
-  sessionId: string,
-  homeDir?: string,
-): string | null {
-  const base = homeDir ?? HOME;
-  const projectsDir = `${base}/.claude/projects`;
-
-  if (!existsSync(projectsDir)) return null;
-
-  try {
-    for (const projectEntry of readdirSync(projectsDir)) {
-      const sessionsDir = `${projectsDir}/${projectEntry}/sessions`;
-      if (!existsSync(sessionsDir)) continue;
-      const candidate = `${sessionsDir}/${sessionId}.jsonl`;
-      if (existsSync(candidate)) return candidate;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
-/**
- * Check if a session's JSONL file ends with a "queue-operation" entry,
- * which indicates the container was killed mid-IPC-inject (corrupted state).
- */
-export function checkCorruptedSession(
-  sessionId: string,
-  homeDir?: string,
-): boolean {
-  const jsonlPath = findSessionJsonl(sessionId, homeDir);
-  if (!jsonlPath) return false;
-
-  try {
-    const content = readFileSync(jsonlPath, "utf8");
-    const lines = content.trimEnd().split("\n");
-    if (lines.length === 0) return false;
-    const lastLine = lines[lines.length - 1];
-    const parsed = JSON.parse(lastLine) as { type?: string };
-    return parsed.type === "queue-operation";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check if a session is stale (no JSONL activity for longer than threshold).
- * Returns idle seconds, or 0 if the session is fresh or JSONL not found.
+ * Seconds since the session or one of its nested agents last stored
+ * anything (a subagent writes its own history while the parent waits).
+ * 0 when the session has no history.
  */
 export function getSessionIdleSeconds(
   sessionId: string,
   homeDir?: string,
 ): number {
-  const jsonlPath = findSessionJsonl(sessionId, homeDir);
-  if (!jsonlPath) return 0;
-
-  try {
-    const mtime = statSync(jsonlPath).mtimeMs;
-    return (Date.now() - mtime) / 1000;
-  } catch {
-    return 0;
-  }
+  const sessions = createSessionStore({ home: homeDir ?? HOME });
+  const ref = sessions.ref(sessionId);
+  const lastActivityAt = ref ? sessions.metadata(ref)?.lastActivityAt : null;
+  if (!lastActivityAt) return 0;
+  return Math.max(0, (Date.now() - Date.parse(lastActivityAt)) / 1000);
 }
 
-/** Default: 10 minutes of no JSONL activity = stale (was 30min, reduced for faster frozen session detection) */
+/** Default: 30 minutes without transcript activity while a runner is alive = stale */
 const STALE_SESSION_THRESHOLD_S = parseInt(
-  process.env.STALE_SESSION_THRESHOLD ?? "600",
+  process.env.STALE_SESSION_THRESHOLD ?? "1800",
   10,
 );
 
-/**
- * Kill a running Claude session by finding and terminating the process owning its socket.
- */
-function killSessionProcess(sessionId: string): void {
-  const socketPath = `/tmp/claudec-${sessionId}.sock`;
-  if (!existsSync(socketPath)) return;
-
+/** Direct children of a process (the backend's agent CLI under a runner). */
+function childPids(pid: number): number[] {
   try {
-    // Read the socket to find the owning process via lsof (more portable than fuser)
-    const result = Bun.spawnSync(["lsof", "-t", socketPath]);
-    const pids = result.stdout.toString().trim().split("\n").filter(Boolean);
-    for (const pidStr of pids) {
-      const pid = parseInt(pidStr, 10);
-      if (!isNaN(pid)) {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {}
-      }
-    }
+    const result = Bun.spawnSync(["pgrep", "-P", String(pid)]);
+    return result.stdout
+      .toString()
+      .split("\n")
+      .map((line) => parseInt(line, 10))
+      .filter((child) => Number.isInteger(child) && child > 0);
   } catch {
-    // lsof not available or failed — try to remove socket directly
+    return [];
   }
+}
 
-  // Clean up socket file
+function sendSignal(pid: number, signal: NodeJS.Signals): void {
   try {
-    unlinkSync(socketPath);
+    process.kill(pid, signal);
   } catch {}
+}
+
+/**
+ * Terminate the runner that holds the (trigger, key) lock, plus its child
+ * processes. SIGTERM first so the runner releases its lock and the backend
+ * stops its CLI; SIGKILL after the grace period for a runner whose event loop hangs.
+ * Returns false when no other live runner holds the lock.
+ */
+export async function killStaleRunner(
+  triggerName: string,
+  sessionKey: string,
+  graceMs = 10_000,
+): Promise<boolean> {
+  const pid = readLockPid(getLockPath(triggerName, sessionKey));
+  if (!pid || pid === process.pid || !isPidAlive(pid)) return false;
+
+  const children = childPids(pid);
+  sendSignal(pid, "SIGTERM");
+  const deadline = Date.now() + graceMs;
+  while (isPidAlive(pid) && Date.now() < deadline) await Bun.sleep(200);
+  if (isPidAlive(pid)) sendSignal(pid, "SIGKILL");
+  for (const child of children) {
+    if (isPidAlive(child)) sendSignal(child, "SIGKILL");
+  }
+  return true;
+}
+
+/** Exit codes of --inject; see the CLI section in main(). */
+export async function injectIntoRunner(
+  triggerName: string,
+  sessionKey: string,
+  message: string,
+  channel: string,
+  control?: "retire",
+): Promise<0 | 2 | 3> {
+  if (await trySocketInject(getSocketPath(triggerName, sessionKey), message, channel, sessionKey, control)) return 0;
+  return isPidAlive(readLockPid(getLockPath(triggerName, sessionKey))) ? 3 : 2;
 }
 
 /**
@@ -1297,68 +857,65 @@ function openDb(): Database {
 // Streaming chunk persistence (web channel only)
 // ---------------------------------------------------------------------------
 
-/**
- * State carried across stream_event messages for a single turn. We treat the
- * SDK's `message_start` raw event as the boundary between turns: a new
- * message id resets the chunk counter; deltas are appended in order.
- */
+/** Chunk numbering of the message being streamed; a new message restarts at 0. */
 export interface StreamChunkState {
-  /** Setter for the current turn's stable id. Called on message_start. */
-  setUuid: (uuid: string) => void;
-  /** Getter for the active turn id (null before message_start). */
-  uuidRef: () => string | null;
-  /** Returns the next chunk_index for the active turn (post-increments). */
-  nextIndex: () => number;
+  messageId: string | null;
+  index: number;
 }
 
 /**
- * Persist a text delta from an SDKPartialAssistantMessage to
- * web_chat_stream_chunks so the web-ui SSE handler can forward it to the
- * client. Silently ignores non-text events (tool blocks, message_stop, etc.)
- * — those go through the regular JSONL → assistant_message path.
+ * Persist a streamed text delta to web_chat_stream_chunks so the web-ui can
+ * forward it to the client. The message id is the one the stored assistant
+ * entry carries (HistoryEntry.messageId), which lets the web-ui replace the
+ * draft with the final text.
  *
- * Exported for unit testing; the production caller is the for-await loop in
- * the persistent web-chat session.
+ * Exported for unit testing; the production caller is the conversation loop
+ * of the persistent web-chat session. Returns true when a row was inserted.
  */
 export function persistStreamChunk(
-  msg: { type: string; event?: unknown; session_id?: string },
+  sessionId: string,
+  delta: { messageId: string; text: string },
   state: StreamChunkState,
   db: Database = openSharedDb(),
-): void {
-  if (msg.type !== "stream_event") return;
-  const event = msg.event as
-    | {
-        type?: string;
-        message?: { id?: string };
-        delta?: { type?: string; text?: string };
-      }
-    | undefined;
-  if (!event || typeof event !== "object") return;
-  if (!msg.session_id) return;
-
-  // message_start: begin a new turn. Use the Anthropic message id as the
-  // stable handle the client will use to stitch chunks → final message.
-  if (event.type === "message_start" && event.message?.id) {
-    state.setUuid(event.message.id);
-    return;
+): boolean {
+  if (!sessionId || !delta.messageId || !delta.text) return false;
+  if (delta.messageId !== state.messageId) {
+    state.messageId = delta.messageId;
+    state.index = 0;
   }
-
-  // content_block_delta: append the text fragment to the current turn.
-  if (
-    event.type === "content_block_delta"
-    && event.delta?.type === "text_delta"
-    && typeof event.delta.text === "string"
-    && event.delta.text.length > 0
-  ) {
-    const uuid = state.uuidRef();
-    if (!uuid) return; // no message_start yet — shouldn't happen, skip safely
-    const index = state.nextIndex();
-    db.prepare(
-      `INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta)
-       VALUES (?, ?, ?, ?)`,
-    ).run(msg.session_id, uuid, index, event.delta.text);
-  }
+  db.prepare(
+    `INSERT INTO web_chat_stream_chunks (session_id, message_uuid, chunk_index, content_delta)
+     VALUES (?, ?, ?, ?)`,
+  ).run(sessionId, delta.messageId, state.index++, delta.text);
+  return true;
 }
+
+/**
+ * Drop a session's stream chunks at the start of a turn. The web-ui only
+ * needs the running turn's deltas (earlier turns are in the JSONL), so this
+ * keeps the table small. AUTOINCREMENT ids stay monotonic, which the web-ui's
+ * "id > last seen" cursor relies on.
+ */
+export function pruneStreamChunks(db: Database, sessionId: string): void {
+  db.prepare("DELETE FROM web_chat_stream_chunks WHERE session_id = ?").run(sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// Web-ui notifications (web channel only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Swappable dependencies. createNotifier: the runner → web-ui pinger
+ * (lib/web-ui-notify.ts); pings are hints and never affect control flow.
+ * createBackend: the configured harness backend. Tests swap both.
+ */
+export const runnerDeps: {
+  createNotifier: () => WebUiNotifier;
+  createBackend: () => HarnessBackend;
+} = {
+  createNotifier: () => createWebUiNotifier(),
+  createBackend: () => createHarnessBackend(),
+};
 
 /**
  * Upsert the (trigger_name, session_key) → session_id mapping.
@@ -1382,29 +939,20 @@ export function upsertTriggerSession(
 }
 
 // ---------------------------------------------------------------------------
-// 400 Upstream Error session clearing
+// Rejected-request session clearing
 // ---------------------------------------------------------------------------
 
 /**
- * Detect whether a result string indicates an Anthropic 400 upstream error.
- * These occur when the payload is too large (e.g. inlined image data exceeds
- * Anthropic's per-image 5 MB or per-request 20 MB limits).
- */
-export function is400UpstreamError(resultText: string | null | undefined): boolean {
-  if (typeof resultText !== "string") return false;
-  return resultText.startsWith("API Error: 400");
-}
-
-/**
- * If the result is a 400 Upstream Error, delete the session row for the
- * given (triggerName, sessionKey) so the next message starts fresh.
+ * If the provider rejected the turn's request itself (e.g. an image above the
+ * size limits), delete the session row for (triggerName, sessionKey): resuming
+ * the same context would fail identically, so the next message starts fresh.
  * Returns the session_id that was cleared, or null if nothing was cleared.
  *
  * Exported for testing; called by main() after each query run.
  */
-export function clearSessionOn400(
+export function clearRejectedSession(
   db: Database,
-  resultText: string | null | undefined,
+  turn: TurnResult | null,
   sessionMode: string,
   triggerName: string,
   sessionKey: string,
@@ -1412,7 +960,7 @@ export function clearSessionOn400(
   existingSession: string | null,
   log: { log: (msg: string) => void },
 ): string | null {
-  if (!is400UpstreamError(resultText)) return null;
+  if (turn?.error?.code !== "invalid-request") return null;
   if (sessionMode !== "persistent") return null;
 
   const oldSessionId = capturedSessionId ?? existingSession;
@@ -1422,7 +970,7 @@ export function clearSessionOn400(
     "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
   ).run(triggerName, sessionKey);
   log.log(
-    `Upstream 400 detected — clearing session ${oldSessionId} so next message starts fresh`,
+    `Request rejected by the provider — clearing session ${oldSessionId} so next message starts fresh`,
   );
   return oldSessionId;
 }
@@ -1445,12 +993,35 @@ export type RunDirectOptions = {
 };
 
 /**
- * Run a Claude session directly with a prompt, without needing a DB trigger entry.
+ * Run an agent session directly with a prompt, without needing a DB trigger entry.
  * Used by manage-reminders.ts and event.sh for ad-hoc sessions.
  *
  * @param prompt - The user prompt to send
  * @param options - Optional overrides for channel, modelKey, and extra env vars
  */
+/**
+ * Keep the web UI's login status current: a turn the provider refused as
+ * unauthenticated marks the login as failed, a completed turn clears that.
+ */
+export function noteAuthOutcome(db: Database, backend: string, turn: TurnResult): void {
+  try {
+    if (turn.error?.code === "authentication") recordAuthFailure(db, backend, turn.error.message);
+    else if (turn.outcome === "completed") clearAuthFailure(db);
+  } catch {
+    // system_state may not exist in very old DBs
+  }
+}
+
+/** An error the backend raised because it refused the credential; recorded like a refused turn. */
+export function noteAuthError(db: Database, backend: string, err: unknown): boolean {
+  const detail = describeError(err);
+  if (detail.code !== "authentication") return false;
+  try {
+    recordAuthFailure(db, backend, detail.message);
+  } catch {}
+  return true;
+}
+
 export async function runDirect(
   prompt: string,
   options?: RunDirectOptions,
@@ -1460,12 +1031,10 @@ export async function runDirect(
   const triggerName = options?.triggerName ?? "direct";
 
   const log = makeLogger(triggerName);
-
-  // --- Disable remote MCP ---
-  disableRemoteMcp();
+  const backend = runnerDeps.createBackend();
 
   // --- Build system prompt ---
-  const systemPrompt = buildSystemPrompt(channel);
+  const systemPrompt = buildSystemPrompt(channel, { harnessPrompt: backend.promptExtension });
 
   // --- Resolve model ---
   const model = resolveModel(`${HOME}/config.yml`, modelKey);
@@ -1476,7 +1045,6 @@ export async function runDirect(
   // --- Set environment variables ---
   process.env.ATLAS_TRIGGER = triggerName;
   process.env.ATLAS_TRIGGER_CHANNEL = channel;
-  delete process.env.CLAUDECODE;
 
   // Apply any extra env vars from options
   if (options?.env) {
@@ -1492,60 +1060,48 @@ export async function runDirect(
 
   const startedAt = isoNow();
   const startedMs = Date.now();
-  let resultMsg: SDKResultMessage | null = null;
+  let turn: TurnResult | null = null;
   let capturedSessionId: string | null = null;
   let isError = false;
 
-  const resumeId = options?.resumeId;
-  // Auto-memory is disabled via the settings layer: `autoMemoryEnabled` is a
-  // Settings field, not a top-level query() option — passing it at the top
-  // level is silently ignored. mcpServers is parsed from JSON so it's cast at
-  // the field; the outer `as` keeps that loose shape off the typecheck.
-  const queryOptions = {
-    systemPrompt,
-    model,
-    mcpServers: mcpServers as any,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
-    settings: { autoMemoryEnabled: false },
-    disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-    cwd: HOME,
-    ...(resumeId ? { resume: resumeId } : { persistSession: false }),
-    ...(CLAUDE_CODE_PATH
-      ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
-      : {}),
-  } as unknown as Parameters<typeof query>[0]["options"];
+  const resume = options?.resumeId ? backend.sessions.ref(options.resumeId) : null;
+  if (options?.resumeId && !resume) {
+    log.log(`ERROR: invalid session id to resume: ${options.resumeId}`);
+    return;
+  }
+  const conversation = backend.openConversation({
+    prompt, systemPrompt, model, mcpServers, cwd: HOME, turns: "single",
+    ...(resume ? { resume } : { ephemeral: true }),
+  });
 
-  const q = query({ prompt, options: queryOptions });
-
-  const timeoutHandle = setTimeout(() => {
-    q.return(undefined);
-  }, triggerTimeout);
+  const timeoutHandle = setTimeout(() => conversation.stop(), triggerTimeout);
 
   try {
-    for await (const msg of q) {
-      if (msg.type === "result") {
-        resultMsg = msg as SDKResultMessage;
-        capturedSessionId = (msg as { session_id?: string }).session_id ?? capturedSessionId;
-        isError = msg.subtype !== "success";
+    for await (const event of conversation) {
+      if (event.type === "session") capturedSessionId ??= event.session.nativeId;
+      if (event.type === "turn.finished") {
+        turn = event.result;
+        capturedSessionId = turn.session?.nativeId ?? capturedSessionId;
+        isError = turn.outcome === "failed";
+        try {
+          noteAuthOutcome(openDb(), backend.id, turn);
+        } catch {}
         break;
-      }
-      // Capture session_id from any earlier message that carries it
-      if (!capturedSessionId && "session_id" in msg && (msg as { session_id?: string }).session_id) {
-        capturedSessionId = (msg as { session_id: string }).session_id;
       }
     }
   } catch (err) {
     log.log(`ERROR in direct session: ${err}`);
+    try {
+      noteAuthError(openDb(), backend.id, err);
+    } catch {}
     isError = true;
   } finally {
     clearTimeout(timeoutHandle);
+    conversation.stop();
   }
 
-  if (resultMsg && "result" in resultMsg) {
-    log.log(
-      `Result: ${(resultMsg as { result: string }).result ?? "(no result)"}`,
-    );
+  if (turn && turn.text !== null) {
+    log.log(`Result: ${turn.text}`);
   }
 
   // When a custom triggerName was provided (e.g. "validator"), record a
@@ -1554,15 +1110,8 @@ export async function runDirect(
   // to preserve current behavior.
   if (options?.triggerName && capturedSessionId) {
     try {
-      const usage = resultMsg && "usage" in resultMsg
-        ? (resultMsg as unknown as { usage?: Record<string, number> }).usage
-        : undefined;
-      const cost = resultMsg && "total_cost_usd" in resultMsg
-        ? (resultMsg as { total_cost_usd?: number }).total_cost_usd ?? 0
-        : 0;
-      const numTurns = resultMsg && "num_turns" in resultMsg
-        ? (resultMsg as { num_turns?: number }).num_turns ?? 0
-        : 0;
+      // The turn's own usage: ephemeral sessions store no history to aggregate.
+      const usage = turn?.usage;
 
       // session_metrics is created by atlas-db.ts; open lazily.
       // If atlas-db.ts hasn't run for this DB yet the table may be missing —
@@ -1575,12 +1124,12 @@ export async function runDirect(
         startedAt,
         endedAt: isoNow(),
         durationMs: Date.now() - startedMs,
-        inputTokens: usage?.input_tokens ?? 0,
-        outputTokens: usage?.output_tokens ?? 0,
-        cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
-        cacheCreationTokens: usage?.cache_creation_input_tokens ?? 0,
-        costUsd: cost,
-        numTurns,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+        cacheReadTokens: usage?.cacheReadTokens ?? 0,
+        cacheCreationTokens: usage?.cacheWriteTokens ?? 0,
+        costUsd: usage?.cost?.amount ?? 0,
+        numTurns: turn?.turns ?? 0,
         isError,
       });
     } catch (err) {
@@ -1596,6 +1145,12 @@ export async function runDirect(
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<void> {
+  // Resolve the Atlas time zone once and export it as TZ for this whole
+  // process, so journal dates, any `date`-dependent tool the agent runs, and
+  // the agent session it spawns (which inherits this env) all agree
+  // with the web-ui and supercronic (sync-crontab's CRON_TZ) on "today".
+  applyProcessTimeZone(HOME);
+
   // --- Pause guard: skip execution if Atlas is paused ---
   if (existsSync(join(HOME, ".atlas-paused"))) {
     console.log(
@@ -1605,6 +1160,25 @@ export async function main(): Promise<void> {
   }
 
   const args = process.argv.slice(2);
+
+  // --- Inject mode: --inject <trigger> <session-key> "<message>" [--channel <channel>] [--retire] ---
+  // Hands a message to the live runner of (trigger, key) without starting a
+  // session. With --retire the runner hands (trigger, key) over at once and
+  // runs the message as its session's last turn (the /new farewell).
+  // Exit 0: delivered. Exit 2: no runner, the caller may resume the session
+  // itself. Exit 3: a runner is alive but unreachable, so resuming would
+  // start a second process on the same session.
+  if (args[0] === "--inject") {
+    const [, trigger, sessionKey, message] = args;
+    if (!trigger || !sessionKey || !message) {
+      console.error('Usage: trigger-runner.ts --inject <trigger> <session-key> "<message>" [--channel <channel>] [--retire]');
+      process.exit(1);
+    }
+    const channelIdx = args.indexOf("--channel");
+    const channel = channelIdx > 0 && args[channelIdx + 1] ? args[channelIdx + 1] : "internal";
+    const control = args.includes("--retire") ? "retire" as const : undefined;
+    process.exit(await injectIntoRunner(trigger, sessionKey, message, channel, control));
+  }
 
   // --- Direct mode: --direct "<prompt>" [--channel <channel>] [--model-key <key>] [--resume <session-id>] [--trigger-name <name>] ---
   if (args[0] === "--direct") {
@@ -1752,17 +1326,12 @@ export async function main(): Promise<void> {
   let existingSession: string | null = null;
   let staleRecovery = false;
 
-  function sessionFileExists(sessionId: string): boolean {
-    const projectsDir = join(HOME, ".claude", "projects");
-    if (!existsSync(projectsDir)) return false;
-    try {
-      for (const dir of readdirSync(projectsDir)) {
-        if (existsSync(join(projectsDir, dir, `${sessionId}.jsonl`)))
-          return true;
-      }
-    } catch {}
-    return false;
-  }
+  const backend = runnerDeps.createBackend();
+  const sessions = backend.sessions;
+  const sessionFileExists = (sessionId: string): boolean => {
+    const ref = sessions.ref(sessionId);
+    return !!ref && sessions.exists(ref);
+  };
 
   if (sessionMode === "persistent") {
     const sessionRow = db
@@ -1772,17 +1341,6 @@ export async function main(): Promise<void> {
       .get(triggerName, sessionKey) as { session_id: string } | undefined;
 
     existingSession = sessionRow?.session_id ?? null;
-
-    // Guard: corrupted session (killed mid-IPC-inject)
-    if (existingSession && checkCorruptedSession(existingSession)) {
-      log.log(
-        `Corrupted session ${existingSession} (ended mid-IPC-inject) — clearing, will start fresh`,
-      );
-      db.prepare(
-        "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
-      ).run(triggerName, sessionKey);
-      existingSession = null;
-    }
 
     // Guard: session file doesn't exist — clear stale session entry
     if (existingSession && !sessionFileExists(existingSession)) {
@@ -1801,12 +1359,14 @@ export async function main(): Promise<void> {
       const idleSeconds = getSessionIdleSeconds(existingSession);
       const isStopCommand = payload.trim().toLowerCase() === "/stop";
 
-      if (idleSeconds >= STALE_SESSION_THRESHOLD_S) {
-        // Session is stale (no JSONL activity) — kill it, then resume with notice
+      if (
+        idleSeconds >= STALE_SESSION_THRESHOLD_S &&
+        (await killStaleRunner(triggerName, sessionKey))
+      ) {
+        // A live runner without transcript activity hangs — killed it, resume with notice
         log.log(
-          `Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killing process`,
+          `Stale session ${existingSession} (idle ${Math.round(idleSeconds)}s) — killed its runner`,
         );
-        killSessionProcess(existingSession);
         staleRecovery = true;
       } else {
         // Session might be alive — try socket injection
@@ -1845,13 +1405,7 @@ export async function main(): Promise<void> {
 
   // --- Acquire flock-style dedup lock ---
   // We use a simple lockfile approach: write our PID, check if process is alive
-  const safeKey = sessionKey.replace(/[^a-zA-Z0-9_]/g, "_");
-  const flockCandidate = `/tmp/.trigger-${triggerName}-${safeKey}.flock`;
-  // Keep flock paths consistent with socket paths when keys are long
-  const flockFile =
-    flockCandidate.length > 108
-      ? `/tmp/.trigger-${triggerName}-${createHash("sha256").update(`${triggerName}-${sessionKey}`).digest("hex").slice(0, 16)}.flock`
-      : flockCandidate;
+  const flockFile = getLockPath(triggerName, sessionKey);
 
   // Acquire lock: check existing PID, wait up to 60s
   const lockAcquireStart = Date.now();
@@ -1911,9 +1465,20 @@ export async function main(): Promise<void> {
 
   // Ensure lock + socket are released on exit
   const triggerSocketPath = getSocketPath(triggerName, sessionKey);
+  // After /new retired this runner, the lock and socket paths belong to its
+  // successor; only the retiring PID file is ours.
+  let handedOver = false;
   const releaseLock = () => {
+    if (handedOver) {
+      try {
+        if (readLockPid(getRetiringPath(triggerName, sessionKey)) === process.pid) {
+          unlinkSync(getRetiringPath(triggerName, sessionKey));
+        }
+      } catch {}
+      return;
+    }
     try {
-      unlinkSync(flockFile);
+      if (readLockPid(flockFile) === process.pid) unlinkSync(flockFile);
     } catch {}
     // Socket cleanup is best-effort (may already be cleaned up by runQuery)
     if (existsSync(triggerSocketPath)) {
@@ -1922,6 +1487,16 @@ export async function main(): Promise<void> {
       } catch {}
     }
   };
+  /** Give (trigger, key) to the next runner now; this one finishes its farewell. */
+  const handOver = () => {
+    if (handedOver) return;
+    try {
+      writeFileSync(getRetiringPath(triggerName, sessionKey), String(process.pid));
+    } catch {}
+    releaseLock();
+    handedOver = true;
+  };
+
   process.on("exit", releaseLock);
   process.on("SIGTERM", () => {
     releaseLock();
@@ -2027,11 +1602,8 @@ export async function main(): Promise<void> {
     }
   }
 
-  // --- Disable remote MCP ---
-  disableRemoteMcp();
-
   // --- Build system prompt ---
-  const systemPrompt = buildSystemPrompt(channel);
+  const systemPrompt = buildSystemPrompt(channel, { harnessPrompt: backend.promptExtension });
 
   // --- Resolve model ---
   // Per-trigger model_key (from DB) overrides the type-driven default so a
@@ -2048,7 +1620,6 @@ export async function main(): Promise<void> {
   process.env.ATLAS_TRIGGER = triggerName;
   process.env.ATLAS_TRIGGER_CHANNEL = channel;
   process.env.ATLAS_TRIGGER_SESSION_KEY = sessionKey;
-  delete process.env.CLAUDECODE; // avoid nested-session detection
 
   // --- Run the query ---
   // Persistent sessions can run for hours (long tasks) — no hard timeout.
@@ -2058,7 +1629,7 @@ export async function main(): Promise<void> {
       ? undefined
       : parseInt(process.env.TRIGGER_TIMEOUT ?? "3600", 10) * 1000;
 
-  let resultMsg: SDKResultMessage | null = null;
+  let lastTurn: TurnResult | null = null;
   let capturedSessionId: string | null = null;
   let isError = false;
 
@@ -2068,83 +1639,71 @@ export async function main(): Promise<void> {
     prompt = `<system-notice>This session was terminated due to inactivity. The previous session state has been preserved. Please continue where you left off and process the new message below.</system-notice>\n\n${prompt}`;
   }
 
-  // --- Set up message channel + socket server for message injection ---
+  // --- Control socket for message injection ---
   const socketPath = getSocketPath(triggerName, sessionKey);
-  // Use a placeholder session_id initially; the generator produces messages with it
-  const msgChannel = createMessageChannel(
-    "pending",
-    sessionMode === "persistent" ? undefined : IDLE_TIMEOUT_MS,
-  );
   let socketServer: Server | null = null;
+  /** Close the control socket; after a handover its path belongs to the successor. */
+  const closeSocket = () => {
+    if (handedOver) socketServer?.close();
+    else cleanupSocket(socketServer, socketPath);
+    socketServer = null;
+  };
 
   // Streaming: emit text deltas for any session whose channel renders them
   // (today: web). Other channels (signal, email) deliver complete messages
   // anyway, so there's no benefit to the extra event volume.
   const wantsStreaming = channel === "web";
 
-  const runQuery = async (resumeId?: string) => {
-    // Mid-turn steering queue. Signal messages that arrive during an active
-    // turn are pushed here instead of into msgChannel. The PostToolBatch hook
-    // (registered below) drains the queue at every tool-call boundary and
-    // returns its contents as `additionalContext`, which the SDK injects into
-    // the NEXT LLM call within the same turn. That gives the "user message
-    // between tool calls" UX Claude Code's interactive REPL has — without
-    // restarting the turn or dropping work.
-    //
-    // Verified empirically with post-tool-batch-smoke-test.ts: the agent
-    // followed the steering directive on the next tool call.
+  // Live chat: tell the web-ui when a turn starts/ends and when chunks or
+  // transcript lines land, so it re-reads instead of polling.
+  const notifier = channel === "web" ? runnerDeps.createNotifier() : null;
+  const notify = (kind: ChatNotifyKind, extra?: { isError?: boolean; interrupted?: boolean }) => {
+    // After a handover the chat's pings belong to the successor's session.
+    if (!notifier || handedOver) return;
+    try {
+      notifier.ping({ trigger: triggerName, sessionKey, sessionId: capturedSessionId ?? existingSession, kind, ...extra });
+    } catch {}
+  };
+  const beginTurn = () => {
+    if (!notifier || handedOver) return;
+    const sid = capturedSessionId ?? existingSession;
+    if (sid) {
+      try {
+        pruneStreamChunks(db, sid);
+      } catch (err) {
+        log.log(`stream-chunk prune failed: ${err}`);
+      }
+    }
+    notify("turn_start");
+  };
+
+  const runQuery = async (resume?: SessionRef) => {
+    // Mid-turn steering queue. Messages that arrive during an active turn
+    // are queued here instead of starting a turn. The backend asks for them
+    // at every tool boundary (nextToolContext) and adds them to the NEXT
+    // model request within the same turn. That gives the "user message
+    // between tool calls" UX of an interactive session — without restarting
+    // the turn or dropping work.
     //
     // When no turn is active (between turns waiting for next user message),
-    // socket injects fall through to msgChannel.push to trigger a new turn.
+    // socket injects are pushed to the conversation to start a new turn.
     // After a turn ends, any messages still in the queue (arrived after the
-    // last tool batch) are flushed to msgChannel to start a new turn.
+    // last tool boundary) are pushed to start a new turn.
     const injectionQueue: string[] = [];
     let inTurn = false;
+    // /new retired this session: the farewell still to run, or running now.
+    let pendingFarewell: string | null = null;
+    let farewellRunning = false;
+    let retireTimeout: ReturnType<typeof setTimeout> | undefined;
 
-    // Auto-memory is disabled via the settings layer: `autoMemoryEnabled` is a
-    // Settings field, not a top-level query() option — passing it at the top
-    // level is silently ignored. mcpServers is parsed from JSON so it's cast at
-    // the field; the outer `as` keeps that loose shape off the typecheck.
-    const options = {
-      systemPrompt,
-      model,
-      mcpServers: mcpServers as any,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      settings: { autoMemoryEnabled: false },
-      disallowedTools: DISALLOWED_BUILTIN_TOOLS,
-      cwd: HOME,
-      ...(resumeId ? { resume: resumeId } : {}),
-      ...(CLAUDE_CODE_PATH
-        ? { pathToClaudeCodeExecutable: CLAUDE_CODE_PATH }
-        : {}),
-      ...(wantsStreaming ? { includePartialMessages: true } : {}),
-      hooks: {
-        PostToolBatch: [
-          {
-            hooks: [
-              async () => {
-                const pending = injectionQueue.splice(0);
-                if (pending.length === 0) {
-                  return {};
-                }
-                log.log(
-                  `Mid-turn steering: injecting ${pending.length} queued message(s) as additionalContext`,
-                );
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: "PostToolBatch" as const,
-                    additionalContext: pending
-                      .map((t) => `[Steering-Nachricht von ${sessionKey} (während aktivem Turn empfangen)]\n${t}`)
-                      .join("\n\n---\n\n"),
-                  },
-                };
-              },
-            ],
-          },
-        ],
-      },
-    } as unknown as Parameters<typeof query>[0]["options"];
+    const nextToolContext = () => {
+      const pending = injectionQueue.splice(0);
+      if (!pending.length) return undefined;
+      log.log(`Mid-turn steering: injecting ${pending.length} queued message(s) as additionalContext`);
+      return pending
+        .map((t) => `[Steering-Nachricht von ${sessionKey} (während aktivem Turn empfangen)]\n${t}`)
+        .join("\n\n---\n\n");
+    };
 
     // Typing indicator: one-shot per turn (no heartbeat).
     // signal-cli's `sendTyping` auto-expires after ~15s on Signal's side,
@@ -2161,44 +1720,72 @@ export async function main(): Promise<void> {
       } catch {}
     };
 
-    // Push the initial prompt as the first message + flash typing for turn 1
-    msgChannel.push(prompt);
+    // The initial prompt is the first message; flash typing for turn 1
+    const conversation: Conversation = backend.openConversation({
+      prompt, systemPrompt, model, mcpServers, cwd: HOME,
+      turns: "multi", idleTimeoutMs: IDLE_TIMEOUT_MS,
+      ...(resume ? { resume } : {}),
+      streamText: wantsStreaming, nextToolContext,
+    });
     inTurn = true;
+    beginTurn();
     sendTypingOnce();
-
-    // Use a mutable reference so the socket server control handler can call q.interrupt()
-    let q: import("@anthropic-ai/claude-agent-sdk").Query | null = null;
 
     // Start socket server so other trigger-runner processes can inject messages.
     //
     // Routing:
-    //   - inTurn === true (turn in progress) → queue for PostToolBatch hook.
-    //     The hook drains the queue at every tool boundary, returning the
-    //     content as additionalContext — injected into the next LLM call
-    //     within the same turn. No msgChannel push, so the previous
-    //     "shouldQuery=false orphan" idle-timeout regression is structurally
-    //     impossible.
-    //   - inTurn === false (between turns) → push to msgChannel directly,
+    //   - inTurn === true (turn in progress) → queue for nextToolContext,
+    //     which drains it at every tool boundary into the next model request
+    //     of the same turn. No push, so a message can never sit orphaned
+    //     next to a running turn until the idle timeout.
+    //   - inTurn === false (between turns) → push to the conversation,
     //     triggering the next turn.
     socketServer = startSocketServer(
       socketPath,
       (text) => {
         if (inTurn) {
-          // Mid-turn: hand off to the PostToolBatch hook via in-process queue.
+          // Mid-turn: hand off to nextToolContext via the in-process queue.
           injectionQueue.push(text);
         } else {
           // Between turns: trigger a new turn.
-          msgChannel.push(text);
-          inTurn = true;
+          if (conversation.push(text)) {
+            inTurn = true;
+            beginTurn();
+          } else {
+            log.log(`Dropped message — conversation channel already closed for session ${sessionKey}`);
+          }
         }
         // Each new injected message gets a typing flash.
         sendTypingOnce();
       },
-      async (control) => {
-        if (control === "interrupt" && q) {
+      async (control, message) => {
+        if (control === "retire") {
+          if (handedOver) return;
+          // Hand (trigger, key) over at once so the next message starts a fresh
+          // session, then finish this one: the running turn, then the farewell.
+          handOver();
+          closeSocket();
+          log.log("Retired by /new — handed over; running the farewell as the last turn");
+          retireTimeout = setTimeout(() => {
+            log.log("Farewell timed out — stopping");
+            conversation.stop();
+          }, RETIRE_TIMEOUT_MS);
+          if (inTurn) pendingFarewell = message;
+          else if (conversation.push(message)) {
+            inTurn = true;
+            farewellRunning = true;
+          } else {
+            log.log(`Farewell dropped — conversation channel already closed for session ${sessionKey}`);
+          }
+          return;
+        }
+        if (control === "interrupt") {
           try {
-            await q.interrupt();
+            await conversation.interrupt();
             log.log("Received /stop — query interrupted");
+            // The backend may not finish the turn after an interrupt; the
+            // web-ui treats a second turn_end (from turn.finished) as a no-op.
+            notify("turn_end", { interrupted: true });
             // Send a short Signal reply to inform the user the session stopped
             if (channel === "signal") {
               try {
@@ -2209,62 +1796,79 @@ export async function main(): Promise<void> {
               } catch {}
             }
           } catch (err) {
-            log.log(`q.interrupt() failed: ${err}`);
+            log.log(`interrupt failed: ${err}`);
           }
         }
       },
       log,
     );
 
-    q = query({ prompt: msgChannel.generator, options });
-
     const timeoutHandle = triggerTimeout
-      ? setTimeout(() => {
-          q?.close();
-        }, triggerTimeout)
+      ? setTimeout(() => conversation.stop(), triggerTimeout)
       : undefined;
 
-    // Per-message chunk counter for streaming. Resets when a new
-    // SDKAssistantMessage uuid appears so each turn's deltas index from 0.
-    let streamChunkUuid: string | null = null;
-    let streamChunkIndex = 0;
+    // Chunk numbering for streaming; restarts at 0 for each new message.
+    const chunkState: StreamChunkState = { messageId: null, index: 0 };
 
     try {
-      for await (const msg of q) {
-        if (msg.type === "result") {
-          // Multi-turn: capture latest result state but DO NOT break.
-          // runQuery stays alive so mid-turn injected messages (already in
-          // msgChannel's pending queue) are pulled by the SDK as the next
-          // user message. The for-await loop ends naturally when
-          // msgChannel.generator finishes (idle timeout closes it) or when
-          // the trigger timeout fires q.close().
-          resultMsg = msg as SDKResultMessage;
-          capturedSessionId = msg.session_id ?? null;
-          isError = msg.subtype !== "success";
+      for await (const event of conversation) {
+        if (event.type === "turn.finished") {
+          // Multi-turn: record the turn but keep going. The conversation
+          // takes further input (injected messages start the next turn) and
+          // ends when its input idles out or the trigger timeout stops it.
+          lastTurn = event.result;
+          capturedSessionId = event.result.session?.nativeId ?? null;
+          isError = event.result.outcome === "failed";
+          noteAuthOutcome(db, backend.id, event.result);
           inTurn = false;
-          const turnText = "result" in msg ? (msg as { result?: string }).result : undefined;
-          if (turnText) log.log(`Turn result: ${turnText}`);
+          notify("turn_end", { isError });
+          if (event.result.text) log.log(`Turn result: ${event.result.text}`);
 
-          // Flush any messages that arrived AFTER the last tool batch
-          // (PostToolBatch hook never got a chance to drain them) — push
-          // them now to start a new turn so they don't sit orphaned in the
-          // queue until idle timeout.
+          // The process keeps the credential it started with, so every further
+          // message would fail the same way. End it; the next message starts a
+          // runner that uses the current login.
+          if (event.result.error?.code === "authentication") {
+            log.log("Credential refused — ending the session so the next message uses the current login");
+            conversation.stop();
+            continue;
+          }
+
+          // Flush any messages that arrived AFTER the last tool boundary
+          // (nextToolContext never got a chance to drain them) — push them
+          // now to start a new turn so they don't sit orphaned in the queue
+          // until idle timeout.
           if (injectionQueue.length > 0) {
             const leftover = injectionQueue.splice(0);
             log.log(
               `End-of-turn flush: ${leftover.length} queued message(s) → new turn`,
             );
             for (const text of leftover) {
-              msgChannel.push(text);
+              if (!conversation.push(text)) {
+                log.log(`Dropped queued message — conversation channel already closed for session ${sessionKey}`);
+              }
             }
             inTurn = true;
+            beginTurn();
           }
-
+          if (handedOver && !inTurn) {
+            if (farewellRunning) {
+              log.log("Farewell done — exiting");
+              conversation.stop();
+            } else if (pendingFarewell !== null) {
+              const farewell = pendingFarewell;
+              pendingFarewell = null;
+              if (conversation.push(farewell)) {
+                inTurn = true;
+                farewellRunning = true;
+              } else {
+                log.log(`Farewell dropped — conversation channel already closed for session ${sessionKey}`);
+              }
+            }
+          }
           continue;
         }
-        // Capture session_id from any message that carries it
-        if ("session_id" in msg && msg.session_id && !capturedSessionId) {
-          capturedSessionId = msg.session_id as string;
+        if (event.type === "session" && !capturedSessionId) {
+          capturedSessionId = event.session.nativeId;
           // Persist the mapping now, not at turn end, so the web-ui SSE handler
           // can resolve session_id and stream chunks during this first turn.
           if (sessionMode === "persistent") {
@@ -2274,43 +1878,36 @@ export async function main(): Promise<void> {
               log.log(`early session upsert failed: ${err}`);
             }
           }
+          // Same for the run row: the web-ui (live transcript, stuck detection)
+          // and the kill switch need the session_id while the run is active.
+          if (runId !== null) {
+            try {
+              db.prepare("UPDATE trigger_runs SET session_id = ? WHERE id = ?").run(capturedSessionId, runId);
+            } catch (err) {
+              log.log(`early run session_id update failed: ${err}`);
+            }
+          }
+          notify("session");
         }
+        if (event.type === "message") notify("message");
         // Streaming: persist text deltas so the web-ui SSE handler can
         // forward them to the client in near-real-time. We accept the cost
         // of one INSERT per delta (typically a few characters) because the
         // chunks table is local SQLite and the web channel is low-volume.
-        //
-        // Per the SDK type `SDKPartialAssistantMessage.session_id` is always
-        // present on stream_event messages, but we belt-and-brace with the
-        // outer `capturedSessionId` so a future SDK change can't silently
-        // drop every chunk by handing us a partial without session_id.
-        if (wantsStreaming && msg.type === "stream_event") {
+        if (event.type === "text.delta" && wantsStreaming && capturedSessionId && !handedOver) {
           try {
-            const sid = (msg as unknown as { session_id?: string }).session_id
-              ?? capturedSessionId
-              ?? undefined;
-            if (sid) {
-              persistStreamChunk(
-                { type: msg.type, event: (msg as unknown as { event?: unknown }).event, session_id: sid },
-                {
-                  setUuid: (u) => { streamChunkUuid = u; streamChunkIndex = 0; },
-                  uuidRef: () => streamChunkUuid,
-                  nextIndex: () => streamChunkIndex++,
-                },
-                db,
-              );
-            }
+            if (persistStreamChunk(capturedSessionId, event, chunkState, db)) notify("chunk");
           } catch (err) {
-            // Don't let a malformed stream event tear down the whole turn.
+            // Don't let a failed insert tear down the whole turn.
             log.log(`stream-chunk persist failed: ${err}`);
           }
         }
       }
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
-      msgChannel.close();
-      cleanupSocket(socketServer, socketPath);
-      socketServer = null;
+      if (retireTimeout) clearTimeout(retireTimeout);
+      conversation.stop();
+      closeSocket();
     }
   };
 
@@ -2318,27 +1915,36 @@ export async function main(): Promise<void> {
     if (sessionMode === "persistent" && existingSession) {
       log.log(`Resuming session for key=${sessionKey}: ${existingSession}`);
       try {
-        await runQuery(existingSession);
-        // Check for silent failure: error with 0 turns means resume failed
-        if (isError && (resultMsg as any)?.num_turns === 0) {
+        await runQuery(sessions.ref(existingSession) ?? undefined);
+        // Check for silent failure: error with 0 turns means resume failed.
+        // A refused credential fails any session the same way; starting fresh
+        // would only drop this one's history.
+        if (isError && lastTurn?.turns === 0 && lastTurn.error?.code !== "authentication") {
           throw new Error("Resume returned error with 0 turns");
         }
       } catch (err) {
-        // Resume failed — retry as fresh session
-        log.log(
-          `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
-        );
-        db.prepare(
-          "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
-        ).run(triggerName, sessionKey);
-        existingSession = null;
-        resultMsg = null;
-        capturedSessionId = null;
-        isError = false;
-        // Need a fresh message channel for the retry
-        cleanupSocket(socketServer, socketPath);
-        socketServer = null;
-        await runQuery();
+        if (handedOver) {
+          // Retrying would delete the successor's mapping and steal its socket.
+          log.log(`Resume failed after hand-over for session ${existingSession} — not retrying: ${err}`);
+        } else if (noteAuthError(db, backend.id, err)) {
+          // A fresh session fails the same way; keep this one for after the next login.
+          log.log(`Resume refused, credential not accepted — keeping session ${existingSession}: ${err}`);
+          isError = true;
+        } else {
+          log.log(
+            `Resume failed for session ${existingSession} — retrying as fresh session: ${err}`,
+          );
+          db.prepare(
+            "DELETE FROM trigger_sessions WHERE trigger_name = ? AND session_key = ?",
+          ).run(triggerName, sessionKey);
+          existingSession = null;
+          lastTurn = null;
+          capturedSessionId = null;
+          isError = false;
+          // The retry opens a fresh conversation with its own input.
+          closeSocket();
+          await runQuery();
+        }
       }
     } else {
       if (sessionMode === "persistent") {
@@ -2348,27 +1954,26 @@ export async function main(): Promise<void> {
     }
   } catch (err) {
     log.log(`ERROR running trigger: ${err}`);
+    noteAuthError(db, backend.id, err);
     isError = true;
-    cleanupSocket(socketServer, socketPath);
+    closeSocket();
   }
 
   // Log result text
-  const resultText = resultMsg && "result" in resultMsg
-    ? ((resultMsg as { result: string }).result ?? "(no result)")
-    : null;
-  if (resultText !== null) {
-    log.log(`Result: ${resultText}`);
+  if (lastTurn && lastTurn.text !== null) {
+    log.log(`Result: ${lastTurn.text}`);
   }
 
   const endedAt = isoNow();
 
-  // --- 400 Upstream Error guard: clear broken session before saving ---
-  // When the Anthropic API returns a 400 "Upstream error" (e.g. payload too
-  // large due to inline image content), the session itself is fine to discard —
-  // persisting the failing session_id would make every subsequent message in
-  // this thread resume the same broken context and fail identically.
-  const cleared = clearSessionOn400(
-    db, resultText, sessionMode, triggerName, sessionKey,
+  // --- Rejected-request guard: clear broken session before saving ---
+  // When the provider rejects the request itself (e.g. payload too large due
+  // to inline image content), the session is fine to discard — persisting the
+  // failing session_id would make every subsequent message in this thread
+  // resume the same broken context and fail identically.
+  // A retired runner's (trigger, key) mapping belongs to its successor.
+  const cleared = handedOver ? null : clearRejectedSession(
+    db, lastTurn, sessionMode, triggerName, sessionKey,
     capturedSessionId, existingSession, log,
   );
   if (cleared !== null) {
@@ -2377,39 +1982,23 @@ export async function main(): Promise<void> {
   }
 
   // --- Save session for persistent triggers ---
-  if (sessionMode === "persistent" && capturedSessionId) {
+  if (sessionMode === "persistent" && capturedSessionId && !handedOver) {
     upsertTriggerSession(db, triggerName, sessionKey, capturedSessionId);
     log.log(`Saved session for key=${sessionKey}: ${capturedSessionId}`);
   }
 
   // --- Record metrics ---
-  // Aggregate cost from parent JSONL + all subagent JSONLs within the run window.
-  // The Anthropic SDK does NOT aggregate subagent token usage into the parent
-  // resultMsg.usage — each subagent call has its own API request_id.
-  // Scanning the JSONL files directly gives us the true total cost.
-  const usage =
-    (resultMsg as unknown as { usage?: Record<string, number> } | null)?.usage ?? {};
-  let aggregated: AggregatedUsage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheCreationTokens: 0,
-    costUsd: 0,
+  // Usage of the run window across the session and its nested agents: the
+  // result message only covers the parent's own model calls.
+  const sessionRef = capturedSessionId ? sessions.ref(capturedSessionId) : null;
+  const runUsage = sessionRef ? sessions.usage(sessionRef, { from: startedAt, to: endedAt }) : null;
+  const usageTotals = {
+    inputTokens: runUsage?.inputTokens ?? 0,
+    outputTokens: runUsage?.outputTokens ?? 0,
+    cacheReadTokens: runUsage?.cacheReadTokens ?? 0,
+    cacheCreationTokens: runUsage?.cacheWriteTokens ?? 0,
+    costUsd: runUsage?.cost?.amount ?? 0,
   };
-  if (capturedSessionId) {
-    try {
-      aggregated = aggregateRunCost(capturedSessionId, startedAt, endedAt);
-    } catch {
-      // Fall back to SDK-reported values if aggregation fails
-      aggregated = {
-        inputTokens: (usage.input_tokens as number | undefined) ?? 0,
-        outputTokens: (usage.output_tokens as number | undefined) ?? 0,
-        cacheReadTokens: (usage.cache_read_input_tokens as number | undefined) ?? 0,
-        cacheCreationTokens: (usage.cache_creation_input_tokens as number | undefined) ?? 0,
-        costUsd: (resultMsg as { total_cost_usd?: number } | null)?.total_cost_usd ?? 0,
-      };
-    }
-  }
   try {
     recordMetrics(db, {
       sessionType: "trigger",
@@ -2417,14 +2006,9 @@ export async function main(): Promise<void> {
       triggerName,
       startedAt,
       endedAt,
-      durationMs:
-        (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-      inputTokens: aggregated.inputTokens,
-      outputTokens: aggregated.outputTokens,
-      cacheReadTokens: aggregated.cacheReadTokens,
-      cacheCreationTokens: aggregated.cacheCreationTokens,
-      costUsd: aggregated.costUsd,
-      numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
+      durationMs: lastTurn?.durationMs ?? 0,
+      ...usageTotals,
+      numTurns: lastTurn?.turns ?? 0,
       isError,
     });
   } catch {
@@ -2442,14 +2026,9 @@ export async function main(): Promise<void> {
         triggerName,
         startedAt,
         endedAt,
-        durationMs:
-          (resultMsg as { duration_ms?: number } | null)?.duration_ms ?? 0,
-        inputTokens: aggregated.inputTokens,
-        outputTokens: aggregated.outputTokens,
-        cacheReadTokens: aggregated.cacheReadTokens,
-        cacheCreationTokens: aggregated.cacheCreationTokens,
-        costUsd: aggregated.costUsd,
-        numTurns: (resultMsg as { num_turns?: number } | null)?.num_turns ?? 0,
+        durationMs: lastTurn?.durationMs ?? 0,
+        ...usageTotals,
+        numTurns: lastTurn?.turns ?? 0,
         isError,
       },
       log,
@@ -2460,15 +2039,19 @@ export async function main(): Promise<void> {
   }
 
   // --- Mark run completed ---
-  if (runId !== null && capturedSessionId !== null) {
+  // Always close the run, even without a session_id — otherwise it would be
+  // reported as running forever.
+  if (runId !== null) {
     try {
       db.prepare(
-        "UPDATE trigger_runs SET session_id = ?, completed_at = datetime('now') WHERE id = ?",
+        "UPDATE trigger_runs SET session_id = COALESCE(?, session_id), completed_at = datetime('now') WHERE id = ?",
       ).run(capturedSessionId, runId);
     } catch {
       // Non-fatal
     }
   }
+  notify("run_end");
+  await notifier?.flush(300);
 
   releaseLock();
   log.log(`Trigger done: ${triggerName} (key=${sessionKey})`);

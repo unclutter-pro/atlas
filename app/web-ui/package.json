@@ -2,15 +2,27 @@
   "name": "@atlas/web-ui",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.ts",
+  "main": "server.ts",
   "scripts": {
-    "start": "bun run index.ts"
+    "start": "bun run server.ts",
+    "dev": "NODE_ENV=development bun --hot server.ts",
+    "build": "bun build --compile --minify --sourcemap --define process.env.NODE_ENV='\"production\"' server.ts --outfile web-ui",
+    "test": "bun test"
   },
   "dependencies": {
+    "dompurify": "^3.4.15",
     "hono": "^4.12.25",
-    "js-yaml": "^4.3.2"
+    "js-yaml": "^4.3.2",
+    "marked": "^18.0.13",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@types/js-yaml": "^4.0.9"
+    "@types/bun": "^1.3.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^30.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "jsdom": "^30.1.0"
   }
 }

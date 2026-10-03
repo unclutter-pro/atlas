@@ -1,0 +1,30 @@
+/* Automations area. Classes are prefixed .automations-. */
+
+.automations-type { text-transform: uppercase; letter-spacing: 0.04em; }
+.automations-type-cron { color: var(--accent); border-color: rgba(124, 110, 240, 0.4); background: var(--accent-soft); }
+.automations-type-webhook { color: var(--running); border-color: rgba(86, 168, 245, 0.4); background: var(--running-soft); }
+.automations-type-manual { color: var(--text-muted); }
+
+.automations-title-badges { display: inline-flex; margin-left: var(--sp-3); vertical-align: middle; gap: var(--sp-2); font-size: var(--fs-sm); font-weight: 400; }
+
+.automations-disabled .cell-primary { color: var(--text-muted); }
+.automations-desc { max-width: 360px; }
+
+.automations-detail-grid { margin-bottom: var(--sp-5); align-items: start; }
+.automations-upcoming { display: flex; flex-direction: column; gap: 2px; font-variant-numeric: tabular-nums; }
+.automations-detail-grid > .card + .card { margin-top: 0; }
+.automations-url { display: flex; align-items: flex-start; gap: var(--sp-2); }
+.automations-url-code { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 2px 6px; }
+.automations-cause { max-width: 320px; }
+
+.automations-run-card { margin-bottom: var(--sp-5); border-color: var(--accent); }
+
+.automations-reminder-what { max-width: 440px; }
+.automations-cancel { align-items: flex-end; gap: var(--sp-1); }
+.automations-trigger-reminders { margin-top: var(--sp-6); }
+.automations-subhead { display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+
+.automations-form { max-width: 820px; }
+.automations-schedule { display: flex; flex-direction: column; gap: var(--sp-2); }
+.automations-presets { gap: var(--sp-1); }
+.automations-preview { padding: var(--sp-2) var(--sp-3); border-left: 3px solid var(--accent); background: var(--bg-sunken); border-radius: var(--radius-sm); display: flex; flex-direction: column; gap: 2px; }

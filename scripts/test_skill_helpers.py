@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,9 +66,27 @@ class LauncherTests(unittest.TestCase):
             self.assertIn("Templates bundled", result.stdout)
 
     def test_office_imports_resolve_to_one_implementation(self):
-        paths = [ROOT / f"app/defaults/skills/{name}/scripts/office" for name in ("docx", "pptx", "xlsx")]
-        self.assertEqual(len({p.resolve(strict=True) for p in paths}), 1)
-        self.assertTrue((paths[0] / "schemas/ISO-IEC29500-4_2016/wml.xsd").is_file())
+        # The office links exist only in the image; rebuild that layout from the Dockerfile's loop.
+        match = re.search(r"for skill in ([\w ]+); do\s*\\\s*ln -sfn (\S+) /etc/claude-code/\.claude/(\S+);",
+                          (ROOT / "Dockerfile").read_text())
+        self.assertIsNotNone(match, "Dockerfile no longer links the office helpers")
+        skills, target, link = match.group(1).split(), match.group(2), match.group(3)
+        self.assertEqual(skills, ["docx", "pptx", "xlsx"])
+        with tempfile.TemporaryDirectory() as folder:
+            claude = Path(folder)
+            shutil.copytree(ROOT / "app/defaults/skills", claude / "skills", symlinks=True)
+            shutil.copytree(ROOT / "app/defaults/skill-support", claude / "skill-support")
+            paths = []
+            for skill in skills:
+                path = claude / link.replace("$skill", skill)
+                path.symlink_to(target)
+                paths.append(path)
+            self.assertEqual(len({p.resolve(strict=True) for p in paths}), 1)
+            self.assertTrue((paths[0] / "schemas/ISO-IEC29500-4_2016/wml.xsd").is_file())
+            for path in paths:
+                result = subprocess.run([sys.executable, "-c", "import office.soffice"],
+                                        cwd=path.parent, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

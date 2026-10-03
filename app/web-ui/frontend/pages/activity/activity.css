@@ -1,0 +1,109 @@
+/* Activity area. Classes are prefixed .activity- */
+
+/* ---------- Status segmented control + filters ---------- */
+.activity-status-tabs { display: inline-flex; gap: 2px; padding: 3px; margin-bottom: var(--sp-3); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius); }
+.activity-status-tab { padding: 4px 14px; border-radius: var(--radius-sm); color: var(--text-muted); font-size: var(--fs-md); font-weight: 600; }
+.activity-status-tab:hover { color: var(--text); text-decoration: none; background: var(--surface); }
+.activity-status-tab.active { background: var(--surface-raised); color: var(--text-strong); }
+.activity-status-tab.active.is-running { color: var(--running); }
+.activity-status-tab.active.is-failed { color: var(--error); }
+.activity-status-tab.active.is-ok { color: var(--ok); }
+
+.activity-filters { gap: var(--sp-2); }
+.activity-filters .field { gap: 0; }
+.activity-filters .select { min-width: 150px; }
+.activity-search { flex: 1 1 240px; min-width: 200px; }
+.activity-search .input { width: 100%; }
+.toolbar .activity-search .input { width: 100%; }
+.activity-dates { display: flex; align-items: center; gap: var(--sp-1); }
+.toolbar .activity-dates .input { min-width: 0; width: 140px; }
+
+/* ---------- Timeline ---------- */
+.activity-day { margin-bottom: var(--sp-5); }
+.activity-day-header { display: flex; align-items: baseline; gap: var(--sp-3); padding: 0 var(--sp-1) var(--sp-2); font-size: var(--fs-sm); position: sticky; top: 44px; z-index: 2; background: var(--bg); padding-top: var(--sp-2); }
+.activity-day-label { font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
+.activity-rows { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 44px 128px minmax(0, 1fr) 92px 72px 70px;
+  gap: var(--sp-3);
+  align-items: center;
+  padding: 9px var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: var(--fs-md);
+  border-left: 3px solid transparent;
+}
+.activity-row:last-child { border-bottom: none; }
+a.activity-row:hover { background: var(--surface-hover); text-decoration: none; }
+.activity-row.is-running { background: var(--running-soft); border-left-color: var(--running); }
+.activity-row.is-failed { border-left-color: var(--error); }
+.activity-row.is-unhandled { border-left-color: var(--warn); }
+.activity-row-time { color: var(--text-faint); font-size: var(--fs-sm); }
+.activity-row-main { min-width: 0; display: flex; flex-direction: column; }
+.activity-row-summary { color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row-sub { color: var(--text-faint); font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row-error { color: var(--error); }
+.activity-row-num { text-align: right; font-size: var(--fs-md); color: var(--text-muted); white-space: nowrap; }
+.activity-row-outcome { display: flex; }
+
+@media (max-width: 860px) {
+  .activity-row { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .activity-row-cause, .activity-row-num { display: none; }
+}
+
+.activity-cause { font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; max-width: 100%; vertical-align: bottom; }
+.activity-cause-message { color: var(--accent); }
+.activity-cause-cron { color: #b39ddb; }
+.activity-cause-webhook { color: #4dd0c4; }
+.activity-cause-direct { color: var(--text-faint); }
+.activity-cause-channel { font-weight: 500; color: var(--text-muted); }
+
+.activity-more-row { display: flex; justify-content: center; padding: var(--sp-2) 0 var(--sp-5); }
+
+/* ---------- Detail layout ---------- */
+.activity-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--sp-5); align-items: start; margin-top: var(--sp-5); }
+.activity-detail-main, .activity-detail-side { min-width: 0; }
+@media (max-width: 1100px) { .activity-detail-grid { grid-template-columns: minmax(0, 1fr); } }
+.activity-detail-side .kv { grid-template-columns: max-content minmax(0, 1fr); gap: 6px var(--sp-3); }
+.activity-break { overflow-wrap: anywhere; word-break: break-all; }
+.activity-pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-md); line-height: 1.55; }
+.activity-raw summary { cursor: pointer; font-size: var(--fs-sm); color: var(--text-muted); margin-bottom: var(--sp-2); }
+
+/* Message card */
+.activity-message { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius); padding: var(--sp-3) var(--sp-4); }
+.activity-message-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); font-size: var(--fs-md); }
+.activity-message-body { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-strong); line-height: 1.6; }
+.activity-attachments { margin-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
+.activity-attachment { font-size: var(--fs-sm); }
+.activity-audio { display: block; margin-top: var(--sp-1); height: 32px; }
+.activity-image { display: block; margin-top: var(--sp-1); max-width: 100%; max-height: 320px; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.activity-transcription { margin-top: var(--sp-1); color: var(--text-muted); font-style: italic; }
+
+/* ---------- Transcript ---------- */
+.activity-transcript { display: flex; flex-direction: column; gap: var(--sp-2); }
+.activity-transcript-bar { display: flex; align-items: center; gap: var(--sp-2); }
+.activity-t-omitted { padding: var(--sp-1) 0; }
+.activity-t { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: var(--sp-2) var(--sp-3); min-width: 0; }
+.activity-t-user { background: var(--bg-sunken); }
+.activity-t-assistant { border-left: 3px solid var(--accent); }
+.activity-t-label { font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); margin-bottom: var(--sp-1); display: flex; gap: var(--sp-2); }
+.activity-t-time { margin-left: auto; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-faint); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.activity-t-fold { padding: 0; background: transparent; }
+.activity-t-fold > summary { display: flex; align-items: center; gap: var(--sp-2); padding: 6px var(--sp-3); cursor: pointer; font-size: var(--fs-sm); list-style: none; min-width: 0; }
+.activity-t-fold > summary::-webkit-details-marker { display: none; }
+.activity-t-fold > summary::before { content: "▸"; color: var(--text-faint); font-size: 10px; width: 10px; flex-shrink: 0; }
+.activity-t-fold[open] > summary::before { content: "▾"; }
+.activity-t-fold > summary:hover { background: var(--surface-hover); }
+.activity-t-fold > .activity-pre { padding: var(--sp-2) var(--sp-3) var(--sp-3); color: var(--text-muted); border-top: 1px solid var(--border); }
+.activity-t-label-inline { font-weight: 600; color: var(--text-muted); flex-shrink: 0; }
+.activity-t-tool-name { font-weight: 700; color: var(--text-strong); flex-shrink: 0; }
+.activity-t-tool.is-error { border-color: rgba(242, 92, 84, 0.5); }
+.activity-t-tool.is-error .activity-t-tool-name { color: var(--error); }
+.activity-t-hint { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.activity-t-tool-body { border-top: 1px solid var(--border); padding: var(--sp-2) var(--sp-3) var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-1); }
+.activity-t-sub { font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); margin-top: var(--sp-1); }
+.activity-code { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm); max-height: 360px; overflow: auto; }
+.activity-more { margin-top: var(--sp-1); background: none; border: none; color: var(--accent); font: inherit; font-size: var(--fs-sm); cursor: pointer; padding: 0; }
+.activity-more:hover { text-decoration: underline; }

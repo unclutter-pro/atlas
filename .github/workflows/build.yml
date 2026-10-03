@@ -1,9 +1,15 @@
 name: build
 
-# atlas images are released on version tags only.
+# Version tags release an image. Manual runs only build, unless given a tag.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to push (defaults to dry-run, which pushes nothing)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,12 +46,14 @@ jobs:
         with:
           context: ${{ matrix.context }}
           platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          push: ${{ github.event_name == 'push' || inputs.tag != '' }}
+          tags: ${{ env.IMAGE }}:${{ inputs.tag != '' && inputs.tag || github.ref_name }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
       - uses: sigstore/cosign-installer@v3
+        if: github.event_name == 'push' || inputs.tag != ''
 
       - name: Sign image (keyless)
+        if: github.event_name == 'push' || inputs.tag != ''
         run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"

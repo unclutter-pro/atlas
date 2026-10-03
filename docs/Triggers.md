@@ -110,17 +110,19 @@ On-demand triggers. Fire via the web-ui "Run" button or by asking Claude.
 
 ### Via Web-UI
 
-1. Navigate to `/triggers`
-2. Click **+ New Trigger**
+1. Open **Automations** (`/automations`)
+2. Click **New trigger** (`/automations?create=1`)
 3. Fill in the form:
    - **Name:** Lowercase slug (e.g. `github-check`)
    - **Type:** Cron, Webhook, or Manual
-   - **Schedule:** Cron expression (for cron triggers)
+   - **Schedule:** Numeric 5-field cron expression (for cron triggers; names and `@daily`-style macros are rejected because the crontab sync drops them). The form previews the next runs.
    - **Session Mode:** `ephemeral` (default) or `persistent`
    - **Webhook Secret:** Optional auth token (for webhooks)
    - **Channel:** Inbox channel for generated messages (default: `internal`)
    - **Prompt:** What the trigger session should do. Use `{{payload}}` for webhook data.
-4. Click **Create Trigger**
+4. Click **Create trigger**
+
+Each trigger has its own page (`/automations/<name>`) with its prompt, schedule, webhook URL, run history and cost, plus Edit, Enable/Disable, Run now and Delete.
 
 ### Via MCP
 
@@ -135,15 +137,12 @@ On-demand triggers. Fire via the web-ui "Run" button or by asking Claude.
 }
 ```
 
-### Via curl
+### Via CLI (inside the container)
 
 ```bash
-curl -X POST http://localhost:8080/triggers \
-  -d "name=my-trigger" \
-  -d "type=manual" \
-  -d "session_mode=ephemeral" \
-  -d "description=Test trigger" \
-  -d "prompt=Hello, this is a test trigger."
+bun /atlas/app/triggers/manage.ts create --name=my-trigger --type=manual \
+  --session-mode=ephemeral --description="Test trigger"
+# The prompt lives in ~/triggers/my-trigger/prompt.md
 ```
 
 ## Webhook Integration
@@ -296,7 +295,7 @@ Prompt:         Run a system health check (disk, memory, services).
 
 Nightly cognitive consolidation — inspired by how memory consolidation works during sleep. Runs a multi-phase process:
 
-1. **Session Replay** — Extracts the last 24h of Claude Code sessions using `extract-sessions.py` and hands each to a `session-analyzer` subagent (haiku, in parallel) for extraction
+1. **Session Replay** — Extracts the last 24h of agent sessions with the `sessions` tool and hands each to a `session-analyzer` subagent (haiku, in parallel) for extraction
 2. **Synthesis** — The consolidation session itself works out what the day *meant*: patterns across sessions and across days, user corrections, second-order consequences, open loops
 3. **Writing** — Journal entry (mandatory), then folding new knowledge into memory; the agent chooses the form, extends existing files over creating near-duplicates, and appends dated lines to playbooks rather than rewriting them
 4. **Reconciliation** — Verifies memory against external reality and supersedes outdated facts (`invalidated`, `superseded_by`) instead of overwriting them
@@ -307,26 +306,34 @@ Nightly cognitive consolidation — inspired by how memory consolidation works d
 - **Session Mode:** ephemeral
 - **Model:** `model_key='dreaming'` → `models.dreaming` (opus by default). The nightly synthesis is where reasoning depth pays off, and it runs offline once a day with no user waiting.
 - **Default prompt:** `app/defaults/triggers/dreaming/prompt.md`
-- **Session extractor:** `app/triggers/cron/extract-sessions.py`
+- **Session extractor:** `sessions` (`app/triggers/sessions.ts`)
 
 The workspace copy at `workspace/triggers/dreaming/prompt.md` is user-customizable. On upgrade, `init.sh` refreshes it only when it is byte-identical to the default previously shipped (tracked in `.prompt.shipped.md`); customized prompts are left untouched and the new default is logged instead.
 
-The session extractor (`extract-sessions.py`) parses JSONL session files, filtering out system messages and tool results to produce a condensed conversation summary within a configurable token budget:
+The session extractor reads sessions through the configured backend's session store (`HarnessSessionStore`, see [harness-interface.md](harness-interface.md#session-storage)), drops system messages and tool results, and produces a condensed conversation summary within a configurable token budget:
 
 ```bash
-python3 /atlas/app/triggers/cron/extract-sessions.py --hours 24 --max-tokens 30000
+sessions --hours 24 --max-tokens 30000                      # extract for consolidation
+sessions --hours 24 --list --exclude-trigger dreaming       # index; last column is the session reference
+sessions --session <session>                                # one session, or <session>/<agent> for a nested agent
+sessions --prune-days 14                                    # retention (daily-cleanup)
 ```
+
+`--session` also accepts a transcript path, for dreaming prompts written against the earlier extractor.
 
 ## Managing Triggers
 
 ### Web-UI
 
-The `/triggers` page provides full CRUD:
-- **List** all triggers with type, status, session mode, schedule/URL, last run, run count
-- **Toggle** enable/disable (HTMX live update)
-- **Run** any trigger manually (even cron triggers)
-- **Edit** description, schedule, prompt, secret, channel, session mode
+**Automations** (`/automations`) provides full CRUD:
+- **List** triggers grouped into Scheduled, Webhooks and Manual, with next run, last outcome, run count and 7-day cost
+- **Toggle** enable/disable inline
+- **Run** any enabled trigger manually (even cron triggers; refused while Atlas is paused)
+- **Edit** description, schedule, prompt, secret, channel, session mode, model
 - **Delete** with confirmation
+- **Reminders** tab (`/automations?view=reminders`): pending reminders with Cancel, then history
+
+Every run links to its detail page in **Activity** (`/activity/<run id>`).
 
 ### MCP Tools
 
@@ -364,8 +371,8 @@ When cron triggers are created, updated, or deleted, the crontab is automaticall
 ┌───────────┐         ┌──────────────────┐         ┌──────────────┐
 │ External   │  POST   │    Web-UI        │  button  │  Claude      │
 │ Service    │────────▸│  /api/webhook/   │◂────────│  MCP: trigger│
-└───────────┘         │  /triggers/:id/  │         │  _create     │
-                      │  run             │         └──────────────┘
+└───────────┘         │  Automations     │         │  _create     │
+                      │  "Run now"       │         └──────────────┘
                       └────────┬─────────┘
                                │
                                ▼

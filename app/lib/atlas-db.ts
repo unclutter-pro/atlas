@@ -14,10 +14,12 @@ function createTables(database: Database): void {
       channel TEXT NOT NULL,
       sender TEXT,
       content TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TEXT DEFAULT (datetime('now')),
+      session_key TEXT NOT NULL DEFAULT '_default'
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_channel_created ON messages(channel, created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_channel_session_created ON messages(channel, session_key, created_at);
 
     CREATE TABLE IF NOT EXISTS trigger_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,6 +112,7 @@ function createTables(database: Database): void {
       created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_session_metrics_created ON session_metrics(created_at);
+    CREATE INDEX IF NOT EXISTS idx_session_metrics_session ON session_metrics(session_id);
   `);
 
   // Trigger runs: tracks active trigger invocations for crash recovery
@@ -126,6 +129,9 @@ function createTables(database: Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_trigger_runs_active
       ON trigger_runs(completed_at) WHERE completed_at IS NULL;
+    -- Web UI Activity: joining runs to their session_metrics row, and the timeline
+    CREATE INDEX IF NOT EXISTS idx_trigger_runs_session ON trigger_runs(session_id);
+    CREATE INDEX IF NOT EXISTS idx_trigger_runs_started ON trigger_runs(started_at);
   `);
 
   // System state: key-value store for control plane (kill switch, etc.)

@@ -1,5 +1,7 @@
 # Agent Crontab (supercronic)
-# Timezone via TZ env variable in the container
+# sync-crontab.ts prepends a CRON_TZ=<zone> line (from config.yml
+# `timezone:` / ATLAS_TIMEZONE, else the container's own TZ) so this
+# schedules in the resolved Atlas zone regardless of the container's TZ.
 
 # Check for due reminders every minute
 * * * * *  bun /atlas/app/triggers/manage-reminders.ts check >> /atlas/logs/reminders.log 2>&1

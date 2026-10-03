@@ -1,6 +1,13 @@
 # Agent Configuration
 # Editable by Claude and via the Web-UI
 
+# Time zone for day boundaries (web-ui), cron scheduling (supercronic) and
+# agent sessions (journal dates). Empty/unset = detect from the container
+# (TZ env, /etc/timezone, /etc/localtime), then UTC. Override with
+# ATLAS_TIMEZONE env var. Only needed when it should differ from the
+# container's own TZ (see docker-compose.yml).
+# timezone: "Europe/Berlin"
+
 agent:
   name: "Atlas" # Display name for the agent (used in UI, logs, prompts). Override with ATLAS_AGENT_NAME env var.
   email: "" # Agent email address (optional, for integrations)
@@ -65,12 +72,9 @@ team:
 web_ui:
   port: 8080
   bind: "127.0.0.1"
-
-failure_handling:
-  notification_command: "" # Shell command run once after threshold (e.g. "signal send '+1...' 'API unavailable'")
-  backoff_initial_seconds: 30
-  backoff_max_seconds: 900 # Cap at 15 minutes
-  notification_threshold_minutes: 30
+  # Hostnames besides localhost, IP addresses, single-label names and *.local
+  # that may reach the UI (DNS-rebinding guard), e.g. a Tailscale name:
+  # allowed_hosts: ["atlas.example.ts.net"]
 
 # Speech-to-Text (STT) service
 # Used for transcribing voice messages from Signal/WhatsApp.
@@ -93,6 +97,10 @@ usage_reporting:
 # Workspace paths — override to customize directory layout
 workspace:
   projects_dir: "" # Custom projects directory path (default: $HOME/projects). Override with ATLAS_PROJECTS_DIR env var.
+
+# Agent backend that runs sessions and stores their history (docs/harness-interface.md)
+harness:
+  backend: claude-code # Only registered backend today. Override with ATLAS_HARNESS_BACKEND env var.
 
 # Claude Code Plugins — enable/disable marketplace plugins
 # Format: "plugin-id@marketplace-id": true/false

@@ -21,22 +21,30 @@ app/
 │   ├── SOUL.md                # Default agent soul
 │   ├── agents/                # Default agent specs (symlinked into .claude/agents/)
 │   └── skills/                # System skills (symlinked into .claude/skills/)
-├── hooks/                      # Claude Code lifecycle hooks
-│   ├── session-start.sh       # Loads memory into context (all sessions)
-│   ├── stop.sh                # Journal reminder (trigger sessions)
-│   ├── pre-compact-auto.sh    # Memory flush before compaction
-│   ├── pre-compact-manual.sh  # Memory flush on manual compaction
-│   ├── subagent-stop.sh       # Quality gate script (legacy, kept for reference)
-│   └── generate-settings.ts  # Generates ~/.claude/settings.json with hooks config
 ├── lib/                        # Shared libraries (DB, config, auth)
-│   └── db.ts                  # Database initialization, schema, migrations
-├── web-ui/                     # Hono.js dashboard
-│   └── index.ts               # Web server
+│   ├── db.ts                  # Database initialization, schema, migrations
+│   ├── trigger-socket.ts      # Runner control socket and lock paths, message injection
+│   └── web-ui-notify.ts       # Runner → web-ui chat pings (~/.index/web-ui.sock)
+├── web-ui/                     # Dashboard (compiled to a single binary)
+│   ├── server.ts              # Bun.serve entrypoint
+│   ├── ui-api/                # /ui/api/* JSON endpoints (core.ts, one module per area, shared/)
+│   │   └── chat/              # Chat service, live hub, SSE, /api/v1 chat adapter, STT
+│   ├── frontend/              # React app, bundled by Bun (areas.ts, shell/, components/, pages/<area>/)
+│   ├── dev/seed.ts            # Seeds an isolated HOME with fixture data for local development
+│   └── index.ts               # Hono app: /api/v1, /api/webhook, /healthz
 ├── triggers/                   # Trigger runner scripts
 │   ├── trigger.sh             # Thin wrapper: delegates to trigger-runner binary
 │   ├── trigger-runner.ts      # Trigger runner (compiled to native binary at build time)
 │   ├── manage.ts              # Trigger management CLI
 │   ├── sync-crontab.ts        # Crontab auto-generation from DB
+│   ├── sessions.ts            # `sessions` CLI: extraction and retention via the session store
+│   ├── lifecycle/             # Atlas lifecycle policy, backend-neutral (docs/hooks.md)
+│   ├── harness/               # Agent backends (docs/harness-interface.md)
+│   │   ├── configure.ts       # Writes the configured backend's settings (init.sh, web-ui)
+│   │   └── claude/            # Claude Code adapter
+│   │       ├── hooks/         # Claude Code hook protocol wrappers (docs/hooks.md)
+│   │       ├── settings.ts    # ~/.claude/settings.json, skill and agent directories
+│   │       └── prompt.md      # Claude-specific system prompt section
 │   └── cron/                  # Cron-specific scripts
 ├── prompts/                    # Prompt templates
 │   ├── trigger-system-prompt.md           # Core trigger session system prompt
@@ -57,7 +65,7 @@ Persistent home directory. Mounted as a Docker volume (`./home:/home/agent`). Co
 ```
 home/
 ├── .claude/                    # Claude Code configuration
-│   ├── settings.json          # Hooks config (written by generate-settings.ts)
+│   ├── settings.json          # Hooks config (written by the Claude adapter's configure())
 │   ├── skills/                # Merged skill directory (per-skill symlinks)
 │   │   └── <skill-name> →     # Symlinks to system or user skills
 │   └── agents/                # Merged agent directory (per-agent symlinks)
@@ -101,10 +109,11 @@ home/
 |------|-------------|
 | `app/triggers/trigger-runner` | Native binary: trigger session launcher (injects system prompt, model, MCP) |
 | `app/triggers/trigger.sh` | Thin shell wrapper: delegates to trigger-runner binary |
-| `app/hooks/session-start.sh` | Loads memory context on session start |
-| `app/hooks/stop.sh` | Journal reminder (trigger sessions) |
+| `app/triggers/lifecycle/session-start.sh` | Loads memory context on session start |
+| `app/triggers/lifecycle/stop.sh` | Task gate and journal reminder when the agent wants to stop |
 | `app/lib/atlas-db.ts` | Database initialization, schema, migrations |
-| `app/web-ui/index.ts` | Hono.js dashboard server |
+| `app/web-ui/server.ts` | Dashboard server entrypoint (Bun.serve + React) |
+| `app/web-ui/index.ts` | Hono routes: `/api/v1`, webhook receiver, `/healthz` |
 | `app/defaults/agents/` | System agent specs (developer, reviewer, etc.) |
 | `app/defaults/skills/` | System skills (symlinked into `.claude/skills/`) |
 | `/home/agent/.index/atlas.db` | SQLite database (messages, triggers, sessions) |

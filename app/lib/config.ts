@@ -31,6 +31,8 @@ export interface ModelsConfig {
   dreaming: string;
   subagent_review: string;
   hooks: string;
+  /** Extra user-defined keys, addressable via a trigger's `model_key`. */
+  [key: string]: string;
 }
 
 export interface MemoryConfig {
@@ -65,13 +67,11 @@ export interface DailyCleanupConfig {
 export interface WebUiConfig {
   port: number;
   bind: string;
-}
-
-export interface FailureHandlingConfig {
-  notification_command: string;
-  backoff_initial_seconds: number;
-  backoff_max_seconds: number;
-  notification_threshold_minutes: number;
+  /**
+   * Hostnames the web UI answers to besides localhost and IP literals
+   * (DNS-rebinding guard). "*.example.com" matches subdomains, "*" disables the check.
+   */
+  allowed_hosts: string[];
 }
 
 export interface SttConfig {
@@ -99,7 +99,24 @@ export interface WorkspaceConfig {
   projects_dir: string;
 }
 
+export interface HarnessConfig {
+  /**
+   * Agent backend that runs sessions and owns their storage
+   * (docs/harness-interface.md). Registered: "claude-code".
+   */
+  backend: string;
+}
+
 export interface AtlasConfig {
+  /**
+   * IANA time zone ("Europe/Berlin", "America/New_York") used for day
+   * boundaries (web-ui), cron scheduling (supercronic, via sync-crontab's
+   * CRON_TZ) and agent sessions (journal dates). Empty ⇒ detect from the
+   * container runtime (TZ env, /etc/timezone, /etc/localtime), then UTC.
+   * Resolve with resolveTimezone() in lib/timezone.ts, not this field
+   * directly — it validates the value and applies the fallback chain.
+   */
+  timezone: string;
   agent: AgentConfig;
   models: ModelsConfig;
   memory: MemoryConfig;
@@ -107,11 +124,11 @@ export interface AtlasConfig {
   email: EmailConfig;
   daily_cleanup: DailyCleanupConfig;
   web_ui: WebUiConfig;
-  failure_handling: FailureHandlingConfig;
   stt: SttConfig;
   webhook: WebhookConfig;
   usage_reporting: UsageReportingConfig;
   workspace: WorkspaceConfig;
+  harness: HarnessConfig;
   plugins: PluginsConfig;
 }
 
@@ -122,6 +139,7 @@ export type ConfigSource = "env" | "runtime" | "file" | "default";
 // ---------------------------------------------------------------------------
 
 const DEFAULTS: AtlasConfig = {
+  timezone: "",
   agent: { name: "Atlas", email: "" },
   models: { main: "sonnet", trigger: "opus", cron: "sonnet", dreaming: "opus", subagent_review: "sonnet", hooks: "haiku" },
   memory: { load_memory_md: true, load_journal_days: 7 },
@@ -132,15 +150,12 @@ const DEFAULTS: AtlasConfig = {
     folder: "INBOX", whitelist: [], mark_read: true,
   },
   daily_cleanup: { enabled: true, retention_days: 30, metrics_retention_days: 90 },
-  web_ui: { port: 8080, bind: "127.0.0.1" },
-  failure_handling: {
-    notification_command: "", backoff_initial_seconds: 30,
-    backoff_max_seconds: 900, notification_threshold_minutes: 30,
-  },
+  web_ui: { port: 8080, bind: "127.0.0.1", allowed_hosts: [] },
   stt: { enabled: true, url: "http://stt:5092/v1/audio/transcriptions" },
   webhook: { relay_url: "https://webhooks.unclutter.pro" },
   usage_reporting: { enabled: false, webhook_url: "", webhook_secret: "", include_tokens: false },
   workspace: { projects_dir: "" }, // empty = $HOME/projects (resolved at runtime)
+  harness: { backend: "claude-code" },
   plugins: {
     enabled: {
       // Enabled by default
@@ -175,6 +190,7 @@ type EnvMapping = {
 };
 
 const ENV_MAPPINGS: EnvMapping[] = [
+  { env: "ATLAS_TIMEZONE", path: "timezone", type: "string" },
   { env: "ATLAS_AGENT_NAME", aliases: ["AGENT_NAME"], path: "agent.name", type: "string" },
   { env: "ATLAS_AGENT_EMAIL", path: "agent.email", type: "string" },
   { env: "ATLAS_MODEL_MAIN", path: "models.main", type: "string" },
@@ -203,10 +219,7 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_DAILY_CLEANUP_METRICS_RETENTION_DAYS", path: "daily_cleanup.metrics_retention_days", type: "number" },
   { env: "ATLAS_WEB_UI_PORT", path: "web_ui.port", type: "number" },
   { env: "ATLAS_WEB_UI_BIND", path: "web_ui.bind", type: "string" },
-  { env: "ATLAS_FAILURE_NOTIFICATION_COMMAND", path: "failure_handling.notification_command", type: "string" },
-  { env: "ATLAS_FAILURE_BACKOFF_INITIAL", path: "failure_handling.backoff_initial_seconds", type: "number" },
-  { env: "ATLAS_FAILURE_BACKOFF_MAX", path: "failure_handling.backoff_max_seconds", type: "number" },
-  { env: "ATLAS_FAILURE_NOTIFICATION_THRESHOLD", path: "failure_handling.notification_threshold_minutes", type: "number" },
+  { env: "ATLAS_WEB_UI_ALLOWED_HOSTS", path: "web_ui.allowed_hosts", type: "string[]" },
   { env: "ATLAS_STT_ENABLED", path: "stt.enabled", type: "boolean" },
   { env: "ATLAS_STT_URL", aliases: ["STT_URL"], path: "stt.url", type: "string" },
   { env: "ATLAS_WEBHOOK_RELAY_URL", path: "webhook.relay_url", type: "string" },
@@ -215,6 +228,7 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_USAGE_WEBHOOK_SECRET", path: "usage_reporting.webhook_secret", type: "string" },
   { env: "ATLAS_USAGE_INCLUDE_TOKENS", path: "usage_reporting.include_tokens", type: "boolean" },
   { env: "ATLAS_PROJECTS_DIR", path: "workspace.projects_dir", type: "string" },
+  { env: "ATLAS_HARNESS_BACKEND", path: "harness.backend", type: "string" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -279,6 +293,22 @@ let lastSources: Map<string, ConfigSource> = new Map();
  */
 export function getConfigSource(path: string): ConfigSource {
   return lastSources.get(path) ?? "default";
+}
+
+/**
+ * Built-in defaults (a copy), before config.yml, runtime overrides and env.
+ * Unlike resolveConfig(), this does not touch the recorded sources.
+ */
+export function getConfigDefaults(): AtlasConfig {
+  return structuredClone(DEFAULTS);
+}
+
+/**
+ * Environment variable that overrides a config key, e.g. "models.cron" →
+ * "ATLAS_MODEL_CRON". Undefined when the key has no env mapping.
+ */
+export function getEnvVarName(path: string): string | undefined {
+  return ENV_MAPPINGS.find((m) => m.path === path)?.env;
 }
 
 /**
@@ -362,6 +392,33 @@ export function resolveConfig(home?: string): AtlasConfig {
     config.workspace.projects_dir = join(homeDir, "projects");
   }
 
+  // Custom models.<key> entries are user-defined and therefore not env-mapped,
+  // but a trigger's model_key can address any of them. Merge them in so they
+  // survive; the env-mapped keys above keep their resolved precedence.
+  const envMappedPaths = new Set(ENV_MAPPINGS.map((m) => m.path));
+  const mergeCustomModels = (parsed: Record<string, any> | null | undefined, source: ConfigSource) => {
+    if (!parsed?.models || typeof parsed.models !== "object") return;
+    const models = config.models as unknown as Record<string, string>;
+    for (const [key, value] of Object.entries(parsed.models)) {
+      if (typeof value !== "string" || envMappedPaths.has(`models.${key}`)) continue;
+      models[key] = value;
+      sources.set(`models.${key}`, source);
+    }
+  };
+
+  if (existsSync(configPath)) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      mergeCustomModels(yaml.load(raw) as Record<string, any> | null, "file");
+    } catch { /* already handled above */ }
+  }
+  if (existsSync(runtimePath)) {
+    try {
+      const raw = readFileSync(runtimePath, "utf-8");
+      mergeCustomModels(JSON.parse(raw) as Record<string, any>, "runtime");
+    } catch { /* already handled above */ }
+  }
+
   // Resolve plugins config (merge from config.yml and runtime, not env-mapped)
   // config.yml plugins.enabled overrides defaults
   if (existsSync(configPath)) {
@@ -386,25 +443,6 @@ export function resolveConfig(home?: string): AtlasConfig {
 
   lastSources = sources;
   return config as AtlasConfig;
-}
-
-// ---------------------------------------------------------------------------
-// Model name utilities
-// ---------------------------------------------------------------------------
-
-const MODEL_SHORTHAND: Record<string, string> = {
-  opus: "claude-opus-4-6",
-  sonnet: "claude-sonnet-4-6",
-  haiku: "claude-haiku-4-5",
-};
-
-/**
- * Expand a model shorthand (e.g. "opus") to its full API name
- * (e.g. "claude-opus-4-6"). If the value is already a full name or
- * unrecognised, it is returned as-is.
- */
-export function expandModelName(shorthand: string): string {
-  return MODEL_SHORTHAND[shorthand] ?? shorthand;
 }
 
 /**

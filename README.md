@@ -32,7 +32,9 @@ docker compose build
 
 Atlas needs Claude Code credentials. Choose one:
 
-**Option A: OAuth (recommended)**
+**Option A: Claude subscription (recommended)**
+
+Start Atlas (step 3), open **Settings > Login** in the Web-UI and follow the sign-in link. The default creates a token that is valid for one year; the status bar shows how long it has left and Settings > Login renews it. Alternatively, log in from a terminal:
 ```bash
 docker run -it --rm -v $(pwd)/volume:/home/agent --entrypoint claude atlas:latest
 ```
@@ -69,7 +71,7 @@ Atlas runs entirely in a single Docker container managed by supervisord:
 | Component | Port | Purpose |
 |-----------|------|---------|
 | **nginx** | 8080 | Reverse proxy to web-ui |
-| **web-ui** | 3000 | Hono.js + HTMX dashboard |
+| **web-ui** | 3000 | Bun.serve + React dashboard (Hono.js only for Chat, `/api/v1`, webhooks) |
 | **watcher** | — | inotifywait loop, resumes Claude on `.wake` |
 | **supercronic** | — | Cron job runner |
 
@@ -106,18 +108,19 @@ See [docs/Triggers.md](docs/Triggers.md) for the full guide and [docs/watcher.md
 ```
 atlas/
 ├── app/                          # Core application (read-only in container)
-│   ├── hooks/                    # Claude Code lifecycle hooks
-│   │   ├── session-start.sh      # Loads identity + memory on wake
-│   │   ├── stop.sh               # Checks inbox, continues or sleeps
-│   │   ├── pre-compact-auto.sh   # Memory flush before compaction
-│   │   └── subagent-stop.sh      # Quality gate for team results
-│   ├── atlas-mcp/                # Database module (schema, migrations)
-│   ├── web-ui/                   # Hono.js + HTMX dashboard
+│   ├── lib/                      # Shared libraries (config, DB, harness contract + session store)
+│   ├── web-ui/                   # Bun.serve + React dashboard
 │   ├── triggers/                 # Trigger runner scripts
 │   │   ├── trigger.sh            # Generic trigger runner
+│   │   ├── lifecycle/            # Atlas lifecycle policy, backend-neutral
+│   │   │   ├── session-start.sh      # Loads identity + memory on wake
+│   │   │   ├── stop.sh               # Task gate and journal reminder
+│   │   │   ├── pre-compact.sh        # Memory flush before compaction
+│   │   │   └── task-session.sh       # Task and goal context
+│   │   ├── harness/              # Agent backends
+│   │   │   └── claude/hooks/         # Claude Code protocol wrappers
 │   │   ├── sync-crontab.ts       # Crontab auto-generation from DB
 │   │   └── cron/                 # Cron-specific scripts
-│   ├── watcher.sh                # inotifywait event loop
 │   └── init.sh                   # Container bootstrap
 ├── docker-compose.yml
 ├── Dockerfile
@@ -144,7 +147,7 @@ See [docs/directory-structure.md](docs/directory-structure.md) for complete layo
 
 ### IDENTITY.md
 
-Defines who Atlas is — personality, language, capabilities, restrictions. Edit via web-ui at `/settings` or directly in the workspace.
+Defines who Atlas is — personality, language, capabilities, restrictions. Edit via web-ui at `/settings/personality` or directly in the workspace.
 
 ### config.yml
 

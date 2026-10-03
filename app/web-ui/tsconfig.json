@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["bun"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    // ../lib has no node_modules of its own; resolve its hono import from here.
+    "paths": { "hono": ["./node_modules/hono"], "hono/*": ["./node_modules/hono/*"] }
+  },
+  "include": ["server.ts", "ui-api", "frontend", "dev", "server.test.ts"]
+}

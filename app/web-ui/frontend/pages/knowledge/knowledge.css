@@ -1,0 +1,71 @@
+/* Knowledge area. Loaded after the global styles.css. */
+
+.knowledge-search { margin-bottom: var(--sp-5); max-width: 640px; }
+.knowledge-search .input { height: 38px; font-size: var(--fs-base); }
+
+.knowledge-columns { display: grid; gap: var(--sp-5); grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
+@media (max-width: 960px) { .knowledge-columns { grid-template-columns: 1fr; } }
+
+/* Readable document width for rendered markdown. */
+.knowledge-memory .prose, .knowledge-doc .prose { max-width: 78ch; font-size: var(--fs-base); }
+.knowledge-memory > .card-body, .knowledge-doc > .card-body { padding: var(--sp-5) var(--sp-5); }
+.knowledge-memory .prose h1:first-child, .knowledge-doc .prose h1:first-child { font-size: var(--fs-lg); color: var(--text-muted); }
+.knowledge-memory .prose h2, .knowledge-doc .prose h2 { font-size: var(--fs-sm); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-top: 1.6em; }
+.knowledge-memory .prose h1 + h2, .knowledge-doc .prose h1 + h2 { margin-top: 1em; }
+
+.knowledge-filetitle { overflow-wrap: anywhere; }
+
+/* File tree */
+.knowledge-tree, .knowledge-tree ul { list-style: none; }
+.knowledge-tree { padding: var(--sp-1) 0; }
+.knowledge-tree-row { display: flex; align-items: center; gap: var(--sp-2); width: 100%; padding: 6px var(--sp-4); font: inherit; font-size: var(--fs-md); color: var(--text); background: none; border: none; text-align: left; }
+.knowledge-tree-row:hover { background: var(--surface-hover); }
+.knowledge-tree-folder { cursor: pointer; color: var(--text-muted); }
+.knowledge-tree-caret { width: 12px; color: var(--text-faint); font-size: var(--fs-xs); flex-shrink: 0; }
+.knowledge-tree-dirname { font-weight: 600; color: var(--text); }
+.knowledge-tree-file { margin-left: 20px; color: var(--text-strong); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knowledge-tree-meta { margin-left: auto; display: flex; gap: var(--sp-3); font-size: var(--fs-sm); color: var(--text-faint); white-space: nowrap; flex-shrink: 0; }
+.knowledge-tree-meta > :first-child { min-width: 56px; text-align: right; }
+
+.knowledge-newfile { display: flex; gap: var(--sp-2); align-items: flex-start; }
+.knowledge-newfile .input { height: 26px; padding: 2px 8px; font-size: var(--fs-sm); width: 220px; }
+
+/* Day lists */
+.knowledge-daylist { list-style: none; padding: var(--sp-1) 0; }
+.knowledge-daylist a { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); padding: 7px var(--sp-4); color: var(--text); font-size: var(--fs-md); }
+.knowledge-daylist a:hover { background: var(--surface-hover); text-decoration: none; }
+.knowledge-daylist-date { color: var(--text-strong); }
+.knowledge-daylist-compact { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); max-height: 360px; overflow-y: auto; }
+.knowledge-daylist-compact a { padding: 5px var(--sp-3); }
+.knowledge-daylist li.is-selected a { background: var(--accent-soft); color: var(--text-strong); font-weight: 600; }
+
+/* Journal */
+.knowledge-daynav { display: flex; gap: var(--sp-2); align-items: center; }
+.knowledge-journal { display: grid; gap: var(--sp-5); grid-template-columns: minmax(0, 1fr) 260px; align-items: start; }
+@media (max-width: 900px) { .knowledge-journal { grid-template-columns: 1fr; } }
+.knowledge-journal-side { display: flex; flex-direction: column; gap: var(--sp-5); position: sticky; top: 60px; }
+.knowledge-journal-side .section { margin-bottom: 0; }
+
+.knowledge-cal > .card-body { padding: var(--sp-3); }
+.knowledge-cal-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.knowledge-cal-title { flex: 1; text-align: center; font-size: var(--fs-md); font-weight: 600; color: var(--text-strong); }
+.knowledge-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.knowledge-cal-wd { font-size: var(--fs-xs); color: var(--text-faint); padding: 2px 0 4px; }
+.knowledge-cal-day { display: block; padding: 4px 0; border-radius: var(--radius-sm); font-size: var(--fs-sm); color: var(--text-faint); font-variant-numeric: tabular-nums; border: 1px solid transparent; }
+.knowledge-cal-day.has-entry { color: var(--text-strong); background: var(--accent-soft); font-weight: 600; }
+a.knowledge-cal-day:hover { background: var(--accent); color: #fff; text-decoration: none; }
+.knowledge-cal-day.is-today { border-color: var(--border-strong); }
+.knowledge-cal-day.is-selected { background: var(--accent); color: #fff; }
+
+/* Search results */
+.knowledge-hit-head { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--border); }
+.knowledge-hit-path { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+.knowledge-hit-lines { list-style: none; padding: var(--sp-2) 0; font-size: var(--fs-md); }
+.knowledge-hit-lines li { display: flex; gap: var(--sp-3); padding: 2px var(--sp-4); }
+.knowledge-hit-lineno { width: 36px; flex-shrink: 0; text-align: right; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.knowledge-hit-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--text); }
+.knowledge-hit mark { background: rgba(227, 163, 59, 0.3); color: var(--text-strong); border-radius: 2px; }
+
+/* Editor */
+.knowledge-editor { display: flex; flex-direction: column; gap: var(--sp-3); }
+.knowledge-editor-text { min-height: 60vh; font-size: var(--fs-md); line-height: 1.6; padding: var(--sp-3) var(--sp-4); tab-size: 2; }
