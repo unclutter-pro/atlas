@@ -17,6 +17,7 @@ import {
   buildSystemPrompt,
   buildInjectMessage,
   resolveModel,
+  defaultModelKeyFor,
   getMcpServers,
   safePlaceholderReplace,
   readTriggerConfig,
@@ -447,6 +448,21 @@ models:
     expect(model).toBe("claude-sonnet-4-6");
   });
 
+  test.each([
+    { name: "empty cron model", models: { cron: "", trigger: "sonnet" }, key: "cron", expected: "sonnet" },
+    { name: "whitespace cron model", models: { cron: " \t\n", trigger: "sonnet" }, key: "cron", expected: "sonnet" },
+    { name: "empty custom model", models: { custom: "", trigger: "sonnet" }, key: "custom", expected: "sonnet" },
+    { name: "empty trigger model", models: { trigger: "" }, key: "trigger", expected: "opus" },
+    { name: "both models blank", models: { cron: "", trigger: " \t" }, key: "cron", expected: "opus" },
+    { name: "unknown key with blank fallback", models: { trigger: " " }, key: "unknown", expected: "opus" },
+    { name: "padded model", models: { cron: " sonnet " }, key: "cron", expected: "sonnet" },
+    { name: "padded fallback", models: { cron: "", trigger: " sonnet " }, key: "cron", expected: "sonnet" },
+  ])("resolves $name to a nonblank model", ({ models, key, expected }) => {
+    writeFileSync(join(tmpDir, "config.yml"), JSON.stringify({ models }));
+    process.env.HOME = tmpDir;
+    expect(resolveModel("", key)).toBe(expected);
+  });
+
   test("handles malformed YAML gracefully", () => {
     const badDir = makeTempDir();
     writeFileSync(join(badDir, "config.yml"), "{ this is: not valid: yaml: [");
@@ -455,6 +471,45 @@ models:
     const model = resolveModel("", "trigger");
     expect(model).toBe("opus");
     rmSync(badDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defaultModelKeyFor
+// ---------------------------------------------------------------------------
+
+describe("defaultModelKeyFor", () => {
+  let originalCron: string | undefined;
+
+  beforeEach(() => {
+    originalCron = process.env.ATLAS_CRON;
+    delete process.env.ATLAS_CRON;
+  });
+
+  afterEach(() => {
+    if (originalCron !== undefined) {
+      process.env.ATLAS_CRON = originalCron;
+    } else {
+      delete process.env.ATLAS_CRON;
+    }
+  });
+
+  test("cron-type trigger uses the cron key", () => {
+    expect(defaultModelKeyFor("cron")).toBe("cron");
+  });
+
+  test("webhook and manual triggers use the trigger key", () => {
+    expect(defaultModelKeyFor("webhook")).toBe("trigger");
+    expect(defaultModelKeyFor("manual")).toBe("trigger");
+  });
+
+  test("direct invocation without ATLAS_CRON uses the trigger key", () => {
+    expect(defaultModelKeyFor()).toBe("trigger");
+  });
+
+  test("ATLAS_CRON=1 still selects the cron key for direct invocations", () => {
+    process.env.ATLAS_CRON = "1";
+    expect(defaultModelKeyFor()).toBe("cron");
   });
 });
 
@@ -524,7 +579,7 @@ describe("readTriggerConfig", () => {
 
     const config = readTriggerConfig(db, "no-model-override");
     expect(config).not.toBeNull();
-    // Null is the sentinel for "fall back to ATLAS_CRON-based default" in
+    // Null is the sentinel for "fall back to the default model key" in
     // trigger-runner's resolveModel call — distinguishable from "" so an
     // accidental empty string never silently shadows the default.
     expect(config!.model_key).toBeNull();
@@ -596,7 +651,7 @@ describe("migrateSchema: model_key", () => {
     const row = db
       .prepare("SELECT model_key FROM triggers WHERE name = ?")
       .get("legacy-cron") as { model_key: string | null };
-    // NULL is the sentinel for "fall through to ATLAS_CRON-based default".
+    // NULL is the sentinel for "fall through to the default model key".
     // Don't let the migration accidentally seed an empty string here.
     expect(row.model_key).toBeNull();
   });
