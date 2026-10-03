@@ -79,11 +79,13 @@ function getWebhookTriggers(): WebhookTrigger[] {
 async function fireTrigger(
   triggerName: string,
   payloadJson: string,
-  sessionKey: string
+  sessionKey?: string
 ): Promise<void> {
-  log(`Firing trigger '${triggerName}' (session_key=${sessionKey})`);
+  log(`Firing trigger '${triggerName}'${sessionKey ? ` (session_key=${sessionKey})` : ""}`);
   try {
-    const proc = Bun.spawn(["bash", TRIGGER_SH, triggerName, payloadJson, sessionKey], {
+    const args = ["bash", TRIGGER_SH, triggerName, payloadJson];
+    if (sessionKey) args.push(sessionKey);
+    const proc = Bun.spawn(args, {
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env },
@@ -263,8 +265,11 @@ export async function handleSseEvent(
   // trigger-runner executes filter.sh once, after authentication. The relay only
   // supplies parsed JSON, so GitHub HMAC webhooks must use the direct HTTP route.
 
-  // Use _default session key for webhooks (can be customized via filter.sh output in future)
-  await dependencies.fireTrigger(triggerName, payloadJson, "_default");
+  // Don't pass a session key: trigger-runner synthesizes a per-run "webhook-<id>"
+  // key for webhook triggers when none is given, so each event gets its own
+  // isolated session instead of piling up as mid-turn injections into one shared
+  // session that an in-progress run may ignore.
+  await dependencies.fireTrigger(triggerName, payloadJson);
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

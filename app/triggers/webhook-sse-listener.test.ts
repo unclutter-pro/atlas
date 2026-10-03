@@ -31,3 +31,26 @@ test("relay passes an authenticated payload once and uses current policy on ever
   await handleSseEvent("test", authenticated, dependencies);
   expect(calls).toHaveLength(1);
 });
+
+test("relay does not pass a session key, so each event gets its own trigger-runner session", async () => {
+  // Regression test: a hard-coded "_default" key here used to funnel every
+  // webhook event for a trigger into one shared session. Fast-arriving events
+  // then landed as mid-turn socket injections into whichever run was already
+  // in progress, and an in-progress turn could ignore them (e.g. the GitHub
+  // issue-triage webhook skipping an issue opened while another was handled).
+  // trigger-runner.ts generates its own per-run "webhook-<id>" key when no
+  // session key argument is passed, so the listener must leave it out.
+  const calls: Array<[string, string, string | undefined]> = [];
+  const dependencies = {
+    getWebhookTriggers: () => [trigger],
+    fireTrigger: async (name: string, payload: string, sessionKey?: string) => {
+      calls.push([name, payload, sessionKey]);
+    },
+  };
+  const authenticated = { ...event, "X-Webhook-Secret": "secret" };
+  await handleSseEvent("test", authenticated, dependencies);
+  await handleSseEvent("test", authenticated, dependencies);
+  expect(calls).toHaveLength(2);
+  expect(calls[0][2]).toBeUndefined();
+  expect(calls[1][2]).toBeUndefined();
+});
