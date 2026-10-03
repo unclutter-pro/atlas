@@ -176,17 +176,29 @@ export function attachmentUrl(id: string): string {
   return `/api/v1/attachments/${id}`;
 }
 
-const INLINE_MIME_RE = /^(audio|video)\/|^image\/(png|jpeg|gif|webp)$|^application\/pdf$|^text\/plain$/;
+// Match the whole value, including media parameters such as codecs=opus.
+// Quoted parameter values may contain commas; unquoted MIME lists may not.
+const MEDIA_MIME_RE = /^(audio|video)\/[a-z0-9!#$&^_.+-]+(?:; *[a-z0-9!#$&^_.+-]+=(?:[a-z0-9!#$&^_.+-]+|"[\x20-\x21\x23-\x5b\x5d-\x7e]*"))*$/i;
+const INLINE_MIME_RE = /^(image\/(png|jpeg|gif|webp)|application\/pdf|text\/plain)$/i;
 
 /** Response headers for streaming an attachment back to a browser. The stored
  *  mime type is whatever the uploader declared, so only inert media types may
  *  render inline; anything else (html, svg, …) downloads as an opaque blob. */
 export function attachmentResponseHeaders(attachment: Attachment): Record<string, string> {
-  const inline = INLINE_MIME_RE.test(attachment.mime_type);
-  const name = attachment.file_name.replace(/["\\\r\n]/g, "");
+  const mime = attachment.mime_type;
+  const inline = !/[\x00-\x1f\x7f]/.test(mime)
+    && (MEDIA_MIME_RE.test(mime) || INLINE_MIME_RE.test(mime));
+  const name = attachment.file_name.toWellFormed().replace(/["\\\x00-\x1f\x7f]/g, "") || "attachment";
+  const fallback = name.replace(/[^\x20-\x7e]/gu, "_");
+  let disposition = `${inline ? "inline" : "attachment"}; filename="${fallback}"`;
+  if (name !== fallback) {
+    // RFC 8187: preserve Unicode in filename* and keep filename ASCII-only.
+    const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+    disposition += `; filename*=UTF-8''${encoded}`;
+  }
   return {
-    "Content-Type": inline ? attachment.mime_type : "application/octet-stream",
-    "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${name}"`,
+    "Content-Type": inline ? mime : "application/octet-stream",
+    "Content-Disposition": disposition,
     "X-Content-Type-Options": "nosniff",
     "Cache-Control": "private, max-age=3600",
   };
