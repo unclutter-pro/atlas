@@ -265,10 +265,7 @@ export async function handleSseEvent(
   // trigger-runner executes filter.sh once, after authentication. The relay only
   // supplies parsed JSON, so GitHub HMAC webhooks must use the direct HTTP route.
 
-  // Don't pass a session key: trigger-runner synthesizes a per-run "webhook-<id>"
-  // key for webhook triggers when none is given, so each event gets its own
-  // isolated session instead of piling up as mid-turn injections into one shared
-  // session that an in-progress run may ignore.
+  // No session key: trigger-runner then gives each event its own session.
   await dependencies.fireTrigger(triggerName, payloadJson);
 }
 

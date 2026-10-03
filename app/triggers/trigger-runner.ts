@@ -1258,6 +1258,13 @@ export async function main(): Promise<void> {
   const channel = config.channel || "internal";
   const sessionMode = config.session_mode || "ephemeral";
 
+  // Before the synthetic key, which writes a trigger_runs row per event.
+  const shouldProceed = await runMiddlewareFilter(triggerName, payload);
+  if (!shouldProceed) {
+    log.log(`Filtered by middleware: ${triggerName} (key=${sessionKeyArg ?? "-"})`);
+    process.exit(0);
+  }
+
   // --- Synthetic session_key for webhooks without an explicit key ---
   // Webhook triggers often have no natural session grouping; without a key
   // ATLAS_TRIGGER_SESSION_KEY would be unset inside the session, which breaks
@@ -1394,13 +1401,6 @@ export async function main(): Promise<void> {
         // Socket not available — fall through to acquire lock + resume
       }
     }
-  }
-
-  // --- Middleware filter ---
-  const shouldProceed = await runMiddlewareFilter(triggerName, payload);
-  if (!shouldProceed) {
-    log.log(`Filtered by middleware: ${triggerName} (key=${sessionKey})`);
-    process.exit(0);
   }
 
   // --- Acquire flock-style dedup lock ---
