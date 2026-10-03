@@ -118,7 +118,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   | tar -xJ --strip-components=1 -C /usr/local/bin "typst-${TYPST_ARCH}-unknown-linux-musl/typst" \
   && chmod +x /usr/local/bin/typst \
   # --- npm globals ---
-  && npm install -g agent-browser docx \
+  && npm install -g --allow-scripts=agent-browser agent-browser docx \
   # Install chrome (for arm64 no native install is possible)
   && if [ "$ARCH" = "arm64" ]; \
   # Install for add-apt-repository (only ARM64)
@@ -133,7 +133,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
   # --- Python packages (messaging addons + office skills: defusedxml/lxml power docx/pptx/xlsx unpack·pack·validate) ---
   && pip install --break-system-packages pyyaml html2text factur-x lxml defusedxml openpyxl pandas pillow pdf2image pdfplumber \
   # --- Claude Code CLI ---
-  && npm install -g @anthropic-ai/claude-code@2.1.282 \
+  && npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@2.1.282 \
   && claude --version \
   # --- LiteParse CLI (OCR on Client) ---
   && npm i -g @llamaindex/liteparse \
