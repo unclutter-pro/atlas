@@ -10,6 +10,7 @@ const cases: Array<{
   type?: string;
   modelKey?: string | null;
   cron?: string;
+  models?: Record<string, string>;
   expected: string;
 }> = [
   { name: "DB cron uses models.cron without ATLAS_CRON", type: "cron", expected: "cron-model" },
@@ -24,6 +25,8 @@ const cases: Array<{
   { name: "legacy direct cron uses models.cron", cron: "1", expected: "cron-model" },
   { name: "ATLAS_CRON=0 does not select the cron model", cron: "0", expected: "trigger-model" },
   { name: "direct --model-key overrides ATLAS_CRON", cron: "1", modelKey: "custom", expected: "custom-model" },
+  { name: "DB cron with an empty model uses models.trigger", type: "cron", models: { cron: "" }, expected: "trigger-model" },
+  { name: "direct cron with a whitespace model uses models.trigger", cron: "1", models: { cron: " \t" }, expected: "trigger-model" },
 ];
 
 for (const scenario of cases) {
@@ -31,7 +34,7 @@ for (const scenario of cases) {
     const home = mkdtempSync(join(tmpdir(), "atlas-model-"));
     try {
       writeFileSync(join(home, "config.yml"), JSON.stringify({
-        models: { trigger: "trigger-model", cron: "cron-model", custom: "custom-model", dreaming: "dreaming-model" },
+        models: { trigger: "trigger-model", cron: "cron-model", custom: "custom-model", dreaming: "dreaming-model", ...scenario.models },
       }));
       const driver = join(home, "driver.ts");
       writeFileSync(driver, `

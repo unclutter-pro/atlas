@@ -448,6 +448,21 @@ models:
     expect(model).toBe("claude-sonnet-4-6");
   });
 
+  test.each([
+    { name: "empty cron model", models: { cron: "", trigger: "sonnet" }, key: "cron", expected: "sonnet" },
+    { name: "whitespace cron model", models: { cron: " \t\n", trigger: "sonnet" }, key: "cron", expected: "sonnet" },
+    { name: "empty custom model", models: { custom: "", trigger: "sonnet" }, key: "custom", expected: "sonnet" },
+    { name: "empty trigger model", models: { trigger: "" }, key: "trigger", expected: "opus" },
+    { name: "both models blank", models: { cron: "", trigger: " \t" }, key: "cron", expected: "opus" },
+    { name: "unknown key with blank fallback", models: { trigger: " " }, key: "unknown", expected: "opus" },
+    { name: "padded model", models: { cron: " sonnet " }, key: "cron", expected: "sonnet" },
+    { name: "padded fallback", models: { cron: "", trigger: " sonnet " }, key: "cron", expected: "sonnet" },
+  ])("resolves $name to a nonblank model", ({ models, key, expected }) => {
+    writeFileSync(join(tmpDir, "config.yml"), JSON.stringify({ models }));
+    process.env.HOME = tmpDir;
+    expect(resolveModel("", key)).toBe(expected);
+  });
+
   test("handles malformed YAML gracefully", () => {
     const badDir = makeTempDir();
     writeFileSync(join(badDir, "config.yml"), "{ this is: not valid: yaml: [");

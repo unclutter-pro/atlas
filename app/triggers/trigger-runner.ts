@@ -319,7 +319,7 @@ export function buildSystemPrompt(
 /**
  * Resolve the model for a given trigger type using the unified config system.
  * Uses resolveConfig() which handles ENV > runtime JSON > config.yml > defaults.
- * Falls back to models.trigger if the specific type key is not found.
+ * Falls back to models.trigger, then opus, for missing or blank model values.
  *
  * @param _configPath - Deprecated, kept for API compatibility (ignored)
  * @param triggerType - Model key to look up (e.g. "trigger", "cron")
@@ -333,7 +333,7 @@ export function resolveModel(
   const homeDir = process.env.HOME ?? "/home/agent";
   const config = resolveConfig(homeDir);
   const models = config.models as unknown as Record<string, string>;
-  return models[triggerType] ?? models["trigger"] ?? "opus";
+  return models[triggerType]?.trim() || models["trigger"]?.trim() || "opus";
 }
 
 /**
