@@ -41,9 +41,10 @@
 
 import { existsSync } from "fs";
 import { attachmentDiskPath, attachmentResponseHeaders, getAttachment, getAttachmentsForMessage, type Attachment } from "../../lib/attachments";
+import { isAtlasPaused } from "../../lib/kill-switch";
 import { resolveTimezone, zonedDayStartUtc } from "../../lib/timezone";
-import { getDb, home, sessionStore, toIso } from "./shared/env";
-import { badRequest, handler, intParam, json, notFound, query, type ApiRoutes } from "./shared/http";
+import { fireTrigger, getDb, home, sessionStore, toIso } from "./shared/env";
+import { badRequest, handler, HttpError, intParam, json, notFound, query, readJson, type ApiRoutes } from "./shared/http";
 import {
   getMessage,
   getRun,
@@ -147,6 +148,14 @@ export interface RunDetailResponse {
   chatSessionKey: string | null;
   /** Other runs in the same session (persistent sessions), newest first. */
   sessionRuns: RunSummary[];
+}
+
+export interface RetryResponse {
+  ok: true;
+  triggerName: string;
+  /** The new run, when it started within the wait; null when it has not (yet) or went into a live session. */
+  runId: number | null;
+  firedAt: string;
 }
 
 export interface SessionDetailResponse {
@@ -348,6 +357,44 @@ function messageDetail(id: number): MessageDetailResponse {
   };
 }
 
+/** How long a retry waits for the runner to insert its trigger_runs row. */
+const RETRY_WAIT_MS = 5_000;
+
+/**
+ * Fire a failed run's trigger again with the same payload and session key, the
+ * way the original event did. A webhook delivery without its own key got a
+ * synthetic `webhook-<runId>`, so its retry is a new delivery with a new key.
+ */
+async function retryRun(id: number): Promise<RetryResponse> {
+  const r = getRun(id) ?? notFound(`Run #${id} not found`);
+  if (r.outcome !== "failed") throw new HttpError(409, "Only failed runs can be retried");
+  const db = getDb();
+  const t = db.query("SELECT type, enabled FROM triggers WHERE name = ?").get(r.trigger_name) as { type: string; enabled: number } | null;
+  if (!t) throw new HttpError(409, `Trigger ${r.trigger_name} no longer exists`);
+  if (!t.enabled) throw new HttpError(409, "Trigger is disabled. Enable it before retrying.");
+  if (isAtlasPaused(home())) throw new HttpError(409, "Atlas is paused. Resume it before retrying.");
+
+  const before = (db.query("SELECT COALESCE(MAX(id), 0) AS id FROM trigger_runs").get() as { id: number }).id;
+  const newDelivery = t.type === "webhook" && (r.session_key.startsWith("webhook-") || r.session_key === "_pending");
+  const payload = r.payload ?? "";
+  const fired = newDelivery ? fireTrigger(r.trigger_name, payload) : fireTrigger(r.trigger_name, payload, r.session_key);
+  if (!fired) throw new HttpError(503, "trigger.sh is not available here (only inside the Atlas container)");
+  const firedAt = new Date().toISOString();
+
+  // A persistent session with a live runner takes the payload without a new run row.
+  // With the same key, other events of the trigger in the meantime are not mistaken for the retry.
+  const deadline = Date.now() + RETRY_WAIT_MS;
+  const find = newDelivery
+    ? () => db.query("SELECT id FROM trigger_runs WHERE trigger_name = ? AND id > ? ORDER BY id LIMIT 1").get(r.trigger_name, before)
+    : () => db.query("SELECT id FROM trigger_runs WHERE trigger_name = ? AND id > ? AND session_key = ? ORDER BY id LIMIT 1").get(r.trigger_name, before, r.session_key);
+  let runId: number | null = null;
+  while (runId === null && Date.now() < deadline) {
+    await Bun.sleep(250);
+    runId = (find() as { id: number } | null)?.id ?? null;
+  }
+  return { ok: true, triggerName: r.trigger_name, runId, firedAt };
+}
+
 function filterOptions(): ActivityFiltersResponse {
   const db = getDb();
   const triggers = db.query("SELECT name, type, channel FROM triggers ORDER BY name").all() as ActivityFiltersResponse["triggers"];
@@ -378,6 +425,12 @@ export const routes: ApiRoutes = {
   },
   "/ui/api/activity/runs/:id": {
     GET: handler(async (req) => json((await runDetail(parseId(req.params.id, "run"))) satisfies RunDetailResponse)),
+  },
+  "/ui/api/activity/runs/:id/retry": {
+    POST: handler(async (req) => {
+      await readJson(req);
+      return json((await retryRun(parseId(req.params.id, "run"))) satisfies RetryResponse, { status: 202 });
+    }),
   },
   "/ui/api/activity/sessions/:sessionId": {
     GET: handler(async (req) => json((await sessionDetail(req.params.sessionId ?? "")) satisfies SessionDetailResponse)),

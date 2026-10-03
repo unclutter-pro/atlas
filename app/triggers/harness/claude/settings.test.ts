@@ -89,7 +89,7 @@ describe("configureClaude", () => {
 describe("Claude prompt extension", () => {
   test("carries the invocation syntax the shared prompt leaves out", () => {
     const extension = new ClaudeCodeBackend({ home }).promptExtension;
-    for (const needle of ['Agent(subagent_type="memory-searcher"', 'Agent(subagent_type="general-purpose"', 'Skill(skill=', "~/.claude/skills/", "`Workflow` tool", "fast = `haiku`"]) {
+    for (const needle of ['Agent(subagent_type="<agent>"', 'Agent(subagent_type="general-purpose"', 'Skill(skill=', "~/.claude/skills/", "`Workflow`", "fast = `haiku`"]) {
       expect(extension).toContain(needle);
     }
   });

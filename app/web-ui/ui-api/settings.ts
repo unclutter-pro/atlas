@@ -6,13 +6,15 @@
  *   configuration  effective config with the source of every value; raw config.yml editor
  *   secrets        names + mtime only; values are write-only
  *   extensions     user-extensions.sh (runs at container start)
+ *   login          the agent backend's login: status, renewal from the browser
  */
 
 import { existsSync, readFileSync } from "fs";
 import yaml from "js-yaml";
 import { getConfigSources, getEnvVarName, redactConfig, resolveConfig, type ConfigSource } from "../../lib/config";
-import { getDb, home, isTestRun, paths, syncCrontab, toIso } from "./shared/env";
-import { badRequest, handler, json, readJson, type ApiRoutes } from "./shared/http";
+import { AuthLoginError, type AuthStatus, type HarnessAuth, type PendingLogin } from "../../lib/harness/auth";
+import { getDb, harnessAuth, home, isTestRun, paths, syncCrontab, toIso } from "./shared/env";
+import { badRequest, handler, HttpError, json, readJson, type ApiRoutes } from "./shared/http";
 import { getIntegrationHealth, getServiceHealth, supervisorStatus, type IntegrationHealth, type IntegrationKey, type ServiceHealth } from "./shared/integrations";
 import {
   assertVersion,
@@ -29,7 +31,7 @@ import {
 import { checkBashSyntax, validateConfigYaml, type ValidationIssue, type ValidationResult } from "./settings/validate";
 import { maskSecrets, unmaskSecrets } from "./settings/mask";
 
-export type { ConfigSource, FileDoc, SecretItem, ValidationIssue, ValidationResult };
+export type { AuthStatus, ConfigSource, FileDoc, PendingLogin, SecretItem, ValidationIssue, ValidationResult };
 
 /** Writes the configured agent backend's settings (hooks, permissions, plugins). */
 const CONFIGURE_HARNESS = "/atlas/app/triggers/harness/configure.ts";
@@ -272,6 +274,32 @@ function secretUsage(): (name: string) => string[] {
   return (name) => refs.filter(([, v]) => v.endsWith(`/secrets/${name}`)).map(([k]) => k);
 }
 
+// --- Agent login -------------------------------------------------------------
+
+function auth(): HarnessAuth {
+  const a = harnessAuth();
+  if (!a) throw new HttpError(404, "The configured agent backend has no login handling");
+  return a;
+}
+
+const AUTH_ERROR_STATUS = { "not-found": 404, rejected: 400, unavailable: 503 } as const;
+
+/** Run a login step; AuthLoginError becomes an HTTP error with its message. */
+async function loginStep<T>(fn: () => T | Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof AuthLoginError) throw new HttpError(AUTH_ERROR_STATUS[err.kind], err.message);
+    throw err;
+  }
+}
+
+function stringField(body: Record<string, unknown>, key: string): string {
+  const v = body[key];
+  if (typeof v !== "string" || v === "") badRequest(`Missing '${key}' field`);
+  return v;
+}
+
 // --- Routes ------------------------------------------------------------------
 
 const PERSONALITY_FILES = { identity: paths.identity, soul: paths.soul } as const;
@@ -359,6 +387,43 @@ export const routes: ApiRoutes = {
       return json({ ok: true, file: readDoc(paths.extensions()), issues } satisfies ExtensionsSaveResponse);
     }),
   },
+  "/ui/api/settings/login": {
+    GET: handler(() => json(auth().status() satisfies AuthStatus)),
+  },
+  // Starts the backend's login and returns the sign-in URL; the code from that page goes to /complete.
+  "/ui/api/settings/login/start": {
+    POST: handler(async (req) => {
+      const method = stringField(await readJson(req), "method");
+      // A test run must never start the real CLI.
+      if (isTestRun()) throw new HttpError(503, "Logins do not run under bun test");
+      return json((await loginStep(() => auth().startLogin(method))) satisfies PendingLogin);
+    }),
+  },
+  "/ui/api/settings/login/complete": {
+    POST: handler(async (req) => {
+      const body = await readJson(req);
+      const id = stringField(body, "id");
+      const code = stringField(body, "code");
+      return json((await loginStep(() => auth().completeLogin(id, code))) satisfies AuthStatus);
+    }),
+  },
+  "/ui/api/settings/login/cancel": {
+    POST: handler(async (req) => {
+      const a = auth();
+      a.cancelLogin(stringField(await readJson(req), "id"));
+      return json(a.status() satisfies AuthStatus);
+    }),
+  },
+  // Forgets the token created here; the backend's own login stays.
+  "/ui/api/settings/login/token": {
+    DELETE: handler(async (req) => {
+      await readJson(req);
+      const a = auth();
+      a.removeDashboardCredential();
+      return json(a.status() satisfies AuthStatus);
+    }),
+  },
+
   "/ui/api/settings/extensions/validate": {
     POST: handler(async (req) => json({ issues: checkBashSyntax(contentField(await readJson(req))) })),
   },

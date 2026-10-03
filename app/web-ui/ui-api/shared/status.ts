@@ -4,7 +4,8 @@
  */
 
 import { getControlStatus } from "../../../lib/kill-switch";
-import { agentName, elapsedMs, getDb, home, toIso } from "./env";
+import type { AuthState } from "../../../lib/harness/auth";
+import { agentName, elapsedMs, getDb, harnessAuth, home, toIso } from "./env";
 import { getIntegrationHealth, getServiceHealth, type IntegrationHealth, type ServiceHealth } from "./integrations";
 
 export interface RunningRun {
@@ -18,6 +19,14 @@ export interface RunningRun {
   elapsedMs: number | null;
 }
 
+/** Login of the agent backend, for the status strip. */
+export interface AuthBadge {
+  state: AuthState;
+  summary: string;
+  /** Known end of the credential (long-lived tokens). */
+  expiresAt: string | null;
+}
+
 export interface StatusResponse {
   agentName: string;
   serverTime: string;
@@ -25,6 +34,8 @@ export interface StatusResponse {
   running: RunningRun[];
   integrations: IntegrationHealth[];
   services: ServiceHealth[];
+  /** null when the backend has no login handling. */
+  auth: AuthBadge | null;
 }
 
 export function getRunningRuns(): RunningRun[] {
@@ -61,5 +72,16 @@ export function getStatus(): StatusResponse {
     running: getRunningRuns(),
     integrations: getIntegrationHealth(),
     services: getServiceHealth(),
+    auth: getAuthBadge(),
   };
+}
+
+export function getAuthBadge(): AuthBadge | null {
+  try {
+    const status = harnessAuth()?.status();
+    return status ? { state: status.state, summary: status.summary, expiresAt: status.expiresAt } : null;
+  } catch (err) {
+    console.error("[ui-api] auth status:", err);
+    return null;
+  }
 }

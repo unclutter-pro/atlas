@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorMessage } from "../../api";
 import { Alert, Button, ButtonLink, EmptyState, Loading, Money, StatusBadge } from "../../components";
 import { links } from "../../links";
-import { useStatus } from "../../shell/status";
+import { isLoginBroken, useStatus } from "../../shell/status";
 import { Link, useTitle } from "../../router";
 import type { ChatRun, ChatSessionDetail, ChatStreamEvent } from "../../../ui-api/chat/types";
 import { chatApi, writeLastSession } from "./chatApi";
@@ -55,7 +55,9 @@ export function ChatView(props: {
   const session = state.session;
   const archived = !!session?.archivedAt;
   // Sends are refused while paused (409); say so instead of failing the bubble.
-  const paused = useStatus().data?.control.paused === true;
+  const status = useStatus().data;
+  const paused = status?.control.paused === true;
+  const auth = status?.auth;
 
   return (
     <div className="chat-main">
@@ -101,6 +103,14 @@ export function ChatView(props: {
         </button>
       )}
       <div className="chat-footer">
+        {isLoginBroken(auth) && (
+          <Alert tone="error">
+            <span className="spacer">{auth.summary}. Messages fail until the agent is logged in again.</span>
+            <ButtonLink size="sm" variant="primary" href={links.settings("login")}>
+              Log in again
+            </ButtonLink>
+          </Alert>
+        )}
         {chat.notice && (
           <Alert tone="warn">
             <span className="spacer">{chat.notice}</span>

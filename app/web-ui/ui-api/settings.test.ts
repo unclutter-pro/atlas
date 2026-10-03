@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "os";
 import { join } from "path";
 import { getDb } from "./shared/env";
-import { routes, type ConfigurationResponse, type IntegrationsResponse, type PersonalityResponse, type SecretsResponse } from "./settings";
+import { routes, type AuthStatus, type ConfigurationResponse, type IntegrationsResponse, type PersonalityResponse, type SecretsResponse } from "./settings";
 import { validateConfigYaml } from "./settings/validate";
 
 let server: ReturnType<typeof Bun.serve>;
@@ -251,5 +251,50 @@ describe("integrations", () => {
     // password_file is reported as set/not set, never as a path
     expect(email.settings.find((s) => s.key === "email.password_file")).toMatchObject({ secret: true });
     expect(data.services.length).toBeGreaterThan(0);
+  });
+});
+
+describe("login", () => {
+  const saved = { key: process.env.ANTHROPIC_API_KEY, token: process.env.CLAUDE_CODE_OAUTH_TOKEN };
+  beforeAll(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  });
+  afterAll(() => {
+    if (saved.key !== undefined) process.env.ANTHROPIC_API_KEY = saved.key;
+    if (saved.token !== undefined) process.env.CLAUDE_CODE_OAUTH_TOKEN = saved.token;
+  });
+
+  test("GET reports the state and login methods, never the token", async () => {
+    expect((await get<AuthStatus>("/login")).state).toBe("missing");
+    mkdirSync(join(H, ".claude"), { recursive: true });
+    const expiresAt = new Date(Date.now() + 100 * 86_400_000).toISOString();
+    writeFileSync(join(H, ".claude", "atlas-token.credentials.json"), JSON.stringify({ token: "sk-ant-oat01-secret", createdAt: new Date().toISOString(), expiresAt }));
+    const res = await fetch(url("/login"));
+    const text = await res.text();
+    expect(text).not.toContain("sk-ant-oat01-secret");
+    const data = JSON.parse(text) as AuthStatus;
+    expect(data).toMatchObject({ backend: "claude-code", state: "ok", expiresAt, credential: { source: "dashboard" }, pending: null });
+    expect(data.methods.map((m) => m.id)).toEqual(["token", "subscription"]);
+  });
+
+  test("start never runs the CLI under test; complete needs a waiting login", async () => {
+    expect((await send("POST", "/login/start", { method: "token" })).status).toBe(503);
+    expect((await send("POST", "/login/start", {})).status).toBe(400);
+    expect((await send("POST", "/login/complete", { id: "nope", code: "abcdefgh#s" })).status).toBe(404);
+    expect((await send("POST", "/login/complete", { id: "nope" })).status).toBe(400);
+    expect((await send("POST", "/login/cancel", { id: "nope" })).status).toBe(200);
+  });
+
+  test("DELETE token removes the dashboard token", async () => {
+    const res = await send("DELETE", "/login/token");
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as AuthStatus).credential).toBeNull();
+    expect(existsSync(join(H, ".claude", "atlas-token.credentials.json"))).toBe(false);
+  });
+
+  test("mutations need JSON", async () => {
+    const res = await fetch(url("/login/start"), { method: "POST", headers: { "Content-Type": "text/plain" }, body: "{}" });
+    expect(res.status).toBe(415);
   });
 });

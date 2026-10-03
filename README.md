@@ -32,7 +32,9 @@ docker compose build
 
 Atlas needs Claude Code credentials. Choose one:
 
-**Option A: OAuth (recommended)**
+**Option A: Claude subscription (recommended)**
+
+Start Atlas (step 3), open **Settings > Login** in the Web-UI and follow the sign-in link. The default creates a token that is valid for one year; the status bar shows how long it has left and Settings > Login renews it. Alternatively, log in from a terminal:
 ```bash
 docker run -it --rm -v $(pwd)/volume:/home/agent --entrypoint claude atlas:latest
 ```

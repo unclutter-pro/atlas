@@ -26,16 +26,49 @@ export function isInvalidRequest(text: string | null | undefined): boolean {
   return typeof text === "string" && text.startsWith("API Error: 400");
 }
 
+/** Assistant message errors that mean the credential is not accepted. */
+const AUTH_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed"]);
+const AUTH_TEXT_RE = /API Error: 401|authentication_error|invalid api key|oauth token (?:has )?(?:expired|been revoked|revoked)|please run \/login|not logged in|failed to authenticate/i;
+
+/**
+ * The provider refused the credential. Claude Code marks the assistant message
+ * (`error: "authentication_failed"`) and ends the turn with is_error and a
+ * text like "Invalid API key · Please run /login"; the text is the fallback.
+ */
+export function isAuthenticationFailure(result: Record<string, any>, assistantError: string | null = null): boolean {
+  if (assistantError && AUTH_ERRORS.has(assistantError)) return true;
+  const errored = result.is_error === true || result.subtype !== "success";
+  return errored && typeof result.result === "string" && AUTH_TEXT_RE.test(result.result);
+}
+
+/**
+ * The CLI can also end without a result when it cannot authenticate at all,
+ * e.g. "Failed to authenticate: OAuth session expired and could not be
+ * refreshed". Such errors surface as HarnessError "authentication".
+ */
+function authenticationError(err: unknown): unknown {
+  const message = err instanceof Error ? err.message : String(err);
+  return !(err instanceof Error && "detail" in err) && AUTH_TEXT_RE.test(message) ? harnessError("authentication", message) : err;
+}
+
 /**
  * A turn's SDK result message as a TurnResult. Claude reports session totals;
  * `baseline` (the totals before this turn) turns them into turn usage.
  */
-export function turnResult(result: unknown, session: SessionRef | null, baseline: CostSnapshot | null): TurnResult {
+export function turnResult(
+  result: unknown,
+  session: SessionRef | null,
+  baseline: CostSnapshot | null,
+  assistantError: string | null = null,
+): TurnResult {
   const raw = object(result);
   const text = typeof raw.result === "string" ? raw.result : null;
-  const failed = raw.subtype !== "success";
+  const authFailed = isAuthenticationFailure(raw, assistantError);
+  const failed = raw.subtype !== "success" || authFailed;
   let error: HarnessError | null = null;
-  if (isInvalidRequest(text)) {
+  if (authFailed) {
+    error = { code: "authentication", message: text || "Authentication failed" };
+  } else if (isInvalidRequest(text)) {
     error = { code: "invalid-request", message: text! };
   } else if (failed) {
     const errors = Array.isArray(raw.errors) ? raw.errors.filter((e: unknown) => typeof e === "string") : [];
@@ -111,13 +144,16 @@ export function openConversation(
     let totals = baseline;
     // Anthropic message id of the message being streamed (message_start).
     let streamId: string | null = null;
+    // Error of the turn's last top-level assistant message (SDKAssistantMessageError).
+    let assistantError: string | null = null;
     try {
       for await (const msg of q) {
         const raw = object(msg);
         const sid = typeof raw.session_id === "string" && raw.session_id ? raw.session_id : null;
         if (raw.type === "result") {
           if (sid) session = sessionRef(sid);
-          const result = turnResult(raw, session, totals);
+          const result = turnResult(raw, session, totals, assistantError);
+          assistantError = null;
           totals = totalsAfter(raw);
           yield { type: "turn.finished", result };
           continue;
@@ -125,6 +161,9 @@ export function openConversation(
         if (sid && sid !== session?.nativeId) {
           session = sessionRef(sid);
           yield { type: "session", session };
+        }
+        if (raw.type === "assistant" && !raw.parent_tool_use_id) {
+          assistantError = typeof raw.error === "string" ? raw.error : null;
         }
         if (raw.type === "assistant" || raw.type === "user") {
           yield { type: "message", role: raw.type, nested: !!raw.parent_tool_use_id };
@@ -140,6 +179,8 @@ export function openConversation(
           }
         }
       }
+    } catch (err) {
+      throw authenticationError(err);
     } finally {
       stop();
     }

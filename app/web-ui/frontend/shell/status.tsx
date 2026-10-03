@@ -4,7 +4,7 @@
  */
 
 import { createContext, useContext, type ReactNode } from "react";
-import type { StatusResponse } from "../../ui-api/shared/status";
+import type { AuthBadge, StatusResponse } from "../../ui-api/shared/status";
 import { useApi, type ApiState } from "../api";
 
 export type { StatusResponse };
@@ -21,4 +21,9 @@ export function useStatus(): ApiState<StatusResponse> {
   const ctx = useContext(StatusContext);
   if (!ctx) throw new Error("useStatus() outside <StatusProvider>");
   return ctx;
+}
+
+/** The agent cannot run until someone logs in again (expired, refused or no login). */
+export function isLoginBroken(auth: AuthBadge | null | undefined): auth is AuthBadge {
+  return !!auth && (auth.state === "failed" || auth.state === "expired" || auth.state === "missing");
 }

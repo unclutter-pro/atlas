@@ -50,3 +50,11 @@
 .settings-secret-name { font-weight: 600; }
 .settings-row-actions { display: inline-flex; gap: var(--sp-1); justify-content: flex-end; }
 .settings-secret-form { margin-bottom: var(--sp-4); max-width: 640px; }
+
+/* Login */
+.settings-login-methods { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--sp-3); }
+.settings-login-methods > .card { margin-top: 0; }
+.settings-login-method-title { display: inline-flex; align-items: center; gap: var(--sp-2); font-weight: 600; color: var(--text-strong); }
+.settings-login-recommended { color: var(--ok); background: var(--ok-soft); border-color: rgba(76, 175, 80, 0.35); }
+.settings-login-steps { margin: 0 0 var(--sp-3) 1.2em; display: flex; flex-direction: column; gap: var(--sp-3); }
+.settings-login-steps li > span { display: block; margin-bottom: var(--sp-2); }

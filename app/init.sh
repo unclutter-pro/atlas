@@ -18,13 +18,18 @@ echo "[$(date)] $AGENT_NAME init starting..."
 
 # ── Phase 1: Auth Check ──
 echo "[$(date)] Phase 1: Auth check"
-if [ -f "$HOME/.claude/.credentials.json" ]; then
-  echo "  OAuth credentials found"
-elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
   echo "  API key configured"
+elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "  OAuth token configured (CLAUDE_CODE_OAUTH_TOKEN)"
+elif [ -f "$HOME/.claude/atlas-token.credentials.json" ]; then
+  echo "  OAuth token from the Web-UI found"
+elif [ -f "$HOME/.claude/.credentials.json" ]; then
+  echo "  OAuth credentials found"
 else
   echo "  ⚠ No authentication configured!"
-  echo "  Run: docker run -it --rm -v \$(pwd)/volume:/home/agent atlas claude login"
+  echo "  Log in from the Web-UI: Settings > Login"
+  echo "  Or run: docker run -it --rm -v \$(pwd)/volume:/home/agent atlas claude login"
   echo "  Or set ANTHROPIC_API_KEY in docker-compose.yml"
   # Don't exit - web-ui should still start for setup instructions
 fi

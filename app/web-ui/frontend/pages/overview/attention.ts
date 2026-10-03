@@ -25,6 +25,18 @@ export function attentionItems(o: OverviewResponse, now = Date.now()): Attention
   const a = o.attention;
   const items: AttentionItem[] = [];
 
+  // Without a working login every run fails, so it comes first.
+  if (a.login) {
+    items.push({
+      key: "login",
+      tone: a.login.state === "expiring" ? "warn" : "error",
+      title: a.login.summary,
+      detail: a.login.state === "expiring" ? "Create a new login before runs start failing" : "Runs fail until the agent logs in again",
+      at: null,
+      href: links.settings("login"),
+    });
+  }
+
   for (const v of a.volumesFull) {
     items.push({
       key: `volume-${v.path}`,

@@ -30,6 +30,17 @@ async function call(path: string, params: Record<string, string> = {}): Promise<
   return routes[pattern]!.GET!(req);
 }
 
+async function post(path: string, params: Record<string, string> = {}): Promise<Response> {
+  const url = new URL(path, "http://test");
+  const pattern = Object.keys(routes).find((p) => {
+    const a = p.split("/");
+    const b = url.pathname.split("/");
+    return a.length === b.length && a.every((s, i) => s.startsWith(":") || s === b[i]);
+  })!;
+  const req = Object.assign(new Request(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }), { params }) as unknown as BunRequest;
+  return routes[pattern]!.POST!(req);
+}
+
 async function getJson<T>(path: string, params?: Record<string, string>): Promise<{ status: number; body: T }> {
   const res = await call(path, params);
   return { status: res.status, body: (await res.json()) as T };
@@ -249,5 +260,21 @@ describe.skipIf(!seeded)("persistent sessions (seeded HOME)", () => {
     const s = await getJson<SessionDetailResponse>(`/ui/api/activity/sessions/${sid}`, { sessionId: sid });
     expect(s.body.totals.runs).toBe(2);
     expect(s.body.totals.costUsd).toBeCloseTo(0.3);
+  });
+});
+
+describe.skipIf(!seeded)("retry (seeded HOME)", () => {
+  test("only failed runs of existing triggers can be retried; outside the container nothing fires", async () => {
+    const list = (await getJson<ActivityListResponse>("/ui/api/activity?limit=200")).body.items;
+    const failed = list.find((x) => x.kind === "run" && x.outcome === "failed")!;
+    const ok = list.find((x) => x.kind === "run" && x.outcome === "ok")!;
+    const id = (x: { key: string }) => x.key.split(":")[1]!;
+
+    expect((await post(`/ui/api/activity/runs/${id(ok)}/retry`, { id: id(ok) })).status).toBe(409);
+    // trigger.sh only exists in the container, and bun test never fires.
+    const res = await post(`/ui/api/activity/runs/${id(failed)}/retry`, { id: id(failed) });
+    expect([409, 503]).toContain(res.status);
+    expect((await post("/ui/api/activity/runs/999999/retry", { id: "999999" })).status).toBe(404);
+    expect((await post("/ui/api/activity/runs/x/retry", { id: "x" })).status).toBe(400);
   });
 });

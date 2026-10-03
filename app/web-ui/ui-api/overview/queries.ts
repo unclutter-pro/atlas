@@ -10,6 +10,7 @@ import { elapsedMs, getDb, home, sessionStore, storedSession, toIso, toSqlite } 
 import { getIntegrationHealth, type HealthState } from "../shared/integrations";
 import { nextRuns, parseCron } from "../shared/cron";
 import { RUNS_BASE } from "../shared/runs";
+import { getAuthBadge, type AuthBadge } from "../shared/status";
 
 export { toSqlite };
 
@@ -132,6 +133,8 @@ export interface OverviewResponse {
     invalidSchedules: InvalidSchedule[];
     /** Filesystems at or above the storage warn threshold. */
     volumesFull: FullVolume[];
+    /** Login of the agent backend when it needs action (expiring, expired, rejected, missing). */
+    login: AuthBadge | null;
   };
   running: OverviewRun[];
   upcoming: UpcomingItem[];
@@ -382,6 +385,11 @@ function totals(now: Date, timeZone: string): TodayTotals {
   return { runs: runCount, failed, costUsd: round(cost.today), costYesterdayUsd: round(cost.yesterday), messages };
 }
 
+function loginAttention(): AuthBadge | null {
+  const auth = getAuthBadge();
+  return auth && auth.state !== "ok" ? auth : null;
+}
+
 export function getOverview(
   now = new Date(),
   opts: { upcomingLimit?: number; failedLimit?: number; volumesFull?: FullVolume[] } = {},
@@ -410,6 +418,7 @@ export function getOverview(
       overdueReminders: sched.overdueReminders,
       invalidSchedules: sched.invalidSchedules,
       volumesFull: opts.volumesFull ?? [],
+      login: loginAttention(),
     },
     running,
     upcoming: sched.upcoming,

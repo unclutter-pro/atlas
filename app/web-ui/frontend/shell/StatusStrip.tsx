@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { apiPost, useMutation } from "../api";
 import type { StopResponse } from "../../ui-api/core";
-import { Button, ConfirmButton, StatusBadge, formatDuration } from "../components";
+import type { AuthBadge } from "../../ui-api/shared/status";
+import { authBadge, Button, ButtonLink, ConfirmButton, KeyIcon, StatusBadge, formatDuration } from "../components";
 import { links } from "../links";
 import { Link } from "../router";
-import { useStatus, type StatusResponse } from "./status";
+import { isLoginBroken, useStatus, type StatusResponse } from "./status";
 
 /** Persistent strip above every page: state, running runs, trouble, kill switch. */
 export function StatusStrip() {
@@ -55,6 +56,15 @@ export function StatusStrip() {
         )}
       </span>
 
+      {s.auth && (
+        <>
+          <span className="status-strip-sep" />
+          <span className="status-strip-item">
+            <AuthItem auth={s.auth} />
+          </span>
+        </>
+      )}
+
       {troubled.length > 0 && (
         <>
           <span className="status-strip-sep" />
@@ -93,6 +103,33 @@ export function StatusStrip() {
         </ConfirmButton>
       </span>
     </div>
+  );
+}
+
+/** Login of the agent backend: a quiet key while fine, a badge when it needs a new login soon. */
+function AuthItem(props: { auth: AuthBadge }) {
+  const a = props.auth;
+  const days = a.expiresAt ? Math.max(0, Math.ceil((Date.parse(a.expiresAt) - Date.now()) / 86_400_000)) : null;
+  const title = a.expiresAt ? `${a.summary} (until ${a.expiresAt.slice(0, 10)})` : a.summary;
+  if (a.state === "ok") {
+    return (
+      <Link href={links.settings("login")} title={title} className="status-strip-auth">
+        <KeyIcon />
+        {days !== null ? `${days}d` : "Login"}
+      </Link>
+    );
+  }
+  return (
+    <>
+      <Link href={links.settings("login")} title={title}>
+        <StatusBadge status={authBadge(a.state).status}>{a.summary}</StatusBadge>
+      </Link>
+      {isLoginBroken(a) && (
+        <ButtonLink size="sm" variant="primary" href={links.settings("login")}>
+          Log in
+        </ButtonLink>
+      )}
+    </>
   );
 }
 
