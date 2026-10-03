@@ -40,7 +40,7 @@
  */
 
 import { existsSync } from "fs";
-import { attachmentDiskPath, getAttachment, getAttachmentsForMessage, type Attachment } from "../../lib/attachments";
+import { attachmentDiskPath, attachmentResponseHeaders, getAttachment, getAttachmentsForMessage, type Attachment } from "../../lib/attachments";
 import { isAtlasPaused } from "../../lib/kill-switch";
 import { resolveTimezone, zonedDayStartUtc } from "../../lib/timezone";
 import { fireTrigger, getDb, home, sessionStore, toIso } from "./shared/env";
@@ -449,16 +449,7 @@ export const routes: ApiRoutes = {
       } catch {
         notFound("Attachment file is no longer on disk");
       }
-      // Only inert media types render inline; anything else (html, svg, …) downloads.
-      const inline = /^(audio|video)\/|^image\/(png|jpeg|gif|webp)$|^application\/pdf$|^text\/plain$/.test(a.mime_type);
-      return new Response(Bun.file(path), {
-        headers: {
-          "Content-Type": inline ? a.mime_type : "application/octet-stream",
-          "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="${a.file_name.replace(/["\\\r\n]/g, "")}"`,
-          "X-Content-Type-Options": "nosniff",
-          "Cache-Control": "private, max-age=3600",
-        },
-      });
+      return new Response(Bun.file(path), { headers: attachmentResponseHeaders(a) });
     }),
   },
 };
