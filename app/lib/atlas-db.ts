@@ -53,7 +53,7 @@ function createTables(database: Database): void {
   // in trigger-runner. Set per-trigger via `trigger update --model-key=haiku`
   // when a specific cron should run cheaper than `models.cron` globally —
   // e.g. lightweight digests that don't need Sonnet/Opus reasoning quality.
-  // NULL ⇒ fall back to the env-driven default (ATLAS_CRON ? cron : trigger).
+  // NULL ⇒ use models.cron for cron triggers, otherwise models.trigger.
   database.exec(`
     CREATE TABLE IF NOT EXISTS triggers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

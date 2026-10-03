@@ -448,17 +448,6 @@ models:
     expect(model).toBe("claude-sonnet-4-6");
   });
 
-  test("cron trigger without model_key resolves via models.cron", () => {
-    writeFileSync(join(tmpDir, "config.yml"), `
-models:
-  trigger: claude-opus-4-8
-  cron: claude-sonnet-4-6
-`);
-    process.env.HOME = tmpDir;
-    delete process.env.ATLAS_CRON;
-    expect(resolveModel("", defaultModelKeyFor("cron"))).toBe("claude-sonnet-4-6");
-  });
-
   test("handles malformed YAML gracefully", () => {
     const badDir = makeTempDir();
     writeFileSync(join(badDir, "config.yml"), "{ this is: not valid: yaml: [");
@@ -575,7 +564,7 @@ describe("readTriggerConfig", () => {
 
     const config = readTriggerConfig(db, "no-model-override");
     expect(config).not.toBeNull();
-    // Null is the sentinel for "fall back to ATLAS_CRON-based default" in
+    // Null is the sentinel for "fall back to the default model key" in
     // trigger-runner's resolveModel call — distinguishable from "" so an
     // accidental empty string never silently shadows the default.
     expect(config!.model_key).toBeNull();
@@ -647,7 +636,7 @@ describe("migrateSchema: model_key", () => {
     const row = db
       .prepare("SELECT model_key FROM triggers WHERE name = ?")
       .get("legacy-cron") as { model_key: string | null };
-    // NULL is the sentinel for "fall through to ATLAS_CRON-based default".
+    // NULL is the sentinel for "fall through to the default model key".
     // Don't let the migration accidentally seed an empty string here.
     expect(row.model_key).toBeNull();
   });
