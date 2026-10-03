@@ -47,7 +47,7 @@ jobs:
           context: ${{ matrix.context }}
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' || inputs.tag != '' }}
-          tags: ${{ env.IMAGE }}:${{ inputs.tag != '' && inputs.tag || github.ref_name }}
+          tags: ${{ env.IMAGE }}:${{ inputs.tag || (github.event_name == 'push' && github.ref_name) || format('dryrun-{0}', github.sha) }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
