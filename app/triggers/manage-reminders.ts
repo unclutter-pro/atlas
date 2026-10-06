@@ -78,7 +78,7 @@ export function resolveReminderId(
 /**
  * Parse a human-friendly time string into a UTC storage datetime string.
  * Supported formats:
- *   - "+30m", "+2h", "+1d", "+14d"   — relative offset, single unit
+ *   - "+30m", "+2h", "+1d", "+14d"   — relative offset, single unit ("+" optional)
  *   - "+1d2h30m", "+2h30m", "+90m"   — relative offset, combined units (order: d, h, m)
  *   - "14:00"                        — today at given time (local)
  *   - "2026-03-08 14:00"             — full date + time (local)
@@ -89,7 +89,8 @@ export function parseAt(at: string): string {
 
   // Relative offset: single (+30m, +2h, +1d) or combined (+1d2h30m, +2h30m).
   // Units must appear in descending order (d, h, m) and at least one is required.
-  const rel = at.match(/^\+(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/);
+  // The "+" is optional so "7d" matches the unprefixed --recurring/--check-interval syntax.
+  const rel = at.match(/^\+?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?$/);
   if (rel && (rel[1] || rel[2] || rel[3])) {
     const days = parseInt(rel[1] ?? "0", 10);
     const hours = parseInt(rel[2] ?? "0", 10);
