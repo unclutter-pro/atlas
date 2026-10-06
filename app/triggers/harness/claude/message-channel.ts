@@ -1,5 +1,7 @@
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 const IDLE_TIMEOUT_MS = parseInt(process.env.TRIGGER_IDLE_TIMEOUT ?? "300000", 10);
+/** Hard cap on how long live background tasks can hold a session open, from when they first appear. */
+const BACKGROUND_MAX_WAIT_MS = parseInt(process.env.TRIGGER_BACKGROUND_MAX_WAIT ?? "3600000", 10);
 
 /**
  * Options for pushing a user message into the channel.
@@ -24,6 +26,7 @@ export type PushOptions = {
 export function createMessageChannel(
   sessionId: string,
   idleTimeoutMs = IDLE_TIMEOUT_MS,
+  backgroundMaxWaitMs = BACKGROUND_MAX_WAIT_MS,
 ) {
   type Waiter = { resolve: (msg: SDKUserMessage) => void };
   const waiters: Waiter[] = [];
@@ -31,14 +34,52 @@ export function createMessageChannel(
   let closed = false;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   let idleReject: (() => void) | null = null;
+  // While > 0, the idle timer is suspended (see resetIdleTimer) and
+  // backgroundCapTimer bounds the wait instead.
+  let liveBackgroundTasks = 0;
+  let backgroundCapTimer: ReturnType<typeof setTimeout> | null = null;
 
   function resetIdleTimer() {
     if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = null;
+    // A live background task (Agent/Bash run_in_background) must keep stdin
+    // open: closing it kills the SDK's held-back task along with the process.
+    if (liveBackgroundTasks > 0) return;
     idleTimer = setTimeout(() => {
       closed = true;
       // Wake any waiting consumer so it can exit
       if (idleReject) idleReject();
     }, idleTimeoutMs);
+  }
+
+  function clearBackgroundCapTimer() {
+    if (backgroundCapTimer) clearTimeout(backgroundCapTimer);
+    backgroundCapTimer = null;
+  }
+
+  /**
+   * Report the current count of live (non-ambient) background tasks from the
+   * SDK's `background_tasks_changed` message. 0 → >0 suspends the idle timer
+   * and starts the hard cap; >0 → 0 clears the cap and resumes idling.
+   */
+  function setBackgroundTaskCount(count: number) {
+    const wasLive = liveBackgroundTasks > 0;
+    liveBackgroundTasks = count;
+    const isLive = count > 0;
+    if (isLive && !wasLive) {
+      resetIdleTimer();
+      clearBackgroundCapTimer();
+      backgroundCapTimer = setTimeout(() => {
+        // Runaway task: stop waiting on it and let the idle close proceed.
+        liveBackgroundTasks = 0;
+        backgroundCapTimer = null;
+        closed = true;
+        if (idleReject) idleReject();
+      }, backgroundMaxWaitMs);
+    } else if (!isLive && wasLive) {
+      clearBackgroundCapTimer();
+      resetIdleTimer();
+    }
   }
 
   function buildUserMessage(
@@ -106,8 +147,9 @@ export function createMessageChannel(
   function close() {
     closed = true;
     if (idleTimer) clearTimeout(idleTimer);
+    clearBackgroundCapTimer();
     if (idleReject) idleReject();
   }
 
-  return { generator: generator(), push, close, buildUserMessage };
+  return { generator: generator(), push, close, buildUserMessage, setBackgroundTaskCount };
 }

@@ -121,6 +121,23 @@ test("SDK messages become session, message, text.delta and turn.finished events"
   });
 });
 
+test("background_tasks_changed system messages become background-tasks events, excluding ambient tasks", async () => {
+  const events = await collect([
+    { type: "system", subtype: "background_tasks_changed", session_id: "s1", tasks: [
+      { task_id: "t1", task_type: "shell", description: "sleep 100" },
+      { task_id: "t2", task_type: "mcp", description: "watcher", ambient: true },
+    ] },
+    { type: "system", subtype: "background_tasks_changed", session_id: "s1", tasks: [] },
+    { type: "result", subtype: "success", session_id: "s1", result: "ok" },
+  ]);
+  expect(events.filter((e) => e.type === "background-tasks")).toEqual([
+    { type: "background-tasks", count: 1 },
+    { type: "background-tasks", count: 0 },
+  ]);
+  // Not treated as a session change, message, or anything else.
+  expect(events.map((e) => e.type)).toEqual(["background-tasks", "background-tasks", "turn.finished"]);
+});
+
 test("a text delta before any message_start is dropped", async () => {
   const events = await collect([
     { type: "stream_event", session_id: "s1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "orphan" } } },

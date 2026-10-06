@@ -541,6 +541,8 @@ export type ConversationEvent =
    * HistoryEntry.messageId, so a draft can be replaced by the stored text.
    */
   | { type: "text.delta"; messageId: string; text: string }
+  /** Live (non-ambient) background tasks (Agent/Bash run_in_background) changed count; 0 means none left. */
+  | { type: "background-tasks"; count: number }
   /** One per turn. A multi-turn conversation continues with the next input. */
   | { type: "turn.finished"; result: TurnResult };
 

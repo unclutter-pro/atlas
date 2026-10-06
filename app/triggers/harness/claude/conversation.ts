@@ -158,6 +158,15 @@ export function openConversation(
           yield { type: "turn.finished", result };
           continue;
         }
+        if (raw.type === "system" && raw.subtype === "background_tasks_changed") {
+          const tasks = Array.isArray(raw.tasks) ? raw.tasks : [];
+          // Ambient tasks (watchers, skip_transcript) aren't activity; the SDK
+          // docs say to exclude them from "is background work running" checks.
+          const count = tasks.filter((t: unknown) => !object(t).ambient).length;
+          channel?.setBackgroundTaskCount(count);
+          yield { type: "background-tasks", count };
+          continue;
+        }
         if (sid && sid !== session?.nativeId) {
           session = sessionRef(sid);
           yield { type: "session", session };

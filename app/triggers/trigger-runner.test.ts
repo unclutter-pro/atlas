@@ -1024,6 +1024,41 @@ describe("createMessageChannel", () => {
     expect((r.value as unknown as { priority?: string }).priority).toBeUndefined();
     ch.close();
   });
+
+  test("a live background task suspends the idle timer", async () => {
+    const ch = createMessageChannel("test-session-bg-1", 30);
+    ch.push("initial");
+    const iter = ch.generator[Symbol.asyncIterator]();
+    await iter.next(); // consumes "initial"; idle timer now armed at 30ms
+    ch.setBackgroundTaskCount(1); // suspend it before it can fire
+    await Bun.sleep(80); // longer than the idle timeout alone would allow
+    ch.push("still here");
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    expect(r.value.message.content).toBe("still here");
+    ch.close();
+  });
+
+  test("the idle timer resumes once the background task count drops to 0", async () => {
+    const ch = createMessageChannel("test-session-bg-2", 30);
+    ch.push("initial");
+    const iter = ch.generator[Symbol.asyncIterator]();
+    await iter.next();
+    ch.setBackgroundTaskCount(1);
+    await Bun.sleep(80); // suspended — no timeout despite exceeding idleTimeoutMs
+    ch.setBackgroundTaskCount(0); // idling resumes from here
+    const end = await iter.next(); // fires within ~30ms
+    expect(end.done).toBe(true);
+  });
+
+  test("TRIGGER_BACKGROUND_MAX_WAIT caps how long a live task can hold the channel open", async () => {
+    // idleTimeoutMs is long enough that only the cap can close this channel.
+    const ch = createMessageChannel("test-session-bg-3", 10000, 50);
+    const iter = ch.generator[Symbol.asyncIterator]();
+    ch.setBackgroundTaskCount(1);
+    const end = await iter.next();
+    expect(end.done).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
