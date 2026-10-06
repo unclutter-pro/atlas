@@ -982,4 +982,19 @@ describe("parseAt: combined relative durations", () => {
     expect(delta).toBeGreaterThanOrEqual(90 * MIN - 2000);
     expect(delta).toBeLessThanOrEqual(90 * MIN + 2000);
   });
+
+  test("bare durations without + are accepted (7d, 6h, 25m, 2h30m)", () => {
+    const base = Date.now();
+    expect(toMs(parseAt("7d")) - base).toBeGreaterThanOrEqual(7 * 1440 * MIN - 2000);
+    expect(toMs(parseAt("6h")) - base).toBeGreaterThanOrEqual(360 * MIN - 2000);
+    expect(toMs(parseAt("25m")) - base).toBeLessThanOrEqual(25 * MIN + 2000);
+    const delta = toMs(parseAt("2h30m")) - base;
+    expect(delta).toBeGreaterThanOrEqual(150 * MIN - 2000);
+    expect(delta).toBeLessThanOrEqual(150 * MIN + 2000);
+  });
+
+  test("time-of-day is not mistaken for a bare duration", () => {
+    const stored = parseAt("14:00");
+    expect(stored).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
 });
