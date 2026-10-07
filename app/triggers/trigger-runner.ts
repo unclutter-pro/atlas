@@ -1656,10 +1656,7 @@ export async function main(): Promise<void> {
     prompt = `<system-notice>This session was terminated due to inactivity. The previous session state has been preserved. Please continue where you left off and process the new message below.</system-notice>\n\n${prompt}`;
   }
 
-  // A prior process for this session may have died while background tasks
-  // were still live (crash, OOM, deploy). Tell the new session what was
-  // interrupted so nothing is silently lost, then clear the record — this
-  // run's own tracker (below) starts persisting fresh as tasks report in.
+  // A previous process may have died with background tasks still live.
   if (sessionMode === "persistent") {
     const interrupted = listBackgroundTasks(db, triggerName, sessionKey);
     if (interrupted.length > 0) {
@@ -1760,21 +1757,16 @@ export async function main(): Promise<void> {
     beginTurn();
     sendTypingOnce();
 
-    // Background-task check-ins: long work must never be silently dropped.
-    // The idle timer is already suspended while tasks are live (message-channel.ts);
-    // this pushes a runtime notice on a stall or periodically so the session
-    // decides whether to keep waiting, stop the task, or tell the user.
     const tracker = createBackgroundTaskTracker({ stallMs: BACKGROUND_STALL_MS, checkinMs: BACKGROUND_CHECKIN_MS });
     const pushCheckIn = (message: string) => {
-      // Same routing as socket injects: mid-turn goes through nextToolContext
-      // so it never sits orphaned next to a running turn until idle timeout.
+      // Same routing as socket injects.
       if (inTurn) {
         injectionQueue.push(message);
       } else if (conversation.push(message)) {
         inTurn = true;
         beginTurn();
       } else {
-        log.log(`Dropped background check-in — conversation channel already closed for session ${sessionKey}`);
+        log.log(`Dropped background check-in, conversation channel already closed for session ${sessionKey}`);
       }
     };
     const checkInTimer = setInterval(() => {

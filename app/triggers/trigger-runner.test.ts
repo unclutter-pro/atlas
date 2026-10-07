@@ -1045,7 +1045,7 @@ describe("createMessageChannel", () => {
     const iter = ch.generator[Symbol.asyncIterator]();
     await iter.next();
     ch.setBackgroundTaskCount(1);
-    await Bun.sleep(80); // suspended — no timeout despite exceeding idleTimeoutMs
+    await Bun.sleep(80); // suspended, no timeout despite exceeding idleTimeoutMs
     ch.setBackgroundTaskCount(0); // idling resumes from here
     const end = await iter.next(); // fires within ~30ms
     expect(end.done).toBe(true);

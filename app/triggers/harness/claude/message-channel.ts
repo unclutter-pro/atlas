@@ -3,8 +3,8 @@ const IDLE_TIMEOUT_MS = parseInt(process.env.TRIGGER_IDLE_TIMEOUT ?? "300000", 1
 /**
  * Emergency brake: how long live background tasks can hold a session open,
  * from when they first appear, before the channel closes regardless. Long
- * work should essentially never be interrupted — check-ins (see
- * triggers/background-tasks.ts) handle staying informed while it runs — so
+ * work should essentially never be interrupted, check-ins (see
+ * triggers/background-tasks.ts) handle staying informed while it runs, so
  * this is only a last resort against a truly runaway or orphaned task.
  */
 export const BACKGROUND_MAX_WAIT_MS = parseInt(process.env.TRIGGER_BACKGROUND_MAX_WAIT ?? "43200000", 10);

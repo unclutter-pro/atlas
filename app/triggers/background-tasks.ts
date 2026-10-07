@@ -142,7 +142,7 @@ export function buildInterruptedTasksNotice(tasks: PersistedBackgroundTask[], pr
     const where = t.outputFile
       ? `its output may be at ${t.outputFile}`
       : `its output may be in the transcript of the previous session${previousSessionId ? ` (${previousSessionId})` : ""}`;
-    return `- "${t.description}" (${t.taskId}), started ${t.startedAt} — ${where}`;
+    return `- "${t.description}" (${t.taskId}), started ${t.startedAt}, ${where}`;
   });
   return `<system-notice>The previous process ended while these background tasks were still running:\n${lines.join("\n")}\nCheck on them before assuming they didn't finish.</system-notice>`;
 }

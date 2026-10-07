@@ -168,7 +168,7 @@ export function openConversation(
           continue;
         }
         // task_started/task_progress/task_notification are the per-task edges behind
-        // the background_tasks_changed level signal above — used for stall detection,
+        // the background_tasks_changed level signal above, used for stall detection,
         // check-ins and crash recovery (see triggers/background-tasks.ts).
         if (raw.type === "system" && raw.subtype === "task_started") {
           if (!raw.ambient) {

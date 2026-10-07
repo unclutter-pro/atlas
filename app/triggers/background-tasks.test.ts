@@ -25,12 +25,12 @@ describe("createBackgroundTaskTracker", () => {
     expect(first[0]).toContain("t1");
     expect(first[0]).toContain("[Runtime notice]");
 
-    // Still stalled at the next tick — must not double-fire.
+    // Still stalled at the next tick, must not double-fire.
     expect(tracker.checkNow(1500)).toEqual([]);
 
     tracker.progress("t1", 1500);
     expect(tracker.checkNow(2000)).toEqual([]); // only 500ms since progress
-    expect(tracker.checkNow(2500)).toHaveLength(1); // 1000ms since progress — re-armed
+    expect(tracker.checkNow(2500)).toHaveLength(1); // 1000ms since progress, re-armed
   });
 
   test("periodic check-ins fire on their own cadence while a task stays live", () => {
