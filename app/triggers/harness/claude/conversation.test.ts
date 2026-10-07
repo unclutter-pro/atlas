@@ -121,6 +121,39 @@ test("SDK messages become session, message, text.delta and turn.finished events"
   });
 });
 
+test("background_tasks_changed system messages become background-tasks events, excluding ambient tasks", async () => {
+  const events = await collect([
+    { type: "system", subtype: "background_tasks_changed", session_id: "s1", tasks: [
+      { task_id: "t1", task_type: "shell", description: "sleep 100" },
+      { task_id: "t2", task_type: "mcp", description: "watcher", ambient: true },
+    ] },
+    { type: "system", subtype: "background_tasks_changed", session_id: "s1", tasks: [] },
+    { type: "result", subtype: "success", session_id: "s1", result: "ok" },
+  ]);
+  expect(events.filter((e) => e.type === "background-tasks")).toEqual([
+    { type: "background-tasks", count: 1 },
+    { type: "background-tasks", count: 0 },
+  ]);
+  // Not treated as a session change, message, or anything else.
+  expect(events.map((e) => e.type)).toEqual(["background-tasks", "background-tasks", "turn.finished"]);
+});
+
+test("task_started/task_progress/task_notification become background-task-* events, excluding ambient starts", async () => {
+  const events = await collect([
+    { type: "system", subtype: "task_started", session_id: "s1", task_id: "t1", task_type: "local_agent", description: "research the thing" },
+    { type: "system", subtype: "task_started", session_id: "s1", task_id: "t2", task_type: "mcp", description: "watcher", ambient: true },
+    { type: "system", subtype: "task_progress", session_id: "s1", task_id: "t1", description: "research the thing", usage: { total_tokens: 1, tool_uses: 1, duration_ms: 1 } },
+    { type: "system", subtype: "task_notification", session_id: "s1", task_id: "t1", status: "completed", output_file: "/tmp/out.md", summary: "done" },
+    { type: "result", subtype: "success", session_id: "s1", result: "ok" },
+  ]);
+  expect(events.map((e) => e.type)).toEqual([
+    "background-task-started", "background-task-progress", "background-task-done", "turn.finished",
+  ]);
+  expect(events[0]).toEqual({ type: "background-task-started", taskId: "t1", taskType: "local_agent", description: "research the thing" });
+  expect(events[1]).toEqual({ type: "background-task-progress", taskId: "t1" });
+  expect(events[2]).toEqual({ type: "background-task-done", taskId: "t1", outputFile: "/tmp/out.md" });
+});
+
 test("a text delta before any message_start is dropped", async () => {
   const events = await collect([
     { type: "stream_event", session_id: "s1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "orphan" } } },

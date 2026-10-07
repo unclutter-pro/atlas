@@ -85,6 +85,16 @@ The stale threshold is configurable via `STALE_SESSION_THRESHOLD` env var (defau
 - **Persistent sessions**: No hard timeout — they can run for hours (teams, complex tasks). Stale detection handles hung sessions.
 - **Ephemeral sessions**: `TRIGGER_TIMEOUT` env var (default: 3600s / 1 hour).
 
+## Background Tasks
+
+A live background task (Agent or Bash started with `run_in_background`) suspends the idle timer above, closing stdin would kill the task along with the session. Instead of a short hard cap, the session gets periodic check-ins so long work is never silently interrupted:
+
+- `TRIGGER_BACKGROUND_STALL_MS` (default: 1800000 / 30 minutes), no progress on a task this long triggers one check-in notice; it re-arms once progress resumes. Tasks that never report progress (e.g. backgrounded Bash) are exempt from this check.
+- `TRIGGER_BACKGROUND_CHECKIN_MS` (default: 7200000 / 2 hours), while any task is live, a check-in notice at least this often regardless of stalls.
+- `TRIGGER_BACKGROUND_MAX_WAIT` (default: 43200000 / 12 hours), emergency brake: closes the session anyway if tasks are still live this long after they first appeared.
+
+The check-in is a synthetic `[Runtime notice]` user message asking the session to decide whether to keep waiting, stop the task, or tell the user. The live task set (id, description, type, start time, output file once known) is persisted per trigger+session_key so a process restart with tasks still running doesn't lose them: the next session for that key gets a notice listing what was interrupted and where to find its output.
+
 ## Log Files
 
 - `/atlas/logs/trigger-<name>.log` — Per-trigger session output

@@ -55,6 +55,14 @@ import {
   type SocketMessage,
 } from "../lib/trigger-socket.ts";
 import { createWebUiNotifier, type ChatNotifyKind, type WebUiNotifier } from "../lib/web-ui-notify.ts";
+import {
+  createBackgroundTaskTracker,
+  saveBackgroundTask,
+  clearBackgroundTask,
+  listBackgroundTasks,
+  clearBackgroundTasks,
+  buildInterruptedTasksNotice,
+} from "./background-tasks.ts";
 
 // Moved to lib/trigger-socket.ts; re-exported for existing importers and tests.
 export { getSocketPath, trySocketInject, type SocketAck, type SocketMessage };
@@ -124,6 +132,15 @@ const IDLE_TIMEOUT_MS = parseInt(
   process.env.TRIGGER_IDLE_TIMEOUT ?? "300000",
   10,
 );
+
+/** No progress on a background task for this long → one check-in notice (re-arms once progress resumes). */
+const BACKGROUND_STALL_MS = parseInt(process.env.TRIGGER_BACKGROUND_STALL_MS ?? "1800000", 10);
+
+/** While any background task is live, a check-in notice at least this often regardless of stalls. */
+const BACKGROUND_CHECKIN_MS = parseInt(process.env.TRIGGER_BACKGROUND_CHECKIN_MS ?? "7200000", 10);
+
+/** How often a running session is polled for check-ins due on its live background tasks. */
+const BACKGROUND_TICK_MS = 60_000;
 
 /**
  * Start a Unix domain socket server that accepts incoming messages and hands
@@ -1639,6 +1656,15 @@ export async function main(): Promise<void> {
     prompt = `<system-notice>This session was terminated due to inactivity. The previous session state has been preserved. Please continue where you left off and process the new message below.</system-notice>\n\n${prompt}`;
   }
 
+  // A previous process may have died with background tasks still live.
+  if (sessionMode === "persistent") {
+    const interrupted = listBackgroundTasks(db, triggerName, sessionKey);
+    if (interrupted.length > 0) {
+      prompt = `${buildInterruptedTasksNotice(interrupted, existingSession)}\n\n${prompt}`;
+      clearBackgroundTasks(db, triggerName, sessionKey);
+    }
+  }
+
   // --- Control socket for message injection ---
   const socketPath = getSocketPath(triggerName, sessionKey);
   let socketServer: Server | null = null;
@@ -1730,6 +1756,22 @@ export async function main(): Promise<void> {
     inTurn = true;
     beginTurn();
     sendTypingOnce();
+
+    const tracker = createBackgroundTaskTracker({ stallMs: BACKGROUND_STALL_MS, checkinMs: BACKGROUND_CHECKIN_MS });
+    const pushCheckIn = (message: string) => {
+      // Same routing as socket injects.
+      if (inTurn) {
+        injectionQueue.push(message);
+      } else if (conversation.push(message)) {
+        inTurn = true;
+        beginTurn();
+      } else {
+        log.log(`Dropped background check-in, conversation channel already closed for session ${sessionKey}`);
+      }
+    };
+    const checkInTimer = setInterval(() => {
+      for (const message of tracker.checkNow(Date.now())) pushCheckIn(message);
+    }, BACKGROUND_TICK_MS);
 
     // Start socket server so other trigger-runner processes can inject messages.
     //
@@ -1890,6 +1932,29 @@ export async function main(): Promise<void> {
           notify("session");
         }
         if (event.type === "message") notify("message");
+        if (event.type === "background-task-started") {
+          tracker.started(event.taskId, event.taskType, event.description, Date.now());
+          if (sessionMode === "persistent") {
+            try {
+              saveBackgroundTask(db, triggerName, sessionKey, {
+                taskId: event.taskId, taskType: event.taskType, description: event.description, outputFile: null,
+              });
+            } catch (err) {
+              log.log(`background task persist failed: ${err}`);
+            }
+          }
+        }
+        if (event.type === "background-task-progress") tracker.progress(event.taskId, Date.now());
+        if (event.type === "background-task-done") {
+          tracker.done(event.taskId);
+          if (sessionMode === "persistent") {
+            try {
+              clearBackgroundTask(db, triggerName, sessionKey, event.taskId);
+            } catch (err) {
+              log.log(`background task clear failed: ${err}`);
+            }
+          }
+        }
         // Streaming: persist text deltas so the web-ui SSE handler can
         // forward them to the client in near-real-time. We accept the cost
         // of one INSERT per delta (typically a few characters) because the
@@ -1906,6 +1971,7 @@ export async function main(): Promise<void> {
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (retireTimeout) clearTimeout(retireTimeout);
+      clearInterval(checkInTimer);
       conversation.stop();
       closeSocket();
     }

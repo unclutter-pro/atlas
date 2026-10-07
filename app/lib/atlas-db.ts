@@ -30,6 +30,22 @@ function createTables(database: Database): void {
       UNIQUE(trigger_name, session_key)
     );
 
+    -- Live background tasks (Agent/Bash run_in_background) per trigger session,
+    -- so a process restart while one is still running can tell the next
+    -- session what was interrupted instead of losing it silently. Rows are
+    -- removed on task_notification (completed/failed/stopped); leftover rows
+    -- at session start mean the previous process died with the task live.
+    CREATE TABLE IF NOT EXISTS background_tasks (
+      trigger_name TEXT NOT NULL,
+      session_key TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      task_type TEXT NOT NULL,
+      description TEXT NOT NULL,
+      output_file TEXT,
+      started_at TEXT DEFAULT (datetime('now')),
+      PRIMARY KEY (trigger_name, session_key, task_id)
+    );
+
     -- Generic attachments associated with messages (audio voice notes today;
     -- images, PDFs, etc. later without further migration). Files live on
     -- disk under HOME/.attachments/<id>.<ext>; this table stores metadata.

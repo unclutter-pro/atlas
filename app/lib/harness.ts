@@ -541,6 +541,14 @@ export type ConversationEvent =
    * HistoryEntry.messageId, so a draft can be replaced by the stored text.
    */
   | { type: "text.delta"; messageId: string; text: string }
+  /** Live (non-ambient) background tasks (Agent/Bash run_in_background) changed count; 0 means none left. */
+  | { type: "background-tasks"; count: number }
+  /** A non-ambient background task started; tracked for stall/check-in and crash recovery. */
+  | { type: "background-task-started"; taskId: string; taskType: string; description: string }
+  /** A tracked background task made progress (subagent and MCP tasks only; bash tasks never emit this). */
+  | { type: "background-task-progress"; taskId: string }
+  /** A tracked background task finished (completed, failed or stopped); stop tracking it. */
+  | { type: "background-task-done"; taskId: string; outputFile: string | null }
   /** One per turn. A multi-turn conversation continues with the next input. */
   | { type: "turn.finished"; result: TurnResult };
 
