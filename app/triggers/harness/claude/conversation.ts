@@ -167,6 +167,32 @@ export function openConversation(
           yield { type: "background-tasks", count };
           continue;
         }
+        // task_started/task_progress/task_notification are the per-task edges behind
+        // the background_tasks_changed level signal above — used for stall detection,
+        // check-ins and crash recovery (see triggers/background-tasks.ts).
+        if (raw.type === "system" && raw.subtype === "task_started") {
+          if (!raw.ambient) {
+            yield {
+              type: "background-task-started",
+              taskId: String(raw.task_id),
+              taskType: typeof raw.task_type === "string" ? raw.task_type : "",
+              description: typeof raw.description === "string" ? raw.description : "",
+            };
+          }
+          continue;
+        }
+        if (raw.type === "system" && raw.subtype === "task_progress") {
+          yield { type: "background-task-progress", taskId: String(raw.task_id) };
+          continue;
+        }
+        if (raw.type === "system" && raw.subtype === "task_notification") {
+          yield {
+            type: "background-task-done",
+            taskId: String(raw.task_id),
+            outputFile: typeof raw.output_file === "string" ? raw.output_file : null,
+          };
+          continue;
+        }
         if (sid && sid !== session?.nativeId) {
           session = sessionRef(sid);
           yield { type: "session", session };

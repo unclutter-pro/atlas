@@ -41,7 +41,7 @@ import {
 import { migrateSchema } from "../lib/atlas-db.ts";
 import type { TurnResult } from "../lib/harness.ts";
 import { readAuthFailure } from "../lib/harness/auth.ts";
-import { createMessageChannel } from "./harness/claude/message-channel.ts";
+import { createMessageChannel, BACKGROUND_MAX_WAIT_MS } from "./harness/claude/message-channel.ts";
 import { getLockPath, getSocketPath as socketPathFor } from "../lib/trigger-socket.ts";
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1058,26 @@ describe("createMessageChannel", () => {
     ch.setBackgroundTaskCount(1);
     const end = await iter.next();
     expect(end.done).toBe(true);
+  });
+
+  test("the default emergency brake is 12 hours, not the old 60-minute cap", () => {
+    expect(BACKGROUND_MAX_WAIT_MS).toBe(43_200_000);
+  });
+
+  test("a live task outlives what the old 60-minute default cap would have allowed", async () => {
+    // Stand-in for "longer than the old hard cap": a wait well past 60 "minutes"
+    // on a scaled-down clock, bounded only by a cap far beyond that duration.
+    const ch = createMessageChannel("test-session-bg-4", 10000, 100_000);
+    ch.push("initial");
+    const iter = ch.generator[Symbol.asyncIterator]();
+    await iter.next();
+    ch.setBackgroundTaskCount(1);
+    await Bun.sleep(80); // would have tripped a 60ms-scaled "old" cap; the real cap is far later
+    ch.push("still alive");
+    const r = await iter.next();
+    expect(r.done).toBe(false);
+    expect(r.value.message.content).toBe("still alive");
+    ch.close();
   });
 });
 
