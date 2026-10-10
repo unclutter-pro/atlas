@@ -3,15 +3,20 @@
 # Runs as agent user (Dockerfile USER directive).
 set -e
 
-# Try to fix ownership on the home volume when permitted. The agent user may
-# lack CAP_CHOWN, so a root-owned workspace file must not prevent startup.
-# Only mismatched entries are touched: a recursive chown rewrites every inode
-# and can outlast a startup probe on large volumes.
+# Fix ownership once per volume, not on every start: walking every inode on a
+# large network volume can outlast a startup probe. The marker records a
+# completed pass; delete it to force another. The agent user may lack
+# CAP_CHOWN, so a root-owned workspace file must not prevent startup.
 # Exclude lost+found (ext4 journal dir, root-owned, may not be chownable)
-if ! find /home/agent -mindepth 1 -path /home/agent/lost+found -prune -o \( ! -user agent -o ! -group agent \) -exec chown -h agent:agent {} +; then
-  echo "WARNING: Could not fix ownership of some workspace files; continuing startup. Check the ownership errors above if services fail." >&2
+OWNERSHIP_MARKER=/home/agent/.ownership-fixed
+if [ ! -O "$OWNERSHIP_MARKER" ]; then
+  if find /home/agent -mindepth 1 -path /home/agent/lost+found -prune -o \( ! -user agent -o ! -group agent \) -exec chown -h agent:agent {} +; then
+    touch "$OWNERSHIP_MARKER"
+  else
+    echo "WARNING: Could not fix ownership of some workspace files; continuing startup. Check the ownership errors above if services fail." >&2
+  fi
+  chown agent:agent /home/agent 2>/dev/null || true
 fi
-chown agent:agent /home/agent 2>/dev/null || true
 
 # Resolve agent display name: AGENT_NAME env > config.yml agent.name > "Atlas"
 if [ -z "${AGENT_NAME:-}" ]; then
