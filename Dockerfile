@@ -65,7 +65,7 @@ ENV TZ=Europe/Berlin
 
 # ---- Single mega-install layer ----
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-  curl wget git jq ripgrep \
+  curl wget git jq ripgrep file xxd \
   supervisor \
   nginx \
   sqlite3 \
