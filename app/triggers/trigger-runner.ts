@@ -421,6 +421,20 @@ export function safePlaceholderReplace(
 }
 
 /**
+ * Fill a trigger prompt. A payload the template never references is appended,
+ * otherwise reminders and webhooks on triggers without `{{payload}}` lose it.
+ */
+export function renderTriggerPrompt(
+  template: string,
+  payload: string,
+  vars: Record<string, string>,
+): string {
+  const prompt = safePlaceholderReplace(template, { "{{payload}}": payload, ...vars });
+  if (!payload.trim() || template.includes("{{payload}}")) return prompt;
+  return `${prompt}\n\n<payload>\n${payload}\n</payload>`;
+}
+
+/**
  * Read a trigger's config from the SQLite database.
  * Returns null if not found or disabled.
  */
@@ -1334,8 +1348,7 @@ export async function main(): Promise<void> {
   }
 
   // Substitute placeholders
-  prompt = safePlaceholderReplace(prompt, {
-    "{{payload}}": payload,
+  prompt = renderTriggerPrompt(prompt, payload, {
     "{{sender}}": sessionKey,
     "{{channel}}": channel,
     "{{trigger_name}}": triggerName,
