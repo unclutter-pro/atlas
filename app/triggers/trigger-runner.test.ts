@@ -20,6 +20,7 @@ import {
   defaultModelKeyFor,
   getMcpServers,
   safePlaceholderReplace,
+  renderTriggerPrompt,
   readTriggerConfig,
   recordMetrics,
   getSessionIdleSeconds,
@@ -86,6 +87,29 @@ function createInMemoryDb(): Database {
   `);
   return db;
 }
+
+// ---------------------------------------------------------------------------
+// renderTriggerPrompt
+// ---------------------------------------------------------------------------
+
+describe("renderTriggerPrompt", () => {
+  const vars = { "{{sender}}": "thread-1", "{{trigger_name}}": "email-handler" };
+
+  test("substitutes {{payload}} in place without appending", () => {
+    expect(renderTriggerPrompt("Mail: {{payload}}", '{"body":"hi"}', vars)).toBe('Mail: {"body":"hi"}');
+  });
+
+  test("appends a payload the template does not reference", () => {
+    expect(renderTriggerPrompt("Trigger 'email-handler' was fired.", "[Reminder #1]\n\ndo it", vars)).toBe(
+      "Trigger 'email-handler' was fired.\n\n<payload>\n[Reminder #1]\n\ndo it\n</payload>",
+    );
+  });
+
+  test("leaves the prompt alone when the payload is empty", () => {
+    expect(renderTriggerPrompt("Run the digest for {{trigger_name}}.", "", vars)).toBe("Run the digest for email-handler.");
+    expect(renderTriggerPrompt("Run the digest.", "  \n", vars)).toBe("Run the digest.");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // safePlaceholderReplace
