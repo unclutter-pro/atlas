@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripQuoted } from "./strip-quoted.ts";
 import { CORRECTION_REASON, MAX_REPROMPTS, validatorGate } from "./validator-gate.ts";
 
 let root: string;
@@ -173,6 +174,27 @@ describe("command advice", () => {
     expect(a("sleep 580").code).toBe(0); // legacy 1-arg call keeps advisory-only behaviour
   });
 
+  test("a subagent call is not blocked, since it does not deafen the main session", () => {
+    const r = a("sleep 580", "false", "signal", "true");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("reminder add");
+  });
+
+  test("does not block a sleep/--watch quoted inside a message or commit body (real false positives)", () => {
+    expect(a('signal send "+49123" "die Session hat ein sleep 580 gestartet"', "false", "signal").code).toBe(0);
+    expect(a('git commit -m "fix: avoid gh run watch --watch"', "false", "signal").code).toBe(0);
+    expect(a("cat <<EOF\nsleep 600\nEOF\necho done", "false", "signal").code).toBe(0);
+  });
+
+  test("allows a quoted bash -c script body (documented trade-off: treated like a quoted message, not the command)", () => {
+    expect(a("bash -c 'sleep 600'", "false", "signal").code).toBe(0);
+  });
+
+  test("still blocks real foreground waits that are not inside quotes", () => {
+    expect(a("sleep 580", "false", "signal").code).toBe(2);
+    expect(a("for i in 1 2; do sleep 90; done", "false", "signal").code).toBe(2);
+  });
+
   test("the Claude PreToolUse hook wraps advice as additionalContext", () => {
     const hook = join(hooks, "remind-use-reminders.sh");
     const poll = run([hook], {}, JSON.stringify({ tool_input: { command: "sleep 600" } }));
@@ -195,6 +217,18 @@ describe("command advice", () => {
     const allowed = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal" }, JSON.stringify({ tool_input: { command: "sleep 600", run_in_background: true } }));
     expect(allowed.code).toBe(0);
     expect(JSON.parse(allowed.out).hookSpecificOutput.additionalContext).toContain("reminder add");
+  });
+
+  test("the Claude PreToolUse hook does not deny when the input carries an agent_id (a subagent/teammate call)", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const r = run(
+      [hook],
+      { ATLAS_TRIGGER_CHANNEL: "signal" },
+      JSON.stringify({ agent_id: "agent_abc123", tool_input: { command: "sleep 600" } }),
+    );
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecision).toBeUndefined();
+    expect(JSON.parse(r.out).hookSpecificOutput.additionalContext).toContain("reminder add");
   });
 
   test("still denies if jq fails to render the decision JSON (but can still read the command)", () => {
@@ -227,6 +261,25 @@ describe("compaction and session start", () => {
     mkdirSync(join(home, "memory"), { recursive: true });
     writeFileSync(join(home, "memory", "MEMORY.md"), "remember this\n");
     expect(run([join(lifecycle, "session-start.sh")]).out).toContain("<long-term-memory>\nremember this\n</long-term-memory>");
+  });
+});
+
+describe("stripQuoted", () => {
+  test("blanks single- and double-quoted contents, keeping the surrounding command", () => {
+    expect(stripQuoted('signal send "+49" "sleep 580"')).toBe('signal send "" ""');
+    expect(stripQuoted("bash -c 'sleep 600'")).toBe("bash -c ''");
+  });
+
+  test("honors backslash-escaped double quotes without ending the string early", () => {
+    expect(stripQuoted('echo "say \\"hi\\" now"')).toBe('echo ""');
+  });
+
+  test("blanks a heredoc body between the marker and the terminator line", () => {
+    expect(stripQuoted("cat <<EOF\nsleep 600\nEOF\necho done")).toBe("cat <<EOF\necho done");
+  });
+
+  test("leaves unquoted command text alone", () => {
+    expect(stripQuoted("for i in 1 2; do sleep 90; done")).toBe("for i in 1 2; do sleep 90; done");
   });
 });
 

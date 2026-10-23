@@ -108,11 +108,11 @@ Outputs generic memory flush instructions.
 
 ## command-advice.sh
 
-Runs before the agent executes a shell command: `command-advice.sh "<command>" "<run_in_background>" "<channel>"`. When it looks like a blocking wait (a loop with `sleep`, a standalone `sleep`/`timeout` of a minute or more, or a `gh --watch` / `kubectl --watch|-w`), it advises the `reminder` CLI instead — Atlas is event-driven.
+Runs before the agent executes a shell command: `command-advice.sh "<command>" "<run_in_background>" "<channel>" "<is_subagent>"`. The command is matched with quoted strings and heredoc bodies stripped out first (via `strip-quoted.ts`), so a `sleep`/`--watch` inside a chat message or commit message isn't mistaken for the command itself. When what's left looks like a blocking wait (a loop with `sleep`, a standalone `sleep`/`timeout` of a minute or more, or a `gh --watch` / `kubectl --watch|-w`), it advises the `reminder` CLI instead — Atlas is event-driven.
 
-In a chat session (`channel` is `signal`, `whatsapp`, `telegram` or `web`) a foreground blocking wait is worse than brittle: inbound messages for that session are only delivered at the next tool boundary (see `nextToolContext` in `docs/watcher.md`), so the whole wait makes the agent deaf to the user — this is what caused repeated `/new` restarts in Signal chats. There, unless the call is already backgrounded (`run_in_background: true`), the hook blocks it (exit 2) instead of just advising. Outside a chat session, or once backgrounded, it stays advisory only (exit 0).
+In a chat session (`channel` is `signal`, `whatsapp`, `telegram` or `web`) a foreground blocking wait is worse than brittle: inbound messages for that session are only delivered at the next tool boundary (see `nextToolContext` in `docs/watcher.md`), so the whole wait makes the agent deaf to the user — this is what caused repeated `/new` restarts in Signal chats. There, unless the call is already backgrounded (`run_in_background: true`) or made by a subagent (`is_subagent: true`, from the hook input's `agent_id`; a subagent doesn't own the main session's input), the hook blocks it (exit 2) instead of just advising. Outside a chat session, or once backgrounded, it stays advisory only (exit 0).
 
-The last two arguments are optional for backward compatibility; omitting them keeps the old advisory-only behavior.
+The last three arguments are optional for backward compatibility; omitting them keeps the old advisory-only behavior.
 
 ## SubagentStop (prompt-type hook)
 
@@ -131,6 +131,7 @@ Lifecycle policy, `app/triggers/lifecycle/`:
 - `stop.sh` — Stop policy: task gate and journal reminder
 - `validator-gate.ts` — Validator JSON-verdict gate
 - `command-advice.sh` — Advice against polling; blocks foreground blocking waits in chat sessions
+- `strip-quoted.ts` — Strips quoted strings and heredoc bodies before `command-advice.sh` matches
 
 Claude Code adapter, `app/triggers/harness/claude/`:
 
