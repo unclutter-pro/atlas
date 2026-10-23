@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripQuoted } from "./strip-quoted.ts";
 import { CORRECTION_REASON, MAX_REPROMPTS, validatorGate } from "./validator-gate.ts";
 
 let root: string;
@@ -133,20 +134,118 @@ describe("Claude Stop hook", () => {
 });
 
 describe("command advice", () => {
+  const a = (...args: string[]) => run([join(lifecycle, "command-advice.sh"), ...args]);
+
   test("advises the reminder CLI for polling commands only", () => {
-    expect(run([join(lifecycle, "command-advice.sh"), "while true; do curl x; sleep 30; done"]).out).toContain("reminder add");
-    expect(run([join(lifecycle, "command-advice.sh"), "sleep 5m"]).out).toContain("reminder add");
-    expect(run([join(lifecycle, "command-advice.sh"), "sleep 2 && ls"]).out).toBe("");
-    expect(run([join(lifecycle, "command-advice.sh"), "git status"]).out).toBe("");
+    expect(a("while true; do curl x; sleep 30; done").out).toContain("reminder add");
+    expect(a("sleep 5m").out).toContain("reminder add");
+    expect(a("sleep 2 && ls").out).toBe("");
+    expect(a("git status").out).toBe("");
   });
 
-  test("the Claude PreToolUse hook wraps it as additionalContext", () => {
+  test("also matches gh --watch, kubectl --watch/-w and a timeout of a minute or more", () => {
+    expect(a("gh run watch 123 --watch").out).toContain("reminder add");
+    expect(a("kubectl get pods -w").out).toContain("reminder add");
+    expect(a("kubectl rollout status deploy/x --watch").out).toContain("reminder add");
+    expect(a("timeout 600 some-script.sh").out).toContain("reminder add");
+    expect(a("timeout 10 some-script.sh").out).toBe(""); // short timeout, not a long wait
+  });
+
+  test("blocks a foreground wait in a chat session with a reason, not just advice", () => {
+    const blocked = a("sleep 580", "false", "signal");
+    expect(blocked.code).toBe(2);
+    expect(blocked.out).toContain("run_in_background");
+    expect(blocked.out).toContain("reminder add");
+  });
+
+  test.each(["signal", "whatsapp", "telegram", "web"])("treats channel=%s as a live chat session", (channel) => {
+    expect(a("sleep 580", "false", channel).code).toBe(2);
+  });
+
+  test("allows the same command in a chat session once it is backgrounded", () => {
+    const bg = a("sleep 580", "true", "signal");
+    expect(bg.code).toBe(0);
+    expect(bg.out).toContain("reminder add");
+  });
+
+  test("does not block outside a chat session, or without the new args (legacy call)", () => {
+    expect(a("sleep 580", "false", "email").code).toBe(0);
+    expect(a("sleep 580", "false", "cron").code).toBe(0);
+    expect(a("sleep 580").code).toBe(0); // legacy 1-arg call keeps advisory-only behaviour
+  });
+
+  test("a subagent call is not blocked, since it does not deafen the main session", () => {
+    const r = a("sleep 580", "false", "signal", "true");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("reminder add");
+  });
+
+  test("does not block a sleep/--watch quoted inside a message or commit body (real false positives)", () => {
+    expect(a('signal send "+49123" "die Session hat ein sleep 580 gestartet"', "false", "signal").code).toBe(0);
+    expect(a('git commit -m "fix: avoid gh run watch --watch"', "false", "signal").code).toBe(0);
+    expect(a("cat <<EOF\nsleep 600\nEOF\necho done", "false", "signal").code).toBe(0);
+  });
+
+  test("allows a quoted bash -c script body (documented trade-off: treated like a quoted message, not the command)", () => {
+    expect(a("bash -c 'sleep 600'", "false", "signal").code).toBe(0);
+  });
+
+  test("still blocks real foreground waits that are not inside quotes", () => {
+    expect(a("sleep 580", "false", "signal").code).toBe(2);
+    expect(a("for i in 1 2; do sleep 90; done", "false", "signal").code).toBe(2);
+  });
+
+  test("the Claude PreToolUse hook wraps advice as additionalContext", () => {
     const hook = join(hooks, "remind-use-reminders.sh");
     const poll = run([hook], {}, JSON.stringify({ tool_input: { command: "sleep 600" } }));
     expect(JSON.parse(poll.out).hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse" });
     expect(JSON.parse(poll.out).hookSpecificOutput.additionalContext).toContain("reminder add");
     expect(run([hook], {}, JSON.stringify({ tool_input: { command: "ls" } }))).toEqual({ code: 0, out: "" });
     expect(run([hook], {}, "not json")).toEqual({ code: 0, out: "" });
+  });
+
+  test("the Claude PreToolUse hook denies a foreground wait in a chat session", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const denied = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal" }, JSON.stringify({ tool_input: { command: "sleep 600" } }));
+    expect(denied.code).toBe(0);
+    expect(JSON.parse(denied.out).hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
+    expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toContain("run_in_background");
+  });
+
+  test("the Claude PreToolUse hook allows the same command once run_in_background is set", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const allowed = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal" }, JSON.stringify({ tool_input: { command: "sleep 600", run_in_background: true } }));
+    expect(allowed.code).toBe(0);
+    expect(JSON.parse(allowed.out).hookSpecificOutput.additionalContext).toContain("reminder add");
+  });
+
+  test("the Claude PreToolUse hook does not deny when the input carries an agent_id (a subagent/teammate call)", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const r = run(
+      [hook],
+      { ATLAS_TRIGGER_CHANNEL: "signal" },
+      JSON.stringify({ agent_id: "agent_abc123", tool_input: { command: "sleep 600" } }),
+    );
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecision).toBeUndefined();
+    expect(JSON.parse(r.out).hookSpecificOutput.additionalContext).toContain("reminder add");
+  });
+
+  test("still denies if jq fails to render the decision JSON (but can still read the command)", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const binDir = join(root, "bin-broken-jq-pretool");
+    mkdirSync(binDir);
+    for (const bin of ["bash", "cat", "grep", "dirname"]) {
+      const real = Bun.spawnSync(["which", bin]).stdout.toString().trim();
+      if (real) writeFileSync(join(binDir, bin), `#!/bin/bash\nexec ${real} "$@"\n`), chmodSync(join(binDir, bin), 0o755);
+    }
+    // Real jq for reading tool_input (-r calls), but fails for rendering the decision (-n calls).
+    const realJq = Bun.spawnSync(["which", "jq"]).stdout.toString().trim();
+    writeFileSync(join(binDir, "jq"), `#!/bin/bash\n[ "$1" = "-n" ] && exit 1\nexec ${realJq} "$@"\n`);
+    chmodSync(join(binDir, "jq"), 0o755);
+    const r = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal", PATH: binDir }, JSON.stringify({ tool_input: { command: "sleep 600" } }));
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecision).toBe("deny");
   });
 });
 
@@ -162,6 +261,25 @@ describe("compaction and session start", () => {
     mkdirSync(join(home, "memory"), { recursive: true });
     writeFileSync(join(home, "memory", "MEMORY.md"), "remember this\n");
     expect(run([join(lifecycle, "session-start.sh")]).out).toContain("<long-term-memory>\nremember this\n</long-term-memory>");
+  });
+});
+
+describe("stripQuoted", () => {
+  test("blanks single- and double-quoted contents, keeping the surrounding command", () => {
+    expect(stripQuoted('signal send "+49" "sleep 580"')).toBe('signal send "" ""');
+    expect(stripQuoted("bash -c 'sleep 600'")).toBe("bash -c ''");
+  });
+
+  test("honors backslash-escaped double quotes without ending the string early", () => {
+    expect(stripQuoted('echo "say \\"hi\\" now"')).toBe('echo ""');
+  });
+
+  test("blanks a heredoc body between the marker and the terminator line", () => {
+    expect(stripQuoted("cat <<EOF\nsleep 600\nEOF\necho done")).toBe("cat <<EOF\necho done");
+  });
+
+  test("leaves unquoted command text alone", () => {
+    expect(stripQuoted("for i in 1 2; do sleep 90; done")).toBe("for i in 1 2; do sleep 90; done");
   });
 });
 
