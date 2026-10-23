@@ -4,8 +4,9 @@ Atlas reacts to session lifecycle events: it loads memory and task context when 
 
 That logic is Atlas **lifecycle policy** in `app/triggers/lifecycle/`, independent of the agent backend. Its contract:
 
-- **Context events** (session start, before/after compaction, before a shell command): context text for the agent on stdout, or nothing.
+- **Context events** (session start, before/after compaction): context text for the agent on stdout, or nothing.
 - **Stop** (the agent wants to end its turn): exit 2 with the reason on stdout keeps the agent working; exit 0 with text adds context; exit 0 without output allows the stop.
+- **PreToolUse (Bash)**: exit 0 with text on stdout adds context; exit 2 with the reason on stdout blocks the command (`command-advice.sh` only, and only in a chat session — see below).
 
 A backend adapter maps its native hook mechanism onto these scripts. For Claude Code, `HarnessBackend.configure()` (`app/triggers/harness/claude/settings.ts`, run by `app/triggers/harness/configure.ts` at container start and after config changes) registers them in `~/.claude/settings.json`:
 
@@ -15,7 +16,7 @@ A backend adapter maps its native hook mechanism onto these scripts. For Claude 
 | PreCompact (auto / manual) | `lifecycle/pre-compact.sh auto` / `manual` |
 | PostCompact | `lifecycle/post-compact.sh` |
 | Stop | `harness/claude/hooks/stop.sh` → `lifecycle/stop.sh`; exit 2 becomes `{"decision":"block","reason":...}`. Validator sessions: `validator-stop-check.ts` → `lifecycle/validator-gate.ts` |
-| PreToolUse (Bash) | `rtk hook claude`, `harness/claude/hooks/remind-use-reminders.sh` → `lifecycle/command-advice.sh`, returned as `additionalContext` |
+| PreToolUse (Bash) | `rtk hook claude`, `harness/claude/hooks/remind-use-reminders.sh` → `lifecycle/command-advice.sh`; exit 0 becomes `additionalContext`, exit 2 becomes `permissionDecision:"deny"` |
 | SubagentStop | prompt-type review (below) |
 
 Context scripts are registered directly because Claude Code's contract for them is the same (stdout becomes context). Stop and PreToolUse need the small protocol wrappers in `harness/claude/hooks/`.
@@ -107,7 +108,11 @@ Outputs generic memory flush instructions.
 
 ## command-advice.sh
 
-Runs before the agent executes a shell command (the command is the first argument). When it looks like polling (a loop with `sleep`, or a sleep of a minute or more), it advises the `reminder` CLI instead — Atlas is event-driven. Advisory only, never blocks.
+Runs before the agent executes a shell command: `command-advice.sh "<command>" "<run_in_background>" "<channel>"`. When it looks like a blocking wait (a loop with `sleep`, a standalone `sleep`/`timeout` of a minute or more, or a `gh --watch` / `kubectl --watch|-w`), it advises the `reminder` CLI instead — Atlas is event-driven.
+
+In a chat session (`channel` is `signal`, `whatsapp`, `telegram` or `web`) a foreground blocking wait is worse than brittle: inbound messages for that session are only delivered at the next tool boundary (see `nextToolContext` in `docs/watcher.md`), so the whole wait makes the agent deaf to the user — this is what caused repeated `/new` restarts in Signal chats. There, unless the call is already backgrounded (`run_in_background: true`), the hook blocks it (exit 2) instead of just advising. Outside a chat session, or once backgrounded, it stays advisory only (exit 0).
+
+The last two arguments are optional for backward compatibility; omitting them keeps the old advisory-only behavior.
 
 ## SubagentStop (prompt-type hook)
 
@@ -125,11 +130,11 @@ Lifecycle policy, `app/triggers/lifecycle/`:
 - `post-compact.sh` — Task context after compaction
 - `stop.sh` — Stop policy: task gate and journal reminder
 - `validator-gate.ts` — Validator JSON-verdict gate
-- `command-advice.sh` — Advice against polling
+- `command-advice.sh` — Advice against polling; blocks foreground blocking waits in chat sessions
 
 Claude Code adapter, `app/triggers/harness/claude/`:
 
 - `hooks/stop.sh` — Stop hook: runs `lifecycle/stop.sh`, translates exit 2 into Claude's block decision
 - `hooks/validator-stop-check.ts` — Stop hook for the validator: final message and prior corrections from the transcript → `validator-gate.ts`
-- `hooks/remind-use-reminders.sh` — PreToolUse (Bash) hook: `lifecycle/command-advice.sh` as `additionalContext`
+- `hooks/remind-use-reminders.sh` — PreToolUse (Bash) hook: `lifecycle/command-advice.sh`, translating exit 0 into `additionalContext` and exit 2 into `permissionDecision:"deny"`
 - `settings.ts` — Writes `~/.claude/settings.json` with the hook registrations, permissions and plugins

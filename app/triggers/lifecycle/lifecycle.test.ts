@@ -133,20 +133,85 @@ describe("Claude Stop hook", () => {
 });
 
 describe("command advice", () => {
+  const a = (...args: string[]) => run([join(lifecycle, "command-advice.sh"), ...args]);
+
   test("advises the reminder CLI for polling commands only", () => {
-    expect(run([join(lifecycle, "command-advice.sh"), "while true; do curl x; sleep 30; done"]).out).toContain("reminder add");
-    expect(run([join(lifecycle, "command-advice.sh"), "sleep 5m"]).out).toContain("reminder add");
-    expect(run([join(lifecycle, "command-advice.sh"), "sleep 2 && ls"]).out).toBe("");
-    expect(run([join(lifecycle, "command-advice.sh"), "git status"]).out).toBe("");
+    expect(a("while true; do curl x; sleep 30; done").out).toContain("reminder add");
+    expect(a("sleep 5m").out).toContain("reminder add");
+    expect(a("sleep 2 && ls").out).toBe("");
+    expect(a("git status").out).toBe("");
   });
 
-  test("the Claude PreToolUse hook wraps it as additionalContext", () => {
+  test("also matches gh --watch, kubectl --watch/-w and a timeout of a minute or more", () => {
+    expect(a("gh run watch 123 --watch").out).toContain("reminder add");
+    expect(a("kubectl get pods -w").out).toContain("reminder add");
+    expect(a("kubectl rollout status deploy/x --watch").out).toContain("reminder add");
+    expect(a("timeout 600 some-script.sh").out).toContain("reminder add");
+    expect(a("timeout 10 some-script.sh").out).toBe(""); // short timeout, not a long wait
+  });
+
+  test("blocks a foreground wait in a chat session with a reason, not just advice", () => {
+    const blocked = a("sleep 580", "false", "signal");
+    expect(blocked.code).toBe(2);
+    expect(blocked.out).toContain("run_in_background");
+    expect(blocked.out).toContain("reminder add");
+  });
+
+  test.each(["signal", "whatsapp", "telegram", "web"])("treats channel=%s as a live chat session", (channel) => {
+    expect(a("sleep 580", "false", channel).code).toBe(2);
+  });
+
+  test("allows the same command in a chat session once it is backgrounded", () => {
+    const bg = a("sleep 580", "true", "signal");
+    expect(bg.code).toBe(0);
+    expect(bg.out).toContain("reminder add");
+  });
+
+  test("does not block outside a chat session, or without the new args (legacy call)", () => {
+    expect(a("sleep 580", "false", "email").code).toBe(0);
+    expect(a("sleep 580", "false", "cron").code).toBe(0);
+    expect(a("sleep 580").code).toBe(0); // legacy 1-arg call keeps advisory-only behaviour
+  });
+
+  test("the Claude PreToolUse hook wraps advice as additionalContext", () => {
     const hook = join(hooks, "remind-use-reminders.sh");
     const poll = run([hook], {}, JSON.stringify({ tool_input: { command: "sleep 600" } }));
     expect(JSON.parse(poll.out).hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse" });
     expect(JSON.parse(poll.out).hookSpecificOutput.additionalContext).toContain("reminder add");
     expect(run([hook], {}, JSON.stringify({ tool_input: { command: "ls" } }))).toEqual({ code: 0, out: "" });
     expect(run([hook], {}, "not json")).toEqual({ code: 0, out: "" });
+  });
+
+  test("the Claude PreToolUse hook denies a foreground wait in a chat session", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const denied = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal" }, JSON.stringify({ tool_input: { command: "sleep 600" } }));
+    expect(denied.code).toBe(0);
+    expect(JSON.parse(denied.out).hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
+    expect(JSON.parse(denied.out).hookSpecificOutput.permissionDecisionReason).toContain("run_in_background");
+  });
+
+  test("the Claude PreToolUse hook allows the same command once run_in_background is set", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const allowed = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal" }, JSON.stringify({ tool_input: { command: "sleep 600", run_in_background: true } }));
+    expect(allowed.code).toBe(0);
+    expect(JSON.parse(allowed.out).hookSpecificOutput.additionalContext).toContain("reminder add");
+  });
+
+  test("still denies if jq fails to render the decision JSON (but can still read the command)", () => {
+    const hook = join(hooks, "remind-use-reminders.sh");
+    const binDir = join(root, "bin-broken-jq-pretool");
+    mkdirSync(binDir);
+    for (const bin of ["bash", "cat", "grep", "dirname"]) {
+      const real = Bun.spawnSync(["which", bin]).stdout.toString().trim();
+      if (real) writeFileSync(join(binDir, bin), `#!/bin/bash\nexec ${real} "$@"\n`), chmodSync(join(binDir, bin), 0o755);
+    }
+    // Real jq for reading tool_input (-r calls), but fails for rendering the decision (-n calls).
+    const realJq = Bun.spawnSync(["which", "jq"]).stdout.toString().trim();
+    writeFileSync(join(binDir, "jq"), `#!/bin/bash\n[ "$1" = "-n" ] && exit 1\nexec ${realJq} "$@"\n`);
+    chmodSync(join(binDir, "jq"), 0o755);
+    const r = run([hook], { ATLAS_TRIGGER_CHANNEL: "signal", PATH: binDir }, JSON.stringify({ tool_input: { command: "sleep 600" } }));
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out).hookSpecificOutput.permissionDecision).toBe("deny");
   });
 });
 
