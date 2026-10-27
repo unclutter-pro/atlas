@@ -841,6 +841,8 @@ def markdown_to_signal_styles(text):
 def _send_via_socket(to, message, attachments=None, text_styles=None):
     """Send via the running signal-cli daemon JSON-RPC socket."""
     import socket as _socket
+    import uuid
+    req_id = uuid.uuid4().hex
     with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
         s.settimeout(30)
         s.connect(DAEMON_SOCKET)
@@ -850,18 +852,40 @@ def _send_via_socket(to, message, attachments=None, text_styles=None):
         if text_styles:
             # signal-cli JSON-RPC field name mirrors the CLI flag.
             params["textStyle"] = list(text_styles)
-        req = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "send", "params": params})
+        req = json.dumps({"jsonrpc": "2.0", "id": req_id, "method": "send", "params": params})
         s.sendall(req.encode() + b"\n")
-        # Read until newline (single JSON-RPC response)
-        buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-        resp = json.loads(buf.split(b"\n")[0])
-        if "error" in resp:
-            raise RuntimeError(resp["error"].get("message", str(resp["error"])))
+        resp = _read_rpc_response(s, req_id)
+    if "error" in resp:
+        raise RuntimeError(resp["error"].get("message", str(resp["error"])))
+    _check_send_results(resp.get("result") or {})
+
+
+def _read_rpc_response(sock, req_id):
+    """Return the response matching req_id. The daemon also pushes receive
+    notifications to every socket client, so the first line is not
+    necessarily ours."""
+    buf = b""
+    while True:
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            msg = json.loads(line)
+            if msg.get("id") == req_id:
+                return msg
+        chunk = sock.recv(65536)
+        if not chunk:
+            raise RuntimeError("signal-cli daemon closed the connection without a response")
+        buf += chunk
+
+
+def _check_send_results(result):
+    results = result.get("results")
+    if not results:
+        raise RuntimeError(f"signal-cli returned no delivery results: {result}")
+    failed = [r for r in results if r.get("type") != "SUCCESS"]
+    if failed:
+        raise RuntimeError("send failed: " + ", ".join(r.get("type", "UNKNOWN") for r in failed))
 
 
 def _send_via_cli(number, to, message, attachments=None, text_styles=None):
@@ -900,6 +924,22 @@ def _decode_shell_escapes(message: str) -> str:
     )
 
 
+def _attachment_batches(attachments):
+    """Split attachments into one batch per Signal message.
+
+    Signal apps show several images/videos in one message as an album, but
+    not several documents, and the server still reports success. So images
+    and videos travel together, every other file gets its own message.
+    """
+    import mimetypes
+    media, docs = [], []
+    for f in attachments:
+        mime = mimetypes.guess_type(f)[0] or ""
+        (media if mime.startswith(("image/", "video/")) else docs).append(f)
+    batches = ([media] if media else []) + [[d] for d in docs]
+    return batches or [[]]
+
+
 def cmd_send(config, to, message, attachments=None):
     """Send a Signal message — via daemon socket if running, otherwise via CLI."""
     # Decode common escape sequences that bash passes literally (e.g. \n → newline).
@@ -926,18 +966,21 @@ def cmd_send(config, to, message, attachments=None):
 
     db = get_signal_db(config)
     try:
-        if os.path.exists(DAEMON_SOCKET):
-            try:
-                _send_via_socket(to, message, attachments, text_styles)
-            except RuntimeError as sock_err:
-                # If the daemon rejects the textStyle field name, retry via CLI
-                # where the flag name is documented and stable.
-                if text_styles and ("textStyle" in str(sock_err) or "Unrecognized" in str(sock_err) or "Invalid params" in str(sock_err)):
-                    _send_via_cli(number, to, message, attachments, text_styles)
-                else:
-                    raise
-        else:
-            _send_via_cli(number, to, message, attachments, text_styles)
+        batches = _attachment_batches(attachments)
+        for i, batch in enumerate(batches):
+            text, styles = (message, text_styles) if i == 0 else ("", None)
+            if os.path.exists(DAEMON_SOCKET):
+                try:
+                    _send_via_socket(to, text, batch, styles)
+                except RuntimeError as sock_err:
+                    # If the daemon rejects the textStyle field name, retry via CLI
+                    # where the flag name is documented and stable.
+                    if styles and ("textStyle" in str(sock_err) or "Unrecognized" in str(sock_err) or "Invalid params" in str(sock_err)):
+                        _send_via_cli(number, to, text, batch, styles)
+                    else:
+                        raise
+            else:
+                _send_via_cli(number, to, text, batch, styles)
 
         update_contact(db, to)
         # Include attachment info in stored message
@@ -951,6 +994,8 @@ def cmd_send(config, to, message, attachments=None):
         """, (to, stored_msg[:8000], datetime.now().isoformat()))
         db.commit()
         att_info = f" (+{len(attachments)} attachment(s))" if attachments else ""
+        if len(batches) > 1:
+            att_info += f" in {len(batches)} messages"
         print(f"Signal message sent to {to}{att_info}")
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
