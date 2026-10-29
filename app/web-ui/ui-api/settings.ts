@@ -30,6 +30,7 @@ import {
 } from "./settings/files";
 import { checkBashSyntax, validateConfigYaml, type ValidationIssue, type ValidationResult } from "./settings/validate";
 import { maskSecrets, unmaskSecrets } from "./settings/mask";
+import { talkBotSecret } from "../talk-webhook";
 
 export type { AuthStatus, ConfigSource, FileDoc, PendingLogin, SecretItem, ValidationIssue, ValidationResult };
 
@@ -181,6 +182,7 @@ const INTEGRATION_KEYS: Record<IntegrationKey, string[]> = {
   email: ["email.imap_host", "email.imap_port", "email.smtp_host", "email.smtp_port", "email.username", "email.folder", "email.whitelist", "email.mark_read"],
   whatsapp: [],
   telegram: [],
+  talk: [],
   web: ["web_ui.bind", "web_ui.port"],
 };
 
@@ -189,6 +191,7 @@ const ENABLED_BY: Record<IntegrationKey, string> = {
   email: "email.imap_host in config.yml (poller provisioned at container start)",
   whatsapp: "A paired device in ~/.local/share/whatsapp/auth",
   telegram: "telegram.bot_token in config.yml or TELEGRAM_BOT_TOKEN",
+  talk: "talk.url in config.yml plus the bot secret (TALK_BOT_SECRET or talk.secret_file)",
   web: "Always on",
 };
 
@@ -225,6 +228,14 @@ function integrations(): IntegrationsResponse {
       const fromFile = getPath(raw, "telegram.bot_token");
       const set = !!fromFile || !!process.env.TELEGRAM_BOT_TOKEN;
       settings.push({ key: "telegram.bot_token", value: set ? "set" : null, source: fromFile ? "file" : process.env.TELEGRAM_BOT_TOKEN ? "env" : "default", secret: true });
+    }
+    if (h.key === "talk") {
+      for (const key of ["talk.url", "talk.bot_name", "talk.rooms", "talk.whitelist"]) {
+        const v = getPath(raw, key);
+        settings.push({ key, value: v ?? null, source: v !== undefined && v !== null ? "file" : "default" });
+      }
+      const secretSet = !!talkBotSecret(home());
+      settings.push({ key: "talk.secret", value: secretSet ? "set" : null, source: process.env.TALK_BOT_SECRET ? "env" : secretSet ? "file" : "default", secret: true });
     }
     return { ...h, enabledBy: ENABLED_BY[h.key], settings, ...channelActivity(h.key) };
   });

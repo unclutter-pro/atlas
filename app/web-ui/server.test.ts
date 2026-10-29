@@ -119,7 +119,7 @@ describe("/ui/api", () => {
       expect(typeof r.triggerName).toBe("string");
     }
     const keys = data.integrations.map((i: { key: string }) => i.key);
-    expect(keys).toEqual(["signal", "email", "whatsapp", "telegram", "web"]);
+    expect(keys).toEqual(["signal", "email", "whatsapp", "telegram", "talk", "web"]);
     for (const i of data.integrations) {
       expect(["running", "degraded", "stopped", "unknown", "not_configured"]).toContain(i.state);
       if (!i.configured) expect(i.state).toBe("not_configured");

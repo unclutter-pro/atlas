@@ -197,6 +197,7 @@ Claude has access to these tools via the inbox-mcp server:
 - `signal send|contacts|history` — Send Signal messages, list contacts, view history
 - `email send|reply|inbox|threads|thread|read` — Compose and read email (`inbox` = unread INBOX threads)
 - `email mark-read|mark-unread|archive|spam|delete|move|folders` — Triage and folder management (synced to IMAP)
+- `talk send|react|history|threads|rooms|status` — Nextcloud Talk bot: reply in conversations and threads, react, read stored history
 
 **Triggers:**
 - `trigger_list` — List all triggers
@@ -245,7 +246,7 @@ See [docs/development.md](docs/development.md) for more development commands.
 - [docs/directory-structure.md](docs/directory-structure.md) — Filesystem layout
 - [docs/development.md](docs/development.md) — Developer guide
 - [docs/Triggers.md](docs/Triggers.md) — Triggers guide
-- [docs/Integrations.md](docs/Integrations.md) — Signal and Email
+- [docs/Integrations.md](docs/Integrations.md) — Signal, Email and Nextcloud Talk
 - [docs/usage-reporting.md](docs/usage-reporting.md) — Usage reporting webhooks
 
 ## License

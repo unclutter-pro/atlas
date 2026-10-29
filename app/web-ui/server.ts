@@ -6,7 +6,7 @@
  * - /ui/api/* are native route handlers (ui-api/).
  * - Old server-rendered page URLs redirect to the area that replaced them.
  * - Everything else falls through to the legacy Hono app in index.ts
- *   (/api/v1/*, /api/webhook/:name, /healthz).
+ *   (/api/v1/*, /api/webhook/:name, /api/integrations/talk/webhook, /healthz).
  * - Unknown hostnames are refused on /ui/api (and on /api/v1 without an API
  *   key) as a DNS-rebinding guard (ui-api/shared/host.ts).
  * - A Unix socket (~/.index/web-ui.sock) receives chat pings from the
