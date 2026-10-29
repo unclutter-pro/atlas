@@ -199,7 +199,7 @@ interface RunRow {
 
 /** trigger-runner falls back to this key when triggers.model_key is NULL (ATLAS_CRON is unset for trigger runs). */
 const DEFAULT_MODEL_KEY = "trigger";
-const CHANNELS = ["internal", "signal", "email", "web", "whatsapp", "telegram"];
+const CHANNELS = ["internal", "signal", "email", "web", "whatsapp", "telegram", "talk"];
 
 // Run + matched metrics row, same matching as Activity (shared/runs.ts).
 const RUN_SELECT = `SELECT r.* FROM (${RUNS_BASE}) r`;

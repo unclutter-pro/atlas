@@ -3,7 +3,7 @@
 # Usage: command-advice.sh "<command>" ["<run_in_background>"] ["<channel>"] ["<is_subagent>"]
 # Output: advice text for the agent, or a block reason. Exit 0 = allow, exit 2 = block.
 # Advises polling/sleep/--watch commands toward the reminder CLI (event-driven, no polling).
-# Blocks a foreground wait in a live chat session (signal/whatsapp/telegram/web) unless backgrounded or run by a subagent, since it deafens the main session until it returns.
+# Blocks a foreground wait in a live chat session (signal/whatsapp/telegram/talk/web) unless backgrounded or run by a subagent, since it deafens the main session until it returns.
 set -u
 
 cmd="${1:-}"
@@ -46,7 +46,7 @@ fi
 ADVICE="This command polls, sleeps, or watches to wait. If you are WAITING ON AN EVENT (CI, deploy, a file landing, an email reply), do NOT poll in a foreground or background shell -- it is brittle and can silently miss the event. Use the reminder CLI so the session is re-woken reliably: reminder add --when-script-ok=<cmd-that-exits-0-when-ready> (event/CI), --when-reply-to=<thread-id> (email reply), or --at=<time> (wall-clock). Ignore this if the wait is just a short in-task pause."
 
 case "$channel" in
-  signal | whatsapp | telegram | web)
+  signal | whatsapp | telegram | talk | web)
     if [ "$bg" != "true" ] && [ "$is_subagent" != "true" ]; then
       echo "Blocked: this is a foreground blocking wait in a live chat session (channel=$channel). Inbound messages are only delivered to you at the next tool boundary, so this command would make you deaf to the user for its whole duration -- they already sent messages into this gap before and had to restart the session. Re-run the same command with run_in_background: true (then keep working and you'll be notified when it finishes), or use 'reminder add --when-script-ok=<cmd> | --when-reply-to=<thread> | --at=<time>' to be woken reliably instead of waiting inline."
       exit 2

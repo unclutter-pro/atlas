@@ -16,7 +16,7 @@ export interface ActivityFilter extends QueryPatch {
   trigger?: string;
   /** running | ok | failed */
   status?: "running" | "ok" | "failed";
-  /** signal | email | web | whatsapp | telegram | internal … */
+  /** signal | email | web | whatsapp | telegram | talk | internal … */
   channel?: string;
   /** cron | webhook | manual (trigger type = cause) */
   type?: string;

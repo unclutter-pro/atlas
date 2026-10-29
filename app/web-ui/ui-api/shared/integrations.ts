@@ -9,6 +9,8 @@
  *              (~/supervisor.d/email-poller.conf, written by init.sh phase 9b)
  *   whatsapp — paired auth in ~/.local/share/whatsapp/auth; program whatsapp-daemon
  *   telegram — config `telegram.bot_token` / TELEGRAM_BOT_TOKEN; program telegram-daemon
+ *   talk     — config `talk.url` + bot secret; no program, the webhook is served
+ *              by this server (talk-webhook.ts)
  *   web      — this server; always on
  *
  * `supervisorctl status` is spawned at most once per CACHE_MS. When it is
@@ -22,6 +24,7 @@ import { join } from "path";
 import yaml from "js-yaml";
 import { resolveConfig } from "../../../lib/config";
 import { home, paths } from "./env";
+import { talkBotSecret } from "../../talk-webhook";
 
 /** running: all programs up · degraded: some up · stopped: none up / not installed ·
  *  unknown: supervisord unreachable · not_configured: integration not set up */
@@ -33,7 +36,7 @@ export interface ProgramStatus {
   state: string;
 }
 
-export type IntegrationKey = "signal" | "email" | "whatsapp" | "telegram" | "web";
+export type IntegrationKey = "signal" | "email" | "whatsapp" | "telegram" | "talk" | "web";
 
 export interface IntegrationHealth {
   key: IntegrationKey;
@@ -208,6 +211,7 @@ export function getIntegrationHealth(): IntegrationHealth[] {
       telegramToken ? "config telegram.bot_token" : installed.has("telegram-daemon") ? "supervisor.d" : null,
       ["telegram-daemon"],
     ),
+    talkHealth(raw),
     {
       key: "web",
       label: "Web",
@@ -218,6 +222,18 @@ export function getIntegrationHealth(): IntegrationHealth[] {
       programs: [],
     },
   ];
+}
+
+/** Talk needs no program of its own: configured = URL set, running = bot secret present too. */
+function talkHealth(raw: Record<string, any>): IntegrationHealth {
+  const url = process.env.TALK_URL || raw.talk?.url;
+  const base = { key: "talk" as const, label: "Nextcloud Talk", programs: [] };
+  if (!url) return { ...base, configured: false, configuredVia: null, state: "not_configured", detail: "Not configured" };
+  const configuredVia = process.env.TALK_URL ? "TALK_URL" : "config talk.url";
+  if (!talkBotSecret(home())) {
+    return { ...base, configured: true, configuredVia, state: "degraded", detail: "Bot secret missing (TALK_BOT_SECRET or talk.secret_file)" };
+  }
+  return { ...base, configured: true, configuredVia, state: "running", detail: "Webhook served by this process" };
 }
 
 /** Core services besides integrations. The scheduler matters most: without it no cron trigger or reminder fires. */

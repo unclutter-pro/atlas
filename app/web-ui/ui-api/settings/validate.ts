@@ -31,7 +31,7 @@ export interface ValidationResult {
 type Kind = "string" | "number" | "boolean" | "string[]" | "object";
 
 // Top-level sections read by something other than lib/config.
-const EXTRA_SECTIONS = ["team", "telegram", "whatsapp"];
+const EXTRA_SECTIONS = ["team", "telegram", "whatsapp", "talk"];
 const EXTRA_KEYS: Record<string, Kind> = { "email.idle_timeout": "number" };
 
 /** Top-level keys in DEFAULTS that are scalars (e.g. `timezone: ""`), not `section: { key: value }` mappings. */

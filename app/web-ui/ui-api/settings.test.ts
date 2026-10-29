@@ -242,7 +242,7 @@ describe("extensions", () => {
 describe("integrations", () => {
   test("GET lists every integration with its config keys and sources", async () => {
     const data = await get<IntegrationsResponse>("/integrations");
-    expect(data.integrations.map((i) => i.key)).toEqual(["signal", "email", "whatsapp", "telegram", "web"]);
+    expect(data.integrations.map((i) => i.key)).toEqual(["signal", "email", "whatsapp", "telegram", "talk", "web"]);
     const signal = data.integrations.find((i) => i.key === "signal")!;
     expect(signal.configured).toBe(true);
     expect(signal.settings.find((s) => s.key === "signal.number")).toMatchObject({ value: "+491700000000", source: "file" });

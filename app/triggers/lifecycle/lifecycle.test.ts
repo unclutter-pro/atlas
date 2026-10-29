@@ -158,7 +158,7 @@ describe("command advice", () => {
     expect(blocked.out).toContain("reminder add");
   });
 
-  test.each(["signal", "whatsapp", "telegram", "web"])("treats channel=%s as a live chat session", (channel) => {
+  test.each(["signal", "whatsapp", "telegram", "talk", "web"])("treats channel=%s as a live chat session", (channel) => {
     expect(a("sleep 580", "false", channel).code).toBe(2);
   });
 
