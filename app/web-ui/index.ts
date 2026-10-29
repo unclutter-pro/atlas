@@ -1,7 +1,7 @@
 /**
  * Legacy Hono app, reached through server.ts's fetch fallback. It serves only
- * the key-protected external API (/api/v1/*), webhooks (/api/webhook/:name)
- * and /healthz. The web UI (including Chat) is the React SPA plus /ui/api.
+ * the key-protected external API (/api/v1/*), webhooks (/api/webhook/:name,
+ * /api/integrations/talk/webhook) and /healthz. The web UI (including Chat) is the React SPA plus /ui/api.
  * /api/v1/chat/* keeps its contract but runs on the shared chat service and
  * hub (ui-api/chat/service.ts, ui-api/chat/legacy.ts).
  */
@@ -20,6 +20,7 @@ import {
 import { join } from "path";
 import { getDb } from "../lib/atlas-db";
 import { createWebhookHandler } from "./webhook";
+import { createTalkWebhookHandler, TALK_WEBHOOK_PATH } from "./talk-webhook";
 import { apiKeyAuth } from "../lib/api-auth";
 import { crossSiteRejection, HttpError } from "./ui-api/shared/http";
 import {
@@ -94,6 +95,9 @@ app.post("/api/webhook/:name", createWebhookHandler({
     fireTrigger(name, payload);
   },
 }));
+
+// Nextcloud Talk bot: own signature scheme, the conversation decides the session.
+app.post(TALK_WEBHOOK_PATH, createTalkWebhookHandler());
 
 // =============================================================================
 // External Configuration API (v1)
