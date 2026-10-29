@@ -1,6 +1,6 @@
 ## Nextcloud Talk Integration Setup
 
-Talk uses the **webhook bot API** (Talk 17.1+, threads need Talk 22+). Nextcloud posts every message of the conversations the bot is enabled in to Atlas, signed with a shared secret; Atlas answers through the signed bot endpoints. No Nextcloud user account is needed. Installing the bot needs a **Nextcloud admin** (`occ`).
+Talk uses the **webhook bot API** (Talk 17.1+, threads need Talk 22+). Nextcloud posts every message of the conversations the bot is enabled in to Atlas, signed with a shared secret; Atlas answers through the signed bot endpoints. No Nextcloud user account is needed (an optional one, `agent_user`, makes one-to-one chats possible). Installing the bot needs a **Nextcloud admin** (`occ`).
 
 **Step 1: Secret** (40–128 characters, never in `config.yml`)
 
@@ -16,6 +16,7 @@ Or set `TALK_BOT_SECRET` in the container environment (Kubernetes secret). The a
 talk:
   url: "https://cloud.example.com"   # Nextcloud base URL
   bot_name: "Claudius"               # the name people @mention; default agent.name
+  # agent_user: "claudius"           # optional Nextcloud account of the agent: one-to-one chats with it
   rooms: []                          # optional allowlist of room tokens
   whitelist: []                      # optional allowlist of users ("alice" or "users/alice")
 ```
@@ -60,12 +61,14 @@ Reply with `talk send "..."` (goes to this conversation and thread).
 talk status    # config, secret present, features Nextcloud reports for each room
 ```
 
+If `talk status` reports `HTTP 401`, the secrets differ: fix it before trying again. About 10 failed signatures lock the Atlas IP out of the bot API (`500`, then `429` for every request); after fixing the secret, the admin runs `occ security:bruteforce:reset <atlas-ip>`.
+
 Then write `@Claudius hello` in the room. `talk rooms` lists conversations the bot has seen; logs go to `/atlas/logs/talk.log`.
 
 **Behaviour:**
 
 - Group rooms: only messages that `@mention` the bot (or reply to one of its messages) start a session. Follow-ups in a thread the bot is part of need no mention (`follow_threads: false` turns that off).
-- One-to-one conversations (and rooms set to `mode: all` under `talk.rooms`) pass every message on.
+- One-to-one conversations with `agent_user` (and rooms set to `mode: all` under `talk.rooms`) pass every message on. A bot can't be a one-to-one partner itself: in a one-to-one between two people it only reacts to mentions. Without an agent account, a "Note to self" conversation with `mode: all` works as a personal channel.
 - Each thread is its own session: `talk/<room>/<thread-id>`, outside threads `talk/<room>/main`.
 - `/new` (with the mention in group rooms) starts a fresh session for that conversation/thread.
 
