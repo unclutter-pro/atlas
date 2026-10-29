@@ -90,10 +90,11 @@ def message(text, *, msg_id="4720", actor="users/alice", name="Alice", room=ROOM
 
 
 def thread_created(thread_id, title, *, actor=BOT_ID, room=ROOM):
-    """System message as parsed by SystemMessage.php ({actor} created thread {title})."""
+    """System message in the shape Talk 25 sends (see fixtures/talk25-webhooks.json):
+    the id only in parameters.title.id = "thread/<id>", no object.threadId."""
     return {
         "type": "Activity",
-        "actor": {"type": "Person", "id": actor, "name": "Claudius"},
+        "actor": {"type": "Person", "id": actor, "name": "Claudius (Bot)"},
         "object": {
             "type": "Note",
             "id": str(thread_id + 1),
@@ -101,12 +102,11 @@ def thread_created(thread_id, title, *, actor=BOT_ID, room=ROOM):
             "content": json.dumps({
                 "message": "{actor} created thread {title}",
                 "parameters": {
-                    "actor": {"type": "bot", "id": actor.split("/", 1)[1], "name": "Claudius"},
+                    "actor": {"type": "highlight", "id": "deleted_users", "name": "Deleted user"},
                     "title": {"type": "highlight", "id": f"thread/{thread_id}", "name": title},
                 },
             }),
             "mediaType": "text/markdown",
-            "threadId": thread_id,
         },
         "target": {"type": "Collection", "id": room, "name": "Ops"},
     }
@@ -244,7 +244,7 @@ def test_parse_message_with_mentions_files_thread_and_quote():
     ev = talk.parse_event(payload)
     assert ev["kind"] == "message"
     assert ev["room"] == ROOM and ev["message_id"] == "4720" and ev["thread_id"] == 4711
-    assert ev["text"] == '@"bob" schau dir [file: log.txt (text/plain)] an'
+    assert ev["text"] == '@Bob (bob) schau dir [file: log.txt (text/plain)] an'
     assert ev["reply_to"] == {"message_id": "4715", "actor_id": "users/bob", "actor_name": "Bob", "text": "erster"}
 
 
@@ -262,7 +262,6 @@ def test_parse_system_reaction_join_and_undo():
     assert ev["kind"] == "system" and ev["thread"] == {"id": 900, "title": "Deploy 4.2"}
 
     raw = thread_created(901, "Raw")
-    del raw["object"]["threadId"]
     raw["object"]["content"] = json.dumps({"message": "thread_created", "parameters": {"thread": 901, "title": "Raw"}})
     assert talk.parse_event(raw)["thread"] == {"id": 901, "title": "Raw"}
 
@@ -324,10 +323,15 @@ def test_decide_group_one_to_one_reply_and_thread_follow():
     assert talk.decide(cfg, plain) is None
     assert talk.decide(cfg, talk.parse_event(message("@Claudius hi"))) == "mention"
 
+    # One-to-one rooms are two people; only a chat with the agent's own account is direct.
     direct = talk.parse_event(message("hi", room_name='["alice","claudius"]'))
-    assert talk.decide(cfg, direct) == "direct"
+    assert talk.decide(cfg, direct) is None
+    assert talk.decide(config(agent_user="claudius"), direct) == "direct"
+    assert talk.decide(config(agent_user="users/claudius"), direct) == "direct"
+    private = talk.parse_event(message("hi", room_name='["alice","bob"]'))
+    assert talk.decide(config(agent_user="claudius"), private) is None
     assert talk.decide(config(rooms={ROOM: {"mode": "all"}}), plain) == "direct"
-    assert talk.decide(config(rooms={ROOM: {"mode": "mention"}}), direct) is None
+    assert talk.decide(config(agent_user="claudius", rooms={ROOM: {"mode": "mention"}}), direct) is None
 
     reply = talk.parse_event(message("und jetzt?", in_reply_to={
         "actor": {"type": "Application", "id": BOT_ID, "name": "Claudius"},
@@ -629,3 +633,170 @@ def test_react_remove_clears_processing_state():
     later = FakeClient()
     talk.cmd_send(cfg, "Doch noch was.", client=later, env_key=fired[0][1])
     assert [c for c in later.calls if c[0] == "unreact"] == []
+
+
+# ---------------------------------------------------------------------------
+# Real payloads captured from Nextcloud 35.0.2 + Talk 25.0.6
+# ---------------------------------------------------------------------------
+
+REAL = json.loads((Path(__file__).parent / "fixtures" / "talk25-webhooks.json").read_text())["webhooks"]
+REAL_ROOM = "t23qsf7t"
+REAL_BOT = "bots/bot-1e8337e4e05b144e74c392119241543981fefb08"
+
+
+def real(name):
+    return json.loads(REAL[name])
+
+
+def run_real(cfg, name, client=None):
+    fired = []
+    client = client or FakeClient()
+    status = talk.cmd_incoming(cfg, REAL[name], fire=lambda p, k: fired.append((p, k)), client=client)
+    return status, fired, client
+
+
+def test_real_thread_created_by_bot_has_id_only_in_title_parameter():
+    ev = talk.parse_event(real("thread_created_bot"))
+    assert ev["kind"] == "system" and ev["actor_id"] == REAL_BOT
+    assert ev["message_id"] == "14"  # the system message itself, not the thread
+    assert ev["thread"] == {"id": 13, "title": "[O2-abc123] FI API 5xx"}
+    user = talk.parse_event(real("thread_created_user"))
+    assert user["thread"] == {"id": 11, "title": "User-Thread A"}
+    renamed = talk.parse_event(real("thread_renamed"))
+    assert renamed["thread"] == {"id": 11, "title": "User-Thread A umbenannt"}
+
+
+def test_real_thread_created_correlates_pending_thread_and_learns_bot_id():
+    cfg = config(processing_reaction="")
+    db = talk.get_db()
+    db.execute("INSERT INTO pending_threads (room, title, reference_id, origin_session_key, created_at) VALUES (?, ?, ?, ?, ?)",
+               (REAL_ROOM, "[O2-abc123] FI API 5xx", "ref1", f"talk/{REAL_ROOM}/main", talk.time.time()))
+    db.commit()
+    db.close()
+    status, fired, _ = run_real(cfg, "thread_created_bot")
+    assert "correlated" in status and fired == []
+    db = talk.get_db()
+    assert db.execute("SELECT thread_id FROM pending_threads").fetchone()[0] == 13
+    assert db.execute("SELECT bot_actor_id FROM rooms WHERE token = ?", (REAL_ROOM,)).fetchone()[0] == REAL_BOT
+    db.close()
+    # A follow-up in that thread reaches the thread's session without a mention.
+    _, fired, _ = run_real(cfg, "reply_to_bot")
+    assert fired and fired[0][1] == f"talk/{REAL_ROOM}/13"
+
+
+def test_real_user_thread_and_rename_are_recorded_not_correlated():
+    cfg = config(processing_reaction="")
+    assert "recorded" in run_real(cfg, "thread_created_user")[0]
+    run_real(cfg, "thread_renamed")
+    db = talk.get_db()
+    row = db.execute("SELECT title, created_by_bot FROM threads WHERE thread_id = 11").fetchone()
+    assert (row["title"], row["created_by_bot"]) == ("User-Thread A umbenannt", 0)
+    db.close()
+    ev = talk.parse_event(real("message_user_thread"))
+    assert ev["thread_id"] == 11 and ev["parameters"] == {}
+
+
+def test_real_main_chat_message_has_no_thread_and_list_parameters():
+    ev = talk.parse_event(real("message_main"))
+    assert ev["kind"] == "message" and ev["thread_id"] is None and ev["parameters"] == {}
+    assert ev["text"] == "Hallo Hauptchat **fett**"
+    status, fired, _ = run_real(config(processing_reaction=""), "message_main")
+    assert fired == [] and "not addressed" in status
+
+
+def test_real_mentions_render_names_and_all():
+    ev = talk.parse_event(real("mentions_user_and_all"))
+    assert ev["message"] == "Hey {mention-user1} und {mention-call1}, schaut mal"
+    assert ev["text"] == "Hey @Bob (bob) und @all, schaut mal"
+    assert not talk.mentions_bot(ev, ["Claudius Test"])
+
+
+def test_real_bot_mention_is_plain_text():
+    cfg = config(bot_name="Claudius Test")
+    ev = talk.parse_event(real("mention_bot_text"))
+    assert ev["parameters"] == {} and talk.mentions_bot(ev, cfg["mention_names"])
+    _, fired, client = run_real(cfg, "mention_bot_text")
+    assert fired[0][1] == f"talk/{REAL_ROOM}/main" and 'reason="mention"' in fired[0][0]
+    assert client.calls == [("react", REAL_ROOM, "24", "👀")]
+    # @"bot-<hash>" is not turned into a mention by Talk either
+    assert talk.parse_event(real("mention_bot_ids_plain"))["parameters"] == {}
+
+
+def test_real_reply_to_bot_matches_name_with_bot_suffix():
+    ev = talk.parse_event(real("reply_to_bot"))
+    assert ev["reply_to"]["actor_name"] == "Claudius Test (Bot)" and ev["thread_id"] == 13
+    assert talk.decide(config(bot_name="Claudius Test", follow_threads=False), ev) == "reply"
+    assert talk.decide(config(bot_name="Claudius Test", follow_threads=False), ev, bot_actor_ids=(REAL_BOT,)) == "reply"
+
+
+@pytest.mark.parametrize("name", ["like_by_bot", "undo_by_bot", "reaction_revoked_by_bot",
+                                  "message_edited", "message_deleted"])
+def test_real_own_reactions_and_edit_delete_are_ignored(name):
+    cfg = config(bot_name="Claudius Test")
+    status, fired, client = run_real(cfg, name)
+    assert fired == [] and client.calls == [] and status.startswith("ignored")
+
+
+def test_real_undo_shape():
+    ev = talk.parse_event(real("undo_by_bot"))
+    assert ev["kind"] == "reaction_removed" and ev["reaction"] == "👀" and ev["actor_id"] == REAL_BOT
+    assert ev["message_id"] == "21" and ev["room"] == REAL_ROOM
+
+
+def test_real_one_to_one_room_needs_agent_user():
+    join = talk.parse_event(real("join_one_to_one"))
+    assert join["kind"] == "join" and join["room_name"] == '["alice","bob"]'
+    ev = talk.parse_event(real("message_one_to_one"))
+    assert talk.one_to_one_users(ev["room_name"]) == ["alice", "bob"]
+    # alice and bob talking privately: the bot stays quiet without a mention
+    status, fired, _ = run_real(config(processing_reaction=""), "message_one_to_one")
+    assert fired == []
+    # one-to-one with the agent's own Nextcloud account: every message is for it
+    _, fired, _ = run_real(config(processing_reaction="", agent_user="bob"), "message_one_to_one")
+    assert fired == []  # duplicate message id, already stored above
+    db = talk.get_db()
+    db.execute("DELETE FROM messages")
+    db.commit()
+    db.close()
+    _, fired, _ = run_real(config(processing_reaction="", agent_user="bob"), "message_one_to_one")
+    assert fired[0][1] == "talk/fhdk8n2s/main" and 'reason="direct"' in fired[0][0]
+    assert 'conversation="one-to-one"' in fired[0][0]
+
+
+def test_new_via_agent_user_mention_parameter(monkeypatch):
+    cfg = config(processing_reaction="", agent_user="atlas-bot")
+    reset = []
+    monkeypatch.setattr(talk, "cmd_new_session", lambda key, fire: reset.append(key))
+    run_incoming(cfg, message("{mention-user1} /new", msg_id="60", params={
+        "mention-user1": {"type": "user", "id": "atlas-bot", "name": "Atlas Bot", "mention-id": "atlas-bot"}}))
+    assert reset == [f"talk/{ROOM}/main"]
+
+
+def test_unreact_stops_after_auth_errors():
+    cfg = config()
+    db = talk.get_db()
+    for mid in ("1", "2", "3"):
+        db.execute("""INSERT INTO messages (room, message_id, direction, session_key, processing_reaction)
+                      VALUES (?, ?, 'in', 'k', '👀')""", (ROOM, mid))
+    db.commit()
+
+    class Locked(FakeClient):
+        def unreact(self, room, message_id, reaction):
+            self.calls.append(message_id)
+            raise talk.TalkError("HTTP 401", 401)
+
+    client = Locked()
+    talk.clear_processing_reactions(db, client, "k")
+    assert client.calls == ["1"]
+    db.close()
+
+
+def test_status_hints_name_bruteforce_reset():
+    import urllib.error
+    for code in (401, 429):
+        def opener(req, code=code):
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, None)
+        with pytest.raises(talk.TalkError) as e:
+            talk.TalkClient(config(), opener=opener).send(ROOM, "x")
+        assert e.value.status == code
+    assert "security:bruteforce:reset" in str(e.value)

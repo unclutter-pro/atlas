@@ -120,6 +120,7 @@ def load_config(data=None):
     agent = data.get("agent") or {}
     agent_name = os.environ.get("ATLAS_AGENT_NAME") or os.environ.get("AGENT_NAME") or agent.get("name") or "Atlas"
     bot_name = str(cfg.get("bot_name") or agent_name)
+    agent_user = str(cfg.get("agent_user") or "").strip().removeprefix("users/")
 
     def _int(key, default):
         try:
@@ -132,7 +133,8 @@ def load_config(data=None):
         "secret": read_secret(cfg),
         "secret_file": cfg.get("secret_file") or DEFAULT_SECRET_FILE,
         "bot_name": bot_name,
-        "mention_names": [bot_name] + _as_list(cfg.get("mention_aliases")),
+        "mention_names": [bot_name] + _as_list(cfg.get("mention_aliases")) + ([agent_user] if agent_user else []),
+        "agent_user": agent_user,
         "rooms": normalize_rooms(cfg.get("rooms")),
         "whitelist": _as_list(cfg.get("whitelist")),
         "follow_threads": bool(cfg.get("follow_threads", True)),
@@ -204,8 +206,13 @@ def render_message(message, parameters):
         ptype = str(p.get("type", ""))
         name = str(p.get("name") or p.get("id") or "")
         if ptype == "user":
-            return f'@"{p.get("mention-id") or p.get("id") or name}"'
-        if ptype in ("guest", "email", "federated_user", "group", "team", "call"):
+            # Name for the reader, id for mentioning back (@"<id>"), e.g. "@John Doe (jdoe)".
+            uid = str(p.get("mention-id") or p.get("id") or "")
+            return f"@{name}" if not uid or uid == name else f"@{name} ({uid})"
+        if ptype == "call":
+            # @all: the parameter's name is the room name, mention-id is "all".
+            return f"@{p.get('mention-id') or 'all'}"
+        if ptype in ("guest", "email", "federated_user", "group", "team"):
             return f"@{name}"
         if ptype == "file":
             mime = p.get("mimetype")
@@ -223,15 +230,26 @@ def _thread_id(obj):
     return tid if tid and tid > 0 else None
 
 
-def is_one_to_one_name(room_name):
-    """One-to-one rooms carry the participants' user IDs as a JSON list in their name (Room::getName)."""
+def one_to_one_users(room_name):
+    """User ids of a one-to-one room, else None.
+
+    The webhook has no room type; Room::getName() of a one-to-one room is the
+    JSON list of both user ids (target.name = '["alice","bob"]', verified on
+    Talk 25). A bot is never a participant, so both entries are people.
+    """
     if not isinstance(room_name, str) or not room_name.startswith('["'):
-        return False
+        return None
     try:
         names = json.loads(room_name)
     except ValueError:
-        return False
-    return isinstance(names, list) and len(names) == 2 and all(isinstance(n, str) for n in names)
+        return None
+    if isinstance(names, list) and len(names) == 2 and all(isinstance(n, str) for n in names):
+        return names
+    return None
+
+
+def is_one_to_one_name(room_name):
+    return one_to_one_users(room_name) is not None
 
 
 def parse_event(payload):
@@ -312,17 +330,19 @@ def parse_event(payload):
 def thread_from_system(obj, parameters):
     """Thread id + title of a thread_created/thread_renamed system message.
 
-    Parsed system messages carry {title: {type: highlight, id: "thread/<id>", name}};
-    unparsed ones {thread: <id>, title: "<title>"}. object.threadId is used first.
+    Talk 25 sends the parsed form: parameters.title = {type: highlight,
+    id: "thread/<id>", name: <title>}, with no object.threadId and no
+    referenceId. The thread id is the id of the thread's first message, not
+    object.id (that is the system message). The raw form {thread: <id>,
+    title: "<title>"} and object.threadId are only fallbacks.
     """
-    tid = _thread_id(obj)
+    tid = None
     title = ""
     p_title = parameters.get("title")
     if isinstance(p_title, dict):
         title = str(p_title.get("name") or "")
-        if not tid:
-            m = re.match(r"^thread/(\d+)$", str(p_title.get("id") or ""))
-            tid = int(m.group(1)) if m else None
+        m = re.match(r"^thread/(\d+)$", str(p_title.get("id") or ""))
+        tid = int(m.group(1)) if m else None
     elif isinstance(p_title, str):
         title = p_title
     if not tid:
@@ -330,7 +350,7 @@ def thread_from_system(obj, parameters):
             tid = int(parameters.get("thread")) or None
         except (TypeError, ValueError):
             tid = None
-    return {"id": tid, "title": title}
+    return {"id": tid or _thread_id(obj), "title": title}
 
 
 # --- Filtering ---
@@ -367,7 +387,12 @@ def room_mode(config, room, room_name):
     """
     mode = config["rooms"].get(room, {}).get("mode", "auto")
     if mode == "auto":
-        return "all" if is_one_to_one_name(room_name) else "mention"
+        # A bot can't be the other side of a one-to-one conversation, so a
+        # one-to-one room is two people talking. Only when one of them is the
+        # agent's own Nextcloud account (talk.agent_user) is it a direct chat.
+        users = one_to_one_users(room_name) or []
+        agent = config.get("agent_user") or ""
+        return "all" if agent and agent in users else "mention"
     return mode
 
 
@@ -383,22 +408,31 @@ def _mention_patterns(names):
     return pats
 
 
-def mentions_bot(ev, names, bot_actor_ids=()):
-    """True when the message addresses the bot.
-
-    Bots are not participants, so Talk leaves "@Claudius" as plain text. If a
-    user with that ID exists, Talk turns it into a mention parameter instead;
-    both forms are accepted, as is a mention parameter with the bot's actor id.
-    """
-    names = [n for n in names if n and n.strip()]
-    lowered = {n.strip().lstrip("@").lower() for n in names}
+def _bot_mention_params(ev, names, bot_actor_ids=()):
+    """Placeholder keys of mention parameters that point at the bot (user named like it, or its actor id)."""
+    lowered = {n.strip().lstrip("@").lower() for n in names if n and n.strip()}
     bot_ids = {b.split("/", 1)[-1] for b in bot_actor_ids if b}
-    for p in (ev.get("parameters") or {}).values():
+    keys = []
+    for key, p in (ev.get("parameters") or {}).items():
         if not isinstance(p, dict) or str(p.get("type", "")) in ("file", "call"):
             continue
         ids = {str(p.get(k) or "").lower() for k in ("id", "mention-id", "name")}
         if ids & lowered or str(p.get("id") or "") in bot_ids:
-            return True
+            keys.append(key)
+    return keys
+
+
+def mentions_bot(ev, names, bot_actor_ids=()):
+    """True when the message addresses the bot.
+
+    Bots are not participants and can't be mentioned as an entity, so Talk
+    leaves "@Claudius" (also @"bot-<hash>") as plain text: the text pattern is
+    the normal case. If a Nextcloud user with that id exists (talk.agent_user),
+    Talk turns it into a {mention-userN} parameter instead; that counts too.
+    """
+    names = [n for n in names if n and n.strip()]
+    if _bot_mention_params(ev, names, bot_actor_ids):
+        return True
     raw = ev.get("message") or ""
     return any(p.search(raw) for p in _mention_patterns(names))
 
@@ -409,13 +443,25 @@ def strip_mentions(text, names):
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
+def command_text(ev, names, bot_actor_ids=()):
+    """Message text without the mentions of the bot, to spot commands like /new."""
+    keys = set(_bot_mention_params(ev, names, bot_actor_ids))
+    raw = re.sub(r"\{([A-Za-z0-9_-]+)\}", lambda m: "" if m.group(1) in keys else m.group(0), ev.get("message") or "")
+    return strip_mentions(render_message(raw, ev.get("parameters") or {}), names)
+
+
+def _strip_bot_suffix(name):
+    # Talk shows bot authors as "<name> (Bot)" in inReplyTo and system messages.
+    return re.sub(r"\s*\(Bot\)$", "", name or "").strip()
+
+
 def is_reply_to_bot(ev, bot_actor_ids, names):
     r = ev.get("reply_to")
     if not r or not is_bot_actor(r.get("actor_id", "")):
         return False
     if bot_actor_ids:
         return r["actor_id"] in bot_actor_ids
-    return r.get("actor_name", "").lower() in {n.lower() for n in names}
+    return _strip_bot_suffix(r.get("actor_name", "")).lower() in {n.lower() for n in names}
 
 
 def decide(config, ev, *, bot_actor_ids=(), thread_engaged=False):
@@ -731,7 +777,7 @@ def cmd_incoming(config, raw, *, fire=fire_trigger, client=None):
             trow = thread_row(db, room, ev["thread_id"])
 
         # /new resets the session of this conversation/thread
-        command = strip_mentions(ev["text"], cfg["mention_names"]).strip().lower()
+        command = command_text(ev, cfg["mention_names"], known_bot_actor_ids(db, room)).strip().lower()
 
         context = []
         if config["context_messages"]:
@@ -829,15 +875,26 @@ def cmd_new_session(key, *, fire=fire_trigger):
 # --- Outbound ---
 
 class TalkError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+# Statuses after which further signed requests only make things worse: each
+# failed signature counts toward Nextcloud's brute-force lockout of this IP.
+STOP_STATUSES = (401, 429, 500)
 
 
 _STATUS_HINTS = {
     400: "Talk rejected the request (empty message, invalid replyTo/threadId, or unsupported reaction)",
-    401: "signature rejected: bot secret does not match, or the bot is not enabled in this conversation",
+    401: ("signature rejected: bot secret does not match, or the bot is not enabled in this conversation. "
+          "Do not retry: about 10 failed signatures lock this IP out of the bot API (429)"),
     404: "conversation or message not found",
-    413: "message too long for Talk",
-    429: "Talk brute-force protection is active after failed signatures; wait before retrying",
+    413: "message too long for Talk (limit 32000 characters)",
+    429: ("Nextcloud brute-force protection locked this IP out of the bot API after failed signatures; "
+          "a Nextcloud admin can lift it with `occ security:bruteforce:reset <atlas-ip>`"),
+    500: ("Nextcloud server error (also the first answer when the brute-force delay hits its maximum "
+          "after failed signatures; see `occ security:bruteforce:reset <atlas-ip>`)"),
 }
 
 
@@ -873,7 +930,7 @@ class TalkClient:
             with open_(req) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as e:
-            raise TalkError(f"HTTP {e.code}: {_STATUS_HINTS.get(e.code, 'unexpected response')}") from None
+            raise TalkError(f"HTTP {e.code}: {_STATUS_HINTS.get(e.code, 'unexpected response')}", e.code) from None
         except urllib.error.URLError as e:
             raise TalkError(f"cannot reach {self.url}: {e.reason}") from None
 
@@ -1085,6 +1142,8 @@ def clear_processing_reactions(db, client, key):
             client.unreact(r["room"], r["message_id"], r["processing_reaction"])
         except TalkError as e:
             print(f"WARNING: could not remove processing reaction from {r['message_id']}: {e}", file=sys.stderr)
+            if e.status in STOP_STATUSES:
+                break
         db.execute("UPDATE messages SET processing_reaction = '' WHERE room = ? AND message_id = ? AND direction = 'in'",
                    (r["room"], r["message_id"]))
     db.commit()
