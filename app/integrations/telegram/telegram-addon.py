@@ -171,12 +171,8 @@ def cmd_incoming(config, chat_id: str, message: str, name: str = "",
     xml += "</telegram-message>"
 
     # Fire trigger
-    env = os.environ.copy()
-    env["TRIGGER_SESSION_KEY"] = chat_id
-    env["TRIGGER_PAYLOAD"] = xml
     subprocess.Popen(
-        [TRIGGER_SCRIPT, TRIGGER_NAME, "--session-key", chat_id, "--payload", xml],
-        env=env,
+        [TRIGGER_SCRIPT, TRIGGER_NAME, xml, chat_id],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
