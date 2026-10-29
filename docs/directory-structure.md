@@ -12,6 +12,7 @@ app/
 │   ├── email                  # Email CLI wrapper
 │   ├── reminder               # Reminder CLI wrapper
 │   ├── signal                 # Signal CLI wrapper
+│   ├── talk                   # Nextcloud Talk CLI wrapper
 │   ├── trigger                # Trigger management CLI wrapper
 │   └── webhook-listener       # Webhook listener CLI wrapper
 ├── defaults/                   # Default configs seeded on first run
@@ -75,7 +76,7 @@ home/
 ├── .index/                     # System state
 │   ├── atlas.db               # SQLite database (WAL mode)
 │   ├── .trigger-<name>.flock  # Per-trigger flock file (concurrency control)
-│   └── signal/, email/        # Channel-specific databases
+│   └── signal/, email/, talk/ # Channel-specific databases
 ├── memory/                     # Long-term memory (agent-organized; see docs/memory.md)
 │   ├── MEMORY.md              # Index — map of what exists and where
 │   ├── journal/               # Daily journal entries (fixed layout)

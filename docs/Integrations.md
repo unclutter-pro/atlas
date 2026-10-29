@@ -1,6 +1,6 @@
 # Integrations
 
-Atlas supports Signal and Email as communication channels. Each integration writes incoming messages to the inbox, then spawns a trigger session (persistent, keyed per contact/thread) that can reply directly or delegate complex tasks to subagents via `Agent(...)`.
+Atlas supports Signal, Email and Nextcloud Talk as communication channels. Each integration writes incoming messages to the inbox, then spawns a trigger session (persistent, keyed per contact/thread) that can reply directly or delegate complex tasks to subagents via `Agent(...)`.
 
 ## Architecture
 
@@ -354,6 +354,132 @@ This means all emails in a thread share the same session key → same persistent
 
 `email.whitelist` accepts full addresses (`alice@example.com`) or domains (`example.org`). Empty = accept all.
 
+## Nextcloud Talk Add-on
+
+The Talk Add-on provides the `talk` CLI tool (wrapper for `app/integrations/talk/talk-addon.py`). Atlas joins Nextcloud Talk as a **webhook bot**: people write to it in conversations like to a colleague, and it answers in the same conversation or thread. No Nextcloud user account is involved; the bot only sees the conversations an admin enabled it in.
+
+### Flow
+
+```
+Nextcloud Talk ──POST /api/integrations/talk/webhook──▸ web UI (talk-webhook.ts)
+  X-Nextcloud-Talk-Random + -Signature                   ├─ HMAC-SHA256(secret, random + raw body), constant time
+                                                         ├─ replay check (random seen before → 409)
+                                                         └─ 200 at once, body → talk incoming --stdin
+                                                                 │
+                                         talk incoming ◂─────────┘
+                                           ├─ room allowlist, store message in talk.db
+                                           ├─ bot's own/other bots' messages ignored
+                                           ├─ user allowlist, addressed? (mention, reply to the bot,
+                                           │   one-to-one room, followed thread)
+                                           ├─ INSERT atlas inbox (channel=talk), 👀 reaction on the message
+                                           └─ trigger.sh talk-chat <xml-payload> talk/<room>/<thread-id|main>
+                                                                 │
+                                                       Trigger session (persistent, one per thread)
+                                                                 │
+                                           talk send "..." ──POST /ocs/v2.php/apps/spreed/api/v1/bot/<room>/message
+                                                              (threadId from the session key, 👀 removed)
+```
+
+The webhook runs inside the existing web UI process; there is no daemon to supervise. Talk waits at most 5 seconds for the webhook and does not retry, so the handler answers before any work starts.
+
+### Setup
+
+Step by step (secret, `occ talk:bot:install`, `occ talk:bot:setup`, trigger, network): [app/defaults/skills/triggers/references/talk-setup.md](../app/defaults/skills/triggers/references/talk-setup.md). In short:
+
+```bash
+openssl rand -hex 32 > ~/secrets/talk-bot-secret && chmod 600 ~/secrets/talk-bot-secret
+
+# Nextcloud admin:
+occ talk:bot:install --no-setup -f webhook -f response -f reaction \
+  "Claudius" "<SECRET>" "https://<atlas-host>/api/integrations/talk/webhook" "Atlas agent"
+occ talk:bot:setup <bot-id> <room-token>
+
+# Atlas:
+trigger create --name=talk-chat --type=manual --session-mode=persistent --channel=talk
+```
+
+Network: Nextcloud must reach the web UI's `POST /api/integrations/talk/webhook` (expose only that path), and Atlas needs outbound HTTPS to `talk.url`.
+
+### Configuration
+
+```yaml
+talk:
+  url: "https://cloud.example.com"
+  bot_name: "Claudius"
+  rooms:
+    "abc123xy": { mode: mention }
+    "k9w2p4zz": { mode: all }
+  whitelist: ["alice", "users/bob"]
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `url` | (required) | Nextcloud base URL. Env override `TALK_URL`. |
+| `secret_file` | `~/secrets/talk-bot-secret` | File with the bot secret. `TALK_BOT_SECRET` env wins. The secret never belongs in `config.yml`. |
+| `bot_name` | `agent.name` | Name people `@mention`. Should match the name given to `talk:bot:install`. |
+| `mention_aliases` | `[]` | Further names that count as a mention. |
+| `rooms` | `[]` | Allowed room tokens. Empty = every room the bot is enabled in. As a mapping, `mode` per room: `mention` (only addressed messages), `all` (every message), `auto` (one-to-one = all, otherwise mention). |
+| `whitelist` | `[]` | Users who can start sessions: `alice` / `users/alice`, other actor types in full (`federated_users/…`, `guests/…`). Empty = all Nextcloud users, no guests or federated users. `"*"` = everyone. |
+| `follow_threads` | `true` | In threads the bot is part of (it was mentioned there or started the thread), follow-ups reach it without a mention. |
+| `processing_reaction` | `👀` | Reaction added to a message when a session takes it, removed when the session replies. `""` turns it off. |
+| `context_messages` | `10` | Unseen earlier messages of the same conversation/thread passed along with a mention, so "@Claudius what do you think?" has context. |
+| `max_message_length` | `4000` | Longer replies are split at line breaks, code blocks stay balanced. Talk's hard limit is 32000. |
+| `verify_tls` | `true` | TLS verification for calls to Nextcloud. |
+
+### Routing
+
+| Where | Addressed when | Session key |
+|-------|----------------|-------------|
+| Group conversation, main chat | `@Claudius …`, or a reply quoting the bot | `talk/<room>/main` |
+| Thread in a group conversation | `@Claudius …`, a reply to the bot, or any follow-up once the bot is part of the thread | `talk/<room>/<thread-id>` |
+| One-to-one conversation (or `mode: all`) | every message | `talk/<room>/main` or `talk/<room>/<thread-id>` |
+
+Bots are not participants in Talk, so `@Claudius` stays plain text in the message; the add-on matches it case-insensitively (also `@"Claudius"`), and also accepts a real mention parameter if a Nextcloud user with that name exists. One-to-one conversations are recognised by their name: Talk sends the two user IDs as a JSON list. `/new` (after the mention in group rooms) retires the session of that conversation or thread like Signal's `/new`.
+
+Messages that don't address the bot are still stored in `talk.db`: the bot API cannot read history from the server, so this is what `talk history` and the `<context>` block draw on.
+
+### Threads
+
+`talk send --new-thread "<title>" "<text>"` creates a thread. Talk answers the bot API with `201` and no body, so the thread id is learned from the `thread_created` system message that Talk sends to the bot's webhook right after: the add-on records a pending thread before sending, matches the system message by room and title, and prints the id once it arrived (waits up to 15 seconds). Messages in that thread then go to their own session (`talk/<room>/<thread-id>`), with `thread-origin` naming the session that started it.
+
+### CLI Usage
+
+```bash
+talk send "Text"                               # trigger session: this conversation/thread
+talk send --reply-to 4720 "Text"               # quote a message
+talk send --new-thread "Deploy 4.2" "Text"     # start a thread
+talk send --thread 4711 "Text" | --main | --room <token>
+talk send --silent "Text"                      # no notifications
+cat report.md | talk send -                    # long Markdown from stdin
+talk react 4720 "👍" [--remove]
+talk history [--room <token>] [--thread <id>] [--limit 20]
+talk rooms                                     # conversations seen, their mode and allowlist state
+talk threads [--room <token>]
+talk status                                    # config check + features Nextcloud reports for the bot
+talk setup                                     # setup instructions
+```
+
+`talk send` refuses messages that contain credentials (private keys, common token formats, the bot secret, or the value of any `*TOKEN*`/`*SECRET*`/`*PASSWORD*` environment variable) and allows at most 20 messages per minute and room.
+
+### Talk Database
+
+`~/.index/talk/talk.db` (WAL mode):
+
+| Table | Purpose |
+|-------|---------|
+| `rooms` | Conversations seen: name, one-to-one flag, bot actor id and name (from the `Join` webhook) |
+| `threads` | Known threads: title, started by the bot, origin session, followed |
+| `pending_threads` | Threads the bot asked for, until `thread_created` reports their id |
+| `messages` | Inbound (every message of allowed rooms) and outbound messages, delivery and processing-reaction state |
+
+### Security
+
+- Every webhook is checked against the HMAC before anything else; invalid signatures get `401`, a reused random value `409`. Message ids are deduplicated in `talk.db` as a second line.
+- Only allowed rooms and users start sessions. Guests and federated users need an explicit `whitelist` entry.
+- The payload escapes all chat text. The channel prompt tells the session that `<context>`, `<quoted>` and file names are data, not instructions, and that destructive actions need an explicit request from the sender.
+- Talk is not end-to-end encrypted. Install the bot with `--no-setup` so only admins decide where it reads along.
+- Limits of the bot API: no file upload or download, no reading of server-side history, no typing indicator.
+
 ## Reply Flow
 
 Trigger sessions reply directly via CLI tools — no intermediate delivery layer:
@@ -362,6 +488,8 @@ Trigger sessions reply directly via CLI tools — no intermediate delivery layer
   - Sends via signal-cli, tracks in signal.db
 - **Email**: `email reply "<thread_id>" "<body>"`
   - Sends via SMTP with proper threading headers, tracks in email.db
+- **Nextcloud Talk**: `talk send "<markdown>"`
+  - Posts through the signed bot API into the session's conversation/thread, tracks in talk.db
 - **Web/Internal**: handled within the trigger session, no CLI reply needed
 
 ## Quick Reference
@@ -380,6 +508,14 @@ Trigger sessions reply directly via CLI tools — no intermediate delivery layer
 # 2. Create trigger: "Create a persistent email handler trigger" + start polling
 ```
 
+### Enable Nextcloud Talk in 3 Steps
+
+```bash
+# 1. Secret in ~/secrets/talk-bot-secret + talk.url in ~/config.yml
+# 2. Nextcloud admin: occ talk:bot:install … && occ talk:bot:setup <bot-id> <room-token>
+# 3. Create trigger: "Create a persistent Talk chat trigger" (talk-chat, channel talk)
+```
+
 ### Direct Usage
 
 ```bash
@@ -394,4 +530,9 @@ email send alice@x.com "Subject" "Body"
 email threads
 email thread <thread_id> [--raw]
 email read <email_id> [--raw]
+
+# Nextcloud Talk
+talk send --room <token> "Hi!"
+talk rooms
+talk history --room <token>
 ```

@@ -61,6 +61,22 @@ email:
   #   sent:    "Sent"      # Gmail "[Gmail]/Sent Mail"; Outlook "Sent Items"
   #   drafts:  "Drafts"
 
+# Nextcloud Talk bot (webhook bot API, see docs/Integrations.md#nextcloud-talk)
+# The bot secret never goes here: TALK_BOT_SECRET env or the file below.
+# talk:
+#   url: "https://cloud.example.com"   # Nextcloud base URL (override: TALK_URL)
+#   secret_file: "/home/agent/secrets/talk-bot-secret"
+#   bot_name: ""                       # name people @mention; default agent.name
+#   mention_aliases: []                # more names that count as a mention
+#   rooms: []                          # allowed room tokens, empty = every room the bot is enabled in
+#                                      # or a mapping: { "<token>": { mode: all | mention | auto } }
+#   whitelist: []                      # users allowed to talk to the agent ("alice" or "users/alice"),
+#                                      # empty = all Nextcloud users (no guests), "*" = everyone
+#   follow_threads: true               # follow-ups in a thread you're part of need no @mention
+#   processing_reaction: "👀"          # reaction while working, "" = off
+#   context_messages: 10               # unseen earlier messages passed along with a mention
+#   max_message_length: 4000           # longer replies are split (Talk hard limit 32000)
+
 daily_cleanup:
   enabled: true
   retention_days: 30 # How long to keep completed tasks, messages, etc.

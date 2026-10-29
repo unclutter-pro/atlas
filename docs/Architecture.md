@@ -115,4 +115,4 @@ See [hooks.md](hooks.md) for details.
 - [directory-structure.md](directory-structure.md) — Filesystem layout
 - [development.md](development.md) — Developer guide
 - [Triggers.md](Triggers.md) — Triggers system
-- [Integrations.md](Integrations.md) — Signal and Email
+- [Integrations.md](Integrations.md) — Signal, Email and Nextcloud Talk

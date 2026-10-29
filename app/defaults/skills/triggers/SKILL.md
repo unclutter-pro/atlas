@@ -230,6 +230,7 @@ Read only the setup guide for the requested integration:
 - [Signal](references/signal-setup.md): signal-cli registration, daemon and listener.
 - [WhatsApp](references/whatsapp-setup.md): device pairing and daemon.
 - [Telegram](references/telegram-setup.md): bot token and polling daemon.
+- [Nextcloud Talk](references/talk-setup.md): webhook bot, `occ` install by a Nextcloud admin, room setup.
 - [Email](references/email-setup.md): IMAP/SMTP configuration and provisioning checks.
 
 For ordinary email operations, use the `email` skill. For a one-shot follow-up or waiting on a reply/CI, use `reminders`; use cron triggers for durable recurring schedules.

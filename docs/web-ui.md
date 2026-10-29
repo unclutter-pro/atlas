@@ -58,7 +58,7 @@ A status strip sits on top of every page: Active or Paused, how many runs are ru
 - **Settings**: `/settings/<section>`, with `/settings` redirecting to Personality.
   - `personality`: edit IDENTITY.md and SOUL.md.
   - `login`: how the agent backend authenticates, until when, and a new login from the browser. See [Agent login](#agent-login).
-  - `integrations`: Signal, Email, WhatsApp, Telegram and Web. Shows whether each is configured and running, and the triggers on its channel.
+  - `integrations`: Signal, Email, WhatsApp, Telegram, Nextcloud Talk and Web. Shows whether each is configured and running, and the triggers on its channel.
   - `configuration`: effective values and where each came from (env, runtime, config.yml or default), plus a validated config.yml editor (`?view=edit`).
   - `secrets`: names only. Values can be set and deleted but are never returned.
   - `extensions`: `user-extensions.sh`, syntax-checked with `bash -n`.

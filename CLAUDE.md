@@ -40,4 +40,4 @@ Trigger Event → trigger.sh → trigger-runner (native binary) → Trigger Sess
 - [docs/directory-structure.md](docs/directory-structure.md) — Filesystem layout
 - [docs/development.md](docs/development.md) — Developer guide
 - [docs/Triggers.md](docs/Triggers.md) — Triggers guide
-- [docs/Integrations.md](docs/Integrations.md) — Signal and Email
+- [docs/Integrations.md](docs/Integrations.md) — Signal, Email and Nextcloud Talk
