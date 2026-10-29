@@ -301,3 +301,60 @@ def test_decode_escapes_empty():
 
 def test_decode_escapes_no_escapes():
     assert decode_escapes("plain ascii") == "plain ascii"
+
+
+# ---------------------------------------------------------------------------
+# Send: attachment batching and JSON-RPC response handling
+# ---------------------------------------------------------------------------
+
+batches = signal_addon._attachment_batches
+
+
+def test_batches_no_attachments():
+    assert batches([]) == [[]]
+
+
+def test_batches_images_stay_together():
+    assert batches(["a.png", "b.jpg", "c.mp4"]) == [["a.png", "b.jpg", "c.mp4"]]
+
+
+def test_batches_documents_split():
+    assert batches(["k.asc", "p.asc", "r.asc"]) == [["k.asc"], ["p.asc"], ["r.asc"]]
+
+
+def test_batches_media_first_then_documents():
+    assert batches(["r.pdf", "a.png", "x.zip"]) == [["a.png"], ["r.pdf"], ["x.zip"]]
+
+
+class _FakeSock:
+    def __init__(self, chunks):
+        self.chunks = list(chunks)
+
+    def recv(self, _n):
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+def test_rpc_response_skips_notifications():
+    notif = b'{"jsonrpc":"2.0","method":"receive","params":{}}\n'
+    resp = b'{"jsonrpc":"2.0","result":{"results":[]},"id":"abc"}\n'
+    sock = _FakeSock([notif + resp[:10], resp[10:]])
+    assert signal_addon._read_rpc_response(sock, "abc")["id"] == "abc"
+
+
+def test_rpc_response_connection_closed():
+    with pytest.raises(RuntimeError):
+        signal_addon._read_rpc_response(_FakeSock([b'{"method":"receive"}\n']), "abc")
+
+
+def test_send_results_success():
+    signal_addon._check_send_results({"results": [{"type": "SUCCESS"}]})
+
+
+@pytest.mark.parametrize("result", [
+    {"results": [{"type": "UNREGISTERED_FAILURE"}]},
+    {"results": []},
+    {},
+])
+def test_send_results_failure(result):
+    with pytest.raises(RuntimeError):
+        signal_addon._check_send_results(result)
