@@ -1,7 +1,10 @@
 import type { Handler } from "hono";
 import { authenticateWebhook } from "../lib/webhook-auth";
 
-type WebhookTrigger = { name: string; enabled: number; webhook_secret: string | null };
+type WebhookTrigger = { name: string; enabled: number; webhook_secret: string | null; channel?: string | null };
+
+/** GitHub headers the github channel router reads (event type, delivery ID, hook ID). */
+const GITHUB_HEADERS = ["x-github-event", "x-github-delivery", "x-github-hook-id"];
 
 export function createWebhookHandler({ getTrigger, fireTrigger }: {
   getTrigger: (name: string) => WebhookTrigger | undefined;
@@ -41,6 +44,23 @@ export function createWebhookHandler({ getTrigger, fireTrigger }: {
       }
     } catch {
       payload = "(could not parse payload)";
+    }
+
+    // The github channel routes on X-GitHub-Event / X-GitHub-Delivery, so it
+    // gets the same {body, headers} envelope as the relay listener delivers.
+    if (t.channel === "github") {
+      const headers: Record<string, string> = {};
+      for (const name of GITHUB_HEADERS) {
+        const value = c.req.header(name);
+        if (value !== undefined) headers[name] = value;
+      }
+      let body: unknown = payload;
+      try {
+        body = JSON.parse(payload);
+      } catch {
+        // Not JSON: pass the text through; the router rejects it.
+      }
+      payload = JSON.stringify({ body, headers });
     }
 
     // Fire through trigger.sh for consistent behavior (session_mode, prompts, IPC)

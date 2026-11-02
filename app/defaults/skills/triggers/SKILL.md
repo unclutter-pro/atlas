@@ -158,7 +158,7 @@ For relay webhooks, set a secret with `trigger create --type=webhook --secret=..
 
 For GitHub HMAC signatures, use the direct HTTPS endpoint `/api/webhook/<name>` behind the deployment's ingress and set the trigger secret to GitHub's webhook secret. The HTTP handler verifies `X-Hub-Signature-256` against the original request bytes. The SSE relay supplies parsed JSON, so it cannot verify that signature and rejects signed events on secret-protected triggers. Do not reconstruct a request body with `jq` for HMAC verification.
 
-`filter.sh` is for business predicates after authentication, not for reimplementing signatures. It runs once in the trigger runner. Relay payloads have `body`, `headers`, `query`, and `timestamp`; direct HTTP JSON payloads are the body itself. For a GitHub branch filter supporting both routes, use `jq -r '(.body // .).ref // empty'`.
+`filter.sh` is for business predicates after authentication, not for reimplementing signatures. It runs once in the trigger runner. Relay payloads have `body`, `headers`, `query`, and `timestamp`; direct HTTP JSON payloads are the body itself, except for triggers with channel `github`, which get `{body, headers}` with the `X-GitHub-*` headers. For a GitHub branch filter supporting both routes, use `jq -r '(.body // .).ref // empty'`.
 
 ## Webhook Relay Configuration
 
@@ -231,6 +231,7 @@ Read only the setup guide for the requested integration:
 - [WhatsApp](references/whatsapp-setup.md): device pairing and daemon.
 - [Telegram](references/telegram-setup.md): bot token and polling daemon.
 - [Email](references/email-setup.md): IMAP/SMTP configuration and provisioning checks.
+- [GitHub](references/github-setup.md): login, webhook and per-topic worker sessions.
 
 For ordinary email operations, use the `email` skill. For a one-shot follow-up or waiting on a reply/CI, use `reminders`; use cron triggers for durable recurring schedules.
 

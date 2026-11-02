@@ -238,6 +238,8 @@ See `app/prompts/trigger-system-prompt.md` for the full delegation guidelines.
 
 ### GitHub Webhooks (Filter + Delegate)
 
+For issues, PRs, reviews and CI on repositories Atlas works in, use the built-in GitHub channel instead: it routes each event to one persistent session per topic and skips what does not involve the agent. See [Integrations.md](Integrations.md#github). The example below suits one-off reactions such as a push summary.
+
 ```
 Name:           github-push
 Type:           Webhook

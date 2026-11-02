@@ -5,7 +5,7 @@ Containerized autonomous agent system powered by Claude Code. Made to enable com
 ## Goals
 
 - **Event-driven**: No polling, no wasted compute — sleeps until work arrives
-- **Multi-channel**: Signal, Email, Web, Webhooks — unified inbox via trigger sessions
+- **Multi-channel**: Signal, Email, GitHub, Web, Webhooks — unified inbox via trigger sessions
 - **Autonomous**: Triggers handle events, delegate to agent teammates when needed
 - **Persistent**: Memory, identity, and sessions survive restarts of container
 
@@ -40,4 +40,4 @@ Trigger Event → trigger.sh → trigger-runner (native binary) → Trigger Sess
 - [docs/directory-structure.md](docs/directory-structure.md) — Filesystem layout
 - [docs/development.md](docs/development.md) — Developer guide
 - [docs/Triggers.md](docs/Triggers.md) — Triggers guide
-- [docs/Integrations.md](docs/Integrations.md) — Signal and Email
+- [docs/Integrations.md](docs/Integrations.md) — Signal, Email and GitHub

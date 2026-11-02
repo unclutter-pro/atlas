@@ -38,6 +38,7 @@ app/
 │   ├── manage.ts              # Trigger management CLI
 │   ├── sync-crontab.ts        # Crontab auto-generation from DB
 │   ├── sessions.ts            # `sessions` CLI: extraction and retention via the session store
+│   ├── github/                # GitHub channel: event router, topic ledger, classifier (docs/Integrations.md#github)
 │   ├── lifecycle/             # Atlas lifecycle policy, backend-neutral (docs/hooks.md)
 │   ├── harness/               # Agent backends (docs/harness-interface.md)
 │   │   ├── configure.ts       # Writes the configured backend's settings (init.sh, web-ui)
@@ -75,7 +76,7 @@ home/
 ├── .index/                     # System state
 │   ├── atlas.db               # SQLite database (WAL mode)
 │   ├── .trigger-<name>.flock  # Per-trigger flock file (concurrency control)
-│   └── signal/, email/        # Channel-specific databases
+│   └── signal/, email/, github/ # Channel-specific databases (github/router.db: topic ledger)
 ├── memory/                     # Long-term memory (agent-organized; see docs/memory.md)
 │   ├── MEMORY.md              # Top-tier rules every session needs
 │   ├── journal/               # Daily journal entries (fixed layout)
