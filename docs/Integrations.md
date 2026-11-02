@@ -370,7 +370,7 @@ GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
                                 │         green CI, login not involved
                                 ├─▸ HOT:  ref in ledger → its topic (no model call)
                                 ├─▸ COLD: involved + unseen ref
-                                │     a. PR closes a tracked issue → that topic
+                                │     a. names a tracked ref (Closes/Refs/Part of #n) → that topic
                                 │     b. classifier (one tool-less harness turn, haiku)
                                 │     c. default <repo>-<issue|pr>-<n>-<title>
                                 │
@@ -422,6 +422,8 @@ Both routes hand the router the same `{body, headers}` envelope.
 ### Routing
 
 **Involvement.** An unseen issue or PR only becomes a topic when the login is involved: it is @mentioned in the title or the text of the event, a review is requested from it, it is an assignee or it is the author. Once a ref is in the ledger every further event on it is routed (hot path), except the login's own actions.
+
+**Reference joins.** Before the classifier runs, an unseen issue or PR joins the topic of a tracked ref it names in its title or description with a keyword: closing keywords (`Closes`, `Fixes`, `Resolves`) and, for PRs, GitHub's `closingIssuesReferences` first, then `Refs`, `Ref`, `References`, `Part of`, `Related to`, `Relates to`, `Follow-up to/of`, `See`. The ref may be `#n`, `owner/repo#n` or a full issue/PR URL. A bare `#n` is left to the classifier. A ref that is already tracked is never moved, whatever a later edit adds.
 
 **Topics.** The classifier sees only topics of the same repository (slug, title, notes, refs) and the event summary, and answers `{slug, title, is_new, notes}`. It reuses a topic only when the event is clearly the same work; a wrong merge pollutes a session, a split only costs context. It runs through the harness (`ClaudeCodeBackend`, single ephemeral turn, no tools), so it uses the same credentials as trigger sessions. Any error, timeout or invalid answer is logged with its reason and the default slug is used; there is no retry.
 

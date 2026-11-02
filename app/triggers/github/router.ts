@@ -4,13 +4,13 @@
  *
  *   skip  duplicate, noise, own action, green CI, not involved
  *   hot   ref already in the ledger → its topic
- *   cold  involved + unseen ref → closing-issue join, else classifier, else default slug
+ *   cold  involved + unseen ref → keyword-reference join, else classifier, else default slug
  *
  * Side effects go through RouterDeps so the decision logic is testable.
  */
 import {
   ACTIONABLE_EVENTS, CI_EVENTS, CI_FAILURE_CONCLUSIONS, NOISE_ACTIONS,
-  closingRefsInText, defaultSlug, extractCi, extractEvent, intentFor, involvement, prBody,
+  closingRefsInText, defaultSlug, extractCi, extractEvent, intentFor, involvement, itemText, looseRefsInText,
   reactionTarget, repoAllowed,
   type Envelope, type GitHubEvent, type Intent,
 } from "./events.ts";
@@ -118,29 +118,43 @@ async function deliver(deps: RouterDeps, ev: GitHubEvent, router: RouterInfo, re
   }
 }
 
-/** Slug of a tracked issue this PR closes (body keywords + closingIssuesReferences). */
-async function closingJoin(deps: RouterDeps, ev: GitHubEvent): Promise<string | null> {
-  if (ev.kind !== "pr" || ev.number === null) return null;
-  const refs = new Set(closingRefsInText(prBody(ev), ev.repo));
-  try {
-    for (const ref of await deps.github.closingIssues(ev.repo, ev.number)) refs.add(ref);
-  } catch (err) {
-    deps.log(`cold: closingIssuesReferences lookup failed for ${ev.ref}: ${(err as Error).message}`);
-  }
-  for (const ref of refs) {
-    const slug = deps.ledger.lookup(ref);
-    if (slug) {
-      deps.log(`cold: ${ev.ref} closes tracked ${ref} → joining '${slug}'`);
-      return slug;
+/**
+ * Deterministic join for an untracked ref: the topic of a tracked issue or PR
+ * this item names with a keyword. Closing keywords and (for PRs)
+ * closingIssuesReferences come first, then loose references such as
+ * "Refs #n" or "Part of #n". A bare "#n" is left to the classifier.
+ */
+async function referenceJoin(deps: RouterDeps, ev: GitHubEvent): Promise<{ slug: string; via: string } | null> {
+  if (ev.number === null) return null;
+  const text = itemText(ev);
+  const pick = (refs: string[], via: string) => {
+    for (const ref of refs) {
+      if (ref === ev.ref) continue;
+      const slug = deps.ledger.lookup(ref);
+      if (slug) {
+        deps.log(`join: ${ev.ref} references tracked ${ref} (${via}) → '${slug}'`);
+        return { slug, via };
+      }
+    }
+    return null;
+  };
+  const closing = pick(closingRefsInText(text, ev.repo), "closing-ref");
+  if (closing) return closing;
+  if (ev.kind === "pr") {
+    try {
+      const linked = pick(await deps.github.closingIssues(ev.repo, ev.number), "closing-ref");
+      if (linked) return linked;
+    } catch (err) {
+      deps.log(`join: closingIssuesReferences lookup failed for ${ev.ref}: ${(err as Error).message}`);
     }
   }
-  return null;
+  return pick(looseRefsInText(text, ev.repo), "loose-ref");
 }
 
 async function resolveColdSlug(deps: RouterDeps, ev: GitHubEvent): Promise<{ slug: string; title: string; notes: string | null; via: string }> {
   const fallback = defaultSlug(ev);
-  const joined = await closingJoin(deps, ev);
-  if (joined) return { slug: joined, title: ev.title, notes: null, via: "closing-ref" };
+  const joined = await referenceJoin(deps, ev);
+  if (joined) return { slug: joined.slug, title: ev.title, notes: null, via: joined.via };
   try {
     const topics = deps.ledger.topics({ repo: ev.repo, limit: 60 });
     const answer = await classify(ev, {
@@ -236,7 +250,7 @@ async function routeItem(deps: RouterDeps, ev: GitHubEvent, result: RouteResult)
     const reason = involvement(ev, me);
     if (!reason) return { ...result, path: "skip:not-involved" };
     if (ev.type === "pull_request" && (reason === "assigned" || reason === "assignee")) {
-      const target = (await closingJoin(deps, ev)) ?? defaultSlug(ev);
+      const target = (await referenceJoin(deps, ev))?.slug ?? defaultSlug(ev);
       slug = deps.ledger.bind(ref, target, ev.title, "PR assigned; idle until someone asks for something");
       deps.log(`register: ${ref} → '${slug}' (PR assigned, no session started)`);
       return { ...result, path: "register", slug };

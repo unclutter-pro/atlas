@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Conversation, ConversationEvent, ConversationRequest } from "../../lib/harness.ts";
 import type { ConversationBackend } from "./classifier.ts";
-import { closingRefsInText, defaultSlug, extractEvent, mentions, parseEnvelope, repoAllowed, type Envelope } from "./events.ts";
+import { closingRefsInText, defaultSlug, looseRefsInText, extractEvent, mentions, parseEnvelope, repoAllowed, type Envelope } from "./events.ts";
 import { Ledger } from "./ledger.ts";
 import { routeEvent, type GitHubApi, type InboxEntry, type RouterDeps } from "./router.ts";
 
@@ -108,6 +108,14 @@ describe("events", () => {
   test("closing keywords resolve local, cross-repo and URL refs", () => {
     expect(closingRefsInText("Fixes #12, closes acme/api#3 and resolves https://github.com/acme/web/issues/9. Mentions #4.", REPO))
       .toEqual(["acme/webapp#12", "acme/api#3", "acme/web#9"]);
+  });
+
+  test("loose keywords resolve refs; bare #n and closing keywords do not count as loose", () => {
+    expect(looseRefsInText("Refs #1. Ref: acme/api#2, part of #3, related to https://github.com/acme/web/pull/4, relates to #5", REPO))
+      .toEqual(["acme/webapp#1", "acme/api#2", "acme/webapp#3", "acme/web#4", "acme/webapp#5"]);
+    expect(looseRefsInText("Follow-up to #6, follow up of #7, see #8, see also #9", REPO))
+      .toEqual(["acme/webapp#6", "acme/webapp#7", "acme/webapp#8", "acme/webapp#9"]);
+    expect(looseRefsInText("Touches #10, fixes #11, prefers #12, #13a", REPO)).toEqual([]);
   });
 
   test("default slug and ref spelling", () => {
@@ -231,6 +239,42 @@ describe("hot and cold path", () => {
     expect(result).toMatchObject({ path: "cold", slug: "login-bug", intent: "review" });
     expect(h.ledger.topics()[0]!.refs).toEqual(["acme/webapp#42", "acme/webapp#43"]);
     expect(h.requests).toHaveLength(0);
+  });
+
+  for (const [kind, body] of [["issue", "Part of #42"], ["PR", "Refs acme/webapp#42"]] as const) {
+    test(`an untracked ${kind} with a loose reference to a tracked ref joins its topic`, async () => {
+      h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+      const event = kind === "issue"
+        ? envelope("issues", { action: "opened", issue: issue({ number: 50, body: `@my-bot ${body}` }) })
+        : envelope("pull_request", { action: "opened", pull_request: pr({ body: `@my-bot ${body}` }) });
+      const result = await routeEvent(event, h.deps);
+      expect(result).toMatchObject({ path: "cold", slug: "login-bug" });
+      expect(h.requests).toHaveLength(0);
+      expect(h.logs.some((l) => l.includes("via=loose-ref"))).toBe(true);
+    });
+  }
+
+  test("a closing reference wins over a loose one", async () => {
+    h.ledger.bind("acme/webapp#40", "older", "Older");
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    const result = await routeEvent(envelope("pull_request", { action: "opened", pull_request: pr({ body: "@my-bot see #40. Fixes #42" }) }), h.deps);
+    expect(result.slug).toBe("login-bug");
+  });
+
+  test("a bare #n is left to the classifier", async () => {
+    h = harness({ answer: '{"slug":"fix-login","title":"Fix","is_new":true}' });
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    const result = await routeEvent(envelope("pull_request", { action: "opened", pull_request: pr({ body: "@my-bot this touches #42" }) }), h.deps);
+    expect(result.slug).toBe("fix-login");
+    expect(h.requests).toHaveLength(1);
+  });
+
+  test("a reference never moves a ref that is already tracked", async () => {
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    const result = await routeEvent(envelope("pull_request", { action: "edited", pull_request: pr({ body: "Closes #42" }) }), h.deps);
+    expect(result).toMatchObject({ path: "hot", slug: "fix-login" });
+    expect(h.ledger.lookup("acme/webapp#43")).toBe("fix-login");
   });
 
   test("closingIssuesReferences joins too, and its failure is only logged", async () => {

@@ -224,12 +224,19 @@ export function extractCi(ev: GitHubEvent): CiRun {
   };
 }
 
-const CLOSING_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:([\w.-]+\/[\w.-]+)#(\d+)|#(\d+)|https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/issues\/(\d+))/gi;
+/** `#n`, `owner/repo#n` or a full issue/PR URL; groups: repo, n | n | repo, n. */
+const REF_FORM = String.raw`(?:([\w.-]+\/[\w.-]+)#(\d+)|#(\d+)|https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:issues|pull)\/(\d+))(?!\w)`;
+/** GitHub's closing keywords. */
+const CLOSING_KEYWORDS = String.raw`close[sd]?|fix(?:e[sd])?|resolve[sd]?`;
+/** Explicit, non-closing references. A bare `#n` is not one of them. */
+const LOOSE_KEYWORDS = String.raw`refs?|references?|part\s+of|relate[sd]\s+to|related\s+to|follow[\s-]?ups?\s+(?:to|of|on)|see(?:\s+also)?`;
+const keywordRe = (keywords: string) => new RegExp(String.raw`\b(?:${keywords})\b:?\s+${REF_FORM}`, "gi");
+const CLOSING_RE = keywordRe(CLOSING_KEYWORDS);
+const LOOSE_RE = keywordRe(LOOSE_KEYWORDS);
 
-/** Issue refs a PR body closes with GitHub's keywords (closes/fixes/resolves). */
-export function closingRefsInText(text: string, repo: string): string[] {
+function refsMatching(re: RegExp, text: string, repo: string): string[] {
   const refs = new Set<string>();
-  for (const match of text.matchAll(CLOSING_RE)) {
+  for (const match of text.matchAll(re)) {
     const [, otherRepo, otherNumber, localNumber, urlRepo, urlNumber] = match;
     if (otherRepo && otherNumber) refs.add(formatRef(otherRepo, Number(otherNumber)));
     else if (localNumber) refs.add(formatRef(repo, Number(localNumber)));
@@ -238,7 +245,17 @@ export function closingRefsInText(text: string, repo: string): string[] {
   return [...refs];
 }
 
-/** The PR description, whichever event carries it. */
-export function prBody(ev: GitHubEvent): string {
-  return ev.kind === "pr" ? ev.item.body ?? "" : "";
+/** Refs named with a closing keyword (closes/fixes/resolves #n), in text order. */
+export function closingRefsInText(text: string, repo: string): string[] {
+  return refsMatching(CLOSING_RE, text, repo);
+}
+
+/** Refs named with a non-closing keyword (refs, part of, related to, follow-up to, see #n). */
+export function looseRefsInText(text: string, repo: string): string[] {
+  return refsMatching(LOOSE_RE, text, repo);
+}
+
+/** Title and description of the issue or PR, whichever event carries it. */
+export function itemText(ev: GitHubEvent): string {
+  return `${ev.item.title ?? ""}\n${ev.item.body ?? ""}`;
 }
