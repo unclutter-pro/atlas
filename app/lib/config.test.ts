@@ -80,3 +80,39 @@ models:
     expect(models.cron).toBe("sonnet");
   });
 });
+
+describe("resolveConfig github", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "atlas-config-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("defaults keep the channel disabled", () => {
+    const github = resolveConfig(tmpDir).github;
+    expect(github.login).toBe("");
+    expect(github.worker_trigger).toBe("github-worker");
+    expect(github.router_model).toBe("haiku");
+  });
+
+  test("config.yml sets the section and env overrides it", () => {
+    writeFileSync(join(tmpDir, "config.yml"), `
+github:
+  login: my-bot
+  repos: ["acme/*"]
+`);
+    process.env.ATLAS_GITHUB_REPOS = "acme/webapp, other/tool";
+    try {
+      const github = resolveConfig(tmpDir).github;
+      expect(github.login).toBe("my-bot");
+      expect(github.repos).toEqual(["acme/webapp", "other/tool"]);
+      expect(getConfigSource("github.repos")).toBe("env");
+    } finally {
+      delete process.env.ATLAS_GITHUB_REPOS;
+    }
+  });
+});

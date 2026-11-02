@@ -86,6 +86,17 @@ stt:
 webhook:
   relay_url: "https://webhooks.unclutter.pro"  # Base URL for webhook relay (smee.io compatible)
 
+# GitHub channel (docs/Integrations.md#github): routes webhook events to one
+# persistent session per topic. Setting `login` enables it; init.sh then
+# provisions the `github` ingress trigger and the `github-worker` trigger.
+# The `gh` CLI must be authenticated as this login.
+github:
+  login: "" # GitHub login Atlas acts as, e.g. "my-bot". Override with ATLAS_GITHUB_LOGIN.
+  worker_trigger: "github-worker" # Persistent trigger that runs one session per topic
+  repos: [] # Empty = every repository the webhook delivers; or ["acme/webapp", "acme/*"]
+  router_model: haiku # Classifier for unseen issues/PRs (a model name or a models.<key>)
+  router_timeout_seconds: 60 # Hard timeout of one classifier call; on timeout a default topic is used
+
 # Usage reporting — send session metrics to external endpoints after each session.
 # Used by hosting platforms for billing based on work hours.
 usage_reporting:

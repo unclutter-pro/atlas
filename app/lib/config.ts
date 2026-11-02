@@ -83,6 +83,19 @@ export interface WebhookConfig {
   relay_url: string;
 }
 
+export interface GitHubConfig {
+  /** GitHub login Atlas acts as. Empty disables the GitHub channel. */
+  login: string;
+  /** Persistent trigger that runs one session per topic slug. */
+  worker_trigger: string;
+  /** Allowlist of "owner/repo" or "owner/*". Empty = every repository. */
+  repos: string[];
+  /** Model (or models.<key>) for the cold-path topic classifier. */
+  router_model: string;
+  /** Hard timeout of one classifier call. */
+  router_timeout_seconds: number;
+}
+
 export interface UsageReportingConfig {
   enabled: boolean;
   webhook_url: string;
@@ -126,6 +139,7 @@ export interface AtlasConfig {
   web_ui: WebUiConfig;
   stt: SttConfig;
   webhook: WebhookConfig;
+  github: GitHubConfig;
   usage_reporting: UsageReportingConfig;
   workspace: WorkspaceConfig;
   harness: HarnessConfig;
@@ -153,6 +167,7 @@ const DEFAULTS: AtlasConfig = {
   web_ui: { port: 8080, bind: "127.0.0.1", allowed_hosts: [] },
   stt: { enabled: true, url: "http://stt:5092/v1/audio/transcriptions" },
   webhook: { relay_url: "https://webhooks.unclutter.pro" },
+  github: { login: "", worker_trigger: "github-worker", repos: [], router_model: "haiku", router_timeout_seconds: 60 },
   usage_reporting: { enabled: false, webhook_url: "", webhook_secret: "", include_tokens: false },
   workspace: { projects_dir: "" }, // empty = $HOME/projects (resolved at runtime)
   harness: { backend: "claude-code" },
@@ -223,6 +238,11 @@ const ENV_MAPPINGS: EnvMapping[] = [
   { env: "ATLAS_STT_ENABLED", path: "stt.enabled", type: "boolean" },
   { env: "ATLAS_STT_URL", aliases: ["STT_URL"], path: "stt.url", type: "string" },
   { env: "ATLAS_WEBHOOK_RELAY_URL", path: "webhook.relay_url", type: "string" },
+  { env: "ATLAS_GITHUB_LOGIN", path: "github.login", type: "string" },
+  { env: "ATLAS_GITHUB_WORKER_TRIGGER", path: "github.worker_trigger", type: "string" },
+  { env: "ATLAS_GITHUB_REPOS", path: "github.repos", type: "string[]" },
+  { env: "ATLAS_GITHUB_ROUTER_MODEL", path: "github.router_model", type: "string" },
+  { env: "ATLAS_GITHUB_ROUTER_TIMEOUT_SECONDS", path: "github.router_timeout_seconds", type: "number" },
   { env: "ATLAS_USAGE_ENABLED", path: "usage_reporting.enabled", type: "boolean" },
   { env: "ATLAS_USAGE_WEBHOOK_URL", path: "usage_reporting.webhook_url", type: "string" },
   { env: "ATLAS_USAGE_WEBHOOK_SECRET", path: "usage_reporting.webhook_secret", type: "string" },
