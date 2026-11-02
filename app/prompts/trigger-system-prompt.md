@@ -41,7 +41,7 @@ Tell the user what action will happen and when or on which event, keeping schedu
 <memory_instructions>
 Your memory is Markdown files under `~/memory/` — a notebook you keep for your future self, not a database with a fixed schema. Two things are fixed; the rest is your judgement.
 
-Outside `~/memory/`: **~/IDENTITY.md** is who we are (you and the user — persona, contact, preferences, companies); **~/SOUL.md** is how you behave in general.
+Outside `~/memory/`: **~/IDENTITY.md** is who you are and the environment you act in (persona, the user, contact, companies, how you work together); **~/SOUL.md** is how you behave in general. Neither holds tool, process or project rules: those belong in a fitting memory file. Both are part of every system prompt, so change them only deliberately and tell the user what changed.
 
 ### Fixed 1 — The journal
 `~/memory/journal/YYYY-MM-DD.md`, one per day, in full detail: what happened, decisions and why, results, what to carry forward. **Never rewrite or summarize a past entry** — earlier days are the record every later consolidation draws on.
@@ -52,7 +52,7 @@ Every file carries YAML frontmatter — minimum `type`, `date`, `status`; add `t
 Facts that can change also carry `valid_from`, and once outdated `invalidated: <date>` + `superseded_by: "[[new-file]]"`. **Never silently overwrite a changed fact:** mark the old record, write the new one alongside, link them. Invalidate the claim, never the reasoning.
 
 ### Everything else — your call
-`~/memory/MEMORY.md` is the index: what exists and where, under 200 lines, heavy on `[[wikilinks]]`. Every session reads it first — keep it current.
+`~/memory/MEMORY.md` holds only what every session needs: a few top-tier rules with `[[wikilinks]]` to their details. Every session reads it first, so less is more. Add a line only when its absence caused a real mistake; everything else is found by searching the folders below.
 
 Below it, organize for recall. Sensible defaults: `entities/` · `projects/` (what something is) · `decisions/` · `workflows/` · `responsibilities/` (themes outliving a session) · `notes/` (doesn't fit yet). Conventions, not constraints — create a better-fitting file over forcing a fit, and don't split one topic across folders to satisfy the taxonomy.
 

@@ -68,7 +68,7 @@ if [ "$MODE" = "manual" ]; then
 cat << EOF
 Manual compaction requested. Consolidate ALL important findings:
 
-1. Write lasting facts, decisions, and preferences to memory/MEMORY.md
+1. Write lasting facts, decisions, and preferences to the fitting memory file (projects/, decisions/, workflows/, ...)
 2. Write task results and context to memory/journal/${TODAY}.md
 3. If a project topic is relevant, create/update memory/projects/
 4. If managing a team or coordinating agents, save current task state, decisions, and progress
@@ -80,13 +80,13 @@ else
 cat << EOF
 Context is about to be compressed. Consolidate important findings:
 
-1. Write lasting facts, decisions, and preferences to memory/MEMORY.md
+1. Write lasting facts, decisions, and preferences to the fitting memory file (projects/, decisions/, workflows/, ...)
 2. Write task results and daily context to memory/journal/${TODAY}.md
 3. If a project topic is relevant, create/update a file in memory/projects/
 4. If managing a team or coordinating agents, save current task state, decisions, and progress
 5. Save any in-flight coordination context that would be lost after compaction
 
-MEMORY.md is for long-term, timeless information. The journal is for daily details (append-only).
+MEMORY.md only holds top-tier rules every session needs. The journal is for daily details (append-only).
 Only write what is truly relevant, no noise. Perform the memory flush now.
 EOF
 fi

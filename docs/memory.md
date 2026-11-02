@@ -19,13 +19,13 @@ The record of what actually happened: activities, task results, decisions, open 
 
 ## Directory Structure
 
-`MEMORY.md` is the index — a concise map of what exists and where, kept under 200 lines and heavy on wikilinks. It is the first thing every session reads.
+`MEMORY.md` holds only what every session needs: a few top-tier rules linking to their details. It is the first thing every session reads, so it stays short. Everything else is found by searching the tree.
 
 Below it, these folders are created by default and cover most cases, but they are **conventions, not constraints**:
 
 ```
 ~/memory/
-├── MEMORY.md              — High-level index (max 200 lines)
+├── MEMORY.md              — Top-tier rules every session needs
 ├── journal/               — Daily session logs (fixed; never compressed)
 │   └── YYYY-MM-DD.md
 ├── entities/              — Services, platforms, people, companies

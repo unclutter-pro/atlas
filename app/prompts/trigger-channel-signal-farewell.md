@@ -9,7 +9,7 @@ The user sent /new to start a fresh conversation. This session is being retired.
    - Open questions, pending commitments, or follow-ups
    - Important context the next session should be aware of
 
-2. Update `memory/MEMORY.md` only if there is genuinely new long-term information (contact preferences, project state changes, new facts).
+2. Put genuinely new long-term information (preferences, project state changes, new facts) into the fitting memory file. `memory/MEMORY.md` only takes a new top-tier rule that every session needs.
 
 **IMPORTANT:** Do NOT send any Signal messages. Save to memory silently and finish.
 </session-ending>

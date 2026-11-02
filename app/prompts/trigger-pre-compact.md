@@ -11,4 +11,4 @@ Additionally, extend the memory files this session touched — whichever they ar
 
 If something you recorded earlier turned out to be wrong, mark it (`invalidated`, `superseded_by`) rather than overwriting it.
 
-Write to `memory/MEMORY.md` only for genuinely new long-term info (contact preferences, relationships, standing patterns).
+Write to `memory/MEMORY.md` only for a new top-tier rule every session needs. Preferences and facts go into the fitting memory file.
