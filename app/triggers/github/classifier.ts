@@ -42,7 +42,7 @@ ${ledger}
 Event:
 ${JSON.stringify({ ref: `${ev.repo}#${ev.number}`, kind: ev.kind, type: ev.type, action: ev.action, title: ev.title, author: ev.author, text: excerpt }, null, 2)}
 
-Reuse an existing topic only when this is clearly the same piece of work. When uncertain, create a new topic: a wrong merge puts unrelated work into one session, while a split only costs some context.
+Before reusing an existing topic, check that the event and the topic really belong together: they reference each other, or they name the same bug or feature. Working in the same area (both about charts, both about CI) is not enough. When in doubt, create a new topic: a wrong merge puts unrelated work into one session, while a split only costs some context.
 
 For a new topic choose a short kebab-case slug, e.g. "${fallbackSlug}". "notes" is one line that helps match later events (area, linked issues).
 
