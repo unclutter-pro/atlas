@@ -1,6 +1,6 @@
 # Integrations
 
-Atlas supports Signal and Email as communication channels. Each integration writes incoming messages to the inbox, then spawns a trigger session (persistent, keyed per contact/thread) that can reply directly or delegate complex tasks to subagents via `Agent(...)`.
+Atlas supports Signal, Email and GitHub as communication channels. Each integration writes incoming messages to the inbox, then spawns a trigger session (persistent, keyed per contact/thread/topic) that can reply directly or delegate complex tasks to subagents via `Agent(...)`.
 
 ## Architecture
 
@@ -354,6 +354,118 @@ This means all emails in a thread share the same session key → same persistent
 
 `email.whitelist` accepts full addresses (`alice@example.com`) or domains (`example.org`). Empty = accept all.
 
+## GitHub
+
+The GitHub channel turns webhook events into **one persistent session per topic**. A topic is a piece of work: an issue, the PR that fixes it and the discussion around both. A deterministic router (`github route`, code in `app/triggers/github/`) decides per event which topic session gets it, so related events reach the same context and unrelated noise starts nothing.
+
+```
+GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
+   or relay    ──▸ webhook-sse-listener      ({body, headers, query})
+                    │
+                    └─▸ trigger.sh github <envelope>
+                          │
+                          └─▸ ~/triggers/github/filter.sh → github route
+                                │
+                                ├─▸ skip: duplicate delivery, own action, noise,
+                                │         green CI, login not involved
+                                ├─▸ HOT:  ref in ledger → its topic (no model call)
+                                ├─▸ COLD: involved + unseen ref
+                                │     a. PR closes a tracked issue → that topic
+                                │     b. classifier (one tool-less harness turn, haiku)
+                                │     c. default <repo>-<issue|pr>-<n>-<title>
+                                │
+                                ├─▸ INSERT INTO atlas inbox (channel=github, session_key=slug)
+                                ├─▸ 👀 reaction on the triggering comment/review
+                                └─▸ trigger.sh github-worker <payload + _router> <slug>   (detached)
+                                      │
+                                      ├─▸ IPC socket alive? → inject into running session
+                                      └─▸ No socket? → resume/start the topic session
+                                                          │
+                                                   gh issue/pr comment, gh pr review,
+                                                   commits + gh pr create, github link
+                                exit 1 → the ingress trigger never starts a session itself
+```
+
+### Setup
+
+**1. Configure** `~/config.yml` (or `ATLAS_GITHUB_*` env vars):
+
+```yaml
+github:
+  login: "my-bot"            # the account Atlas acts as; setting it enables the channel
+  worker_trigger: "github-worker"
+  repos: ["acme/*"]          # optional allowlist: "owner/repo" or "owner/*"; empty = all
+  router_model: haiku        # classifier model, or a models.<key>
+  router_timeout_seconds: 60
+```
+
+The `gh` CLI must be authenticated as that login (e.g. `GH_TOKEN` in the container environment): the router uses it for best-effort lookups and the worker sessions use it to reply.
+
+**2. Restart the container.** `init.sh` creates two triggers when `github.login` is set:
+
+| Trigger | Type | Purpose |
+|---------|------|---------|
+| `github` | webhook, channel `github` | Ingress. Its `filter.sh` runs `github route` and always exits non-zero, so it never starts a session of its own. |
+| `github-worker` | manual, persistent, channel `github` | One session per topic slug. Prompt `{{payload}}`; the behaviour comes from `prompts/trigger-channel-github.md`. |
+
+Existing triggers with these names are kept, and so is a `~/triggers/github/filter.sh` without the managed marker.
+
+**3. Add the webhook** in the repository or organization settings (Settings > Webhooks), content type `application/json`:
+
+- **Direct route** (recommended): `https://<your-atlas-host>/api/webhook/github`. Set a webhook secret in GitHub and the same value on the trigger: `trigger update --name=github --secret=<secret>`. Atlas verifies `X-Hub-Signature-256` against the raw body.
+- **Relay**: the relay URL from `trigger list` (`<relay_url>/github-<id>`), with no secret in GitHub. The relay delivers parsed JSON, so it cannot verify a signature; the random channel URL is the credential.
+
+Both routes hand the router the same `{body, headers}` envelope.
+
+**4. Events to subscribe:** Issues, Issue comments, Pull requests, Pull request reviews, Pull request review comments, and Workflow runs for CI. Check suites and Check runs are understood as well; Check runs fire once per job.
+
+### Routing
+
+**Involvement.** An unseen issue or PR only becomes a topic when the login is involved: it is @mentioned in the title or the text of the event, a review is requested from it, it is an assignee or it is the author. Once a ref is in the ledger every further event on it is routed (hot path), except the login's own actions.
+
+**Topics.** The classifier sees only topics of the same repository (slug, title, notes, refs) and the event summary, and answers `{slug, title, is_new, notes}`. It reuses a topic only when the event is clearly the same work; a wrong merge pollutes a session, a split only costs context. It runs through the harness (`ClaudeCodeBackend`, single ephemeral turn, no tools), so it uses the same credentials as trigger sessions. Any error, timeout or invalid answer is logged with its reason and the default slug is used; there is no retry.
+
+**Intents.** The worker payload is the compacted webhook body plus `_router`: `{slug, ref, event_type, action, path, intent}`.
+
+| Intent | When |
+|--------|------|
+| `review` | A review was requested from the login |
+| `implement` | An open issue was assigned to the login and the login is among its assignees |
+| `engage` | Everything else: mentions, replies, reviews, failed CI |
+
+Other rules:
+
+- A PR assigned to the login is registered in the ledger but starts no session. The next real event on it does.
+- Unassigning the login drops the ref from the ledger.
+- Closing a tracked issue or PR notifies its session once (`path: "closing"`), then drops the ref, and the topic once it has no refs left.
+- CI (`check_run`, `check_suite`, `workflow_run`) with a failing conclusion reaches a session only when the PR is already tracked and the run's head sha is the PR's current head (`path: "hot-ci"`). Superseded commits, green runs and untracked PRs are skipped, and CI never creates a topic.
+- A PR the worker opens is its own action and therefore not routed. The worker binds it to its topic with `github link <owner/repo#n>`.
+
+Each dispatched event also lands in the Atlas inbox (channel `github`, session key = slug), so it shows up in Activity.
+
+### CLI
+
+```bash
+github topics [--json]              # ledger: topics and their refs
+github link acme/webapp#43 [slug]   # bind a ref (default slug: this session's, $ATLAS_TRIGGER_SESSION_KEY)
+github unlink acme/webapp#43        # remove a ref; drops an emptied topic
+github route < envelope.json        # route one event (what filter.sh runs)
+```
+
+### Ledger and logs
+
+`~/.index/github/router.db` (SQLite, WAL):
+
+| Table | Purpose |
+|-------|---------|
+| `topics` | slug, title, classifier notes |
+| `mappings` | `owner/repo#n` → slug |
+| `event_log` | every delivery with its routing path (idempotency by `X-GitHub-Delivery`) |
+
+Routing decisions are written to `/atlas/logs/github-router.log` (override with `ATLAS_GITHUB_ROUTER_LOG`). The trigger runner discards a filter's output, so this log is where skips and classifier errors show up.
+
+Not included yet: a cap on concurrently running worker sessions. A busy organization can start many topic sessions at once.
+
 ## Reply Flow
 
 Trigger sessions reply directly via CLI tools — no intermediate delivery layer:
@@ -362,6 +474,8 @@ Trigger sessions reply directly via CLI tools — no intermediate delivery layer
   - Sends via signal-cli, tracks in signal.db
 - **Email**: `email reply "<thread_id>" "<body>"`
   - Sends via SMTP with proper threading headers, tracks in email.db
+- **GitHub**: `gh issue comment`, `gh pr comment`, `gh pr review`
+  - Posted as the configured `github.login`
 - **Web/Internal**: handled within the trigger session, no CLI reply needed
 
 ## Quick Reference
@@ -378,6 +492,14 @@ Trigger sessions reply directly via CLI tools — no intermediate delivery layer
 ```bash
 # 1. Configure ~/config.yml (email section) + store password
 # 2. Create trigger: "Create a persistent email handler trigger" + start polling
+```
+
+### Enable GitHub in 3 Steps
+
+```bash
+# 1. Set github.login in ~/config.yml and authenticate gh as that account
+# 2. Restart the container (creates the github + github-worker triggers)
+# 3. Add a repo/org webhook to /api/webhook/github with the trigger's secret
 ```
 
 ### Direct Usage
