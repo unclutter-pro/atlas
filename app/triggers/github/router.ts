@@ -46,8 +46,8 @@ export interface RouterDeps {
   ledger: Ledger;
   github: GitHubApi;
   backend: ConversationBackend;
-  /** Fires the worker trigger for `slug` (detached). */
-  dispatch(payload: string, slug: string): void;
+  /** Fires the worker trigger for `slug` (detached); throws if it cannot start. */
+  dispatch(payload: string, slug: string): void | Promise<void>;
   /** Surfaces a dispatched event in the Atlas inbox. Optional. */
   inbox?(entry: InboxEntry): void;
   log(message: string): void;
@@ -107,7 +107,7 @@ function inboxContent(ev: GitHubEvent, router: RouterInfo): string {
 
 async function deliver(deps: RouterDeps, ev: GitHubEvent, router: RouterInfo, result: RouteResult): Promise<void> {
   const payload = buildPayload(ev, router);
-  deps.dispatch(payload, router.slug);
+  await deps.dispatch(payload, router.slug);
   result.dispatched.push({ slug: router.slug, payload });
   if (deps.inbox) {
     try {

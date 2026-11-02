@@ -74,7 +74,7 @@ function harness(options: { answer?: string | Error | "hang"; github?: Partial<G
       addReaction: async (id) => { h.reactions.push(id); },
       ...options.github,
     },
-    dispatch: (payload, slug) => h.dispatched.push({ payload: JSON.parse(payload), slug }),
+    dispatch: (payload, slug) => { h.dispatched.push({ payload: JSON.parse(payload), slug }); },
     inbox: (entry) => h.inbox.push(entry),
     log: (message) => h.logs.push(message),
   };
@@ -164,7 +164,7 @@ describe("skip rules", () => {
     const event = envelope("issue_comment", { action: "created", issue: issue(), comment: { body: "x" } }, "retry-id");
     h.deps.dispatch = () => { throw new Error("spawn failed"); };
     await expect(routeEvent(event, h.deps)).rejects.toThrow("spawn failed");
-    h.deps.dispatch = (payload, slug) => h.dispatched.push({ payload: JSON.parse(payload), slug });
+    h.deps.dispatch = (payload, slug) => { h.dispatched.push({ payload: JSON.parse(payload), slug }); };
     expect((await routeEvent(event, h.deps)).path).toBe("hot");
   });
 });

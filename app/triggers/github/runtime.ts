@@ -3,7 +3,7 @@
  * trigger.sh, the Atlas inbox and the router log.
  */
 import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { openDb } from "../../lib/db.ts";
 import { formatRef } from "./events.ts";
 import type { GitHubApi, InboxEntry } from "./router.ts";
@@ -66,9 +66,18 @@ export const ghApi: GitHubApi = {
   },
 };
 
-/** Starts the worker session for `slug` and returns without waiting for it. */
-export function dispatchWorker(workerTrigger: string, payload: string, slug: string): void {
-  const child = spawn("bash", [TRIGGER_SH, workerTrigger, payload, slug], { detached: true, stdio: "ignore" });
+/**
+ * Starts the worker session for `slug` without waiting for it to finish.
+ * Resolves once the process runs and rejects when it cannot be started, so
+ * the router releases the delivery instead of recording it as handled.
+ */
+export async function dispatchWorker(workerTrigger: string, payload: string, slug: string, triggerSh = TRIGGER_SH): Promise<void> {
+  if (!existsSync(triggerSh)) throw new Error(`${triggerSh} not found`);
+  const child = spawn("bash", [triggerSh, workerTrigger, payload, slug], { detached: true, stdio: "ignore" });
+  await new Promise<void>((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", (err) => reject(new Error(`cannot start ${triggerSh} ${workerTrigger}: ${err.message}`)));
+  });
   child.unref();
 }
 
