@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { Conversation, ConversationEvent, ConversationRequest } from "../../lib/harness.ts";
 import type { ConversationBackend } from "./classifier.ts";
-import { closingRefsInText, defaultSlug, extractEvent, mentions, parseEnvelope, parseRef, repoAllowed, type Envelope } from "./events.ts";
+import { closingRefsInText, defaultSlug, extractEvent, mentions, parseEnvelope, repoAllowed, type Envelope } from "./events.ts";
 import { Ledger } from "./ledger.ts";
 import { routeEvent, type GitHubApi, type InboxEntry, type RouterDeps } from "./router.ts";
 
@@ -114,8 +114,6 @@ describe("events", () => {
     const ev = extractEvent(envelope("issues", { action: "opened", issue: issue() }));
     expect(ev.ref).toBe("acme/webapp#42");
     expect(defaultSlug(ev)).toBe("webapp-issue-42-login-button-broken");
-    expect(parseRef("Acme/WebApp#7")?.ref).toBe("acme/webapp#7");
-    expect(parseRef("acme/webapp")).toBeNull();
   });
 });
 
@@ -386,14 +384,12 @@ describe("payload", () => {
 });
 
 describe("ledger", () => {
-  test("first binding wins; link moves a ref and drops the emptied topic", () => {
+  test("first binding wins; unlink drops the emptied topic", () => {
     const ledger = new Ledger(":memory:");
     expect(ledger.bind("acme/webapp#1", "a", "A")).toBe("a");
     expect(ledger.bind("acme/webapp#1", "b", "B")).toBe("a");
     expect(ledger.hasTopic("b")).toBe(false);
-    expect(ledger.link("acme/webapp#1", "c")).toEqual({ previous: "a" });
-    expect(ledger.hasTopic("a")).toBe(false);
-    expect(ledger.topics({ repo: "Acme/WebApp" }).map((t) => t.slug)).toEqual(["c"]);
-    expect(ledger.unlink("acme/webapp#1")).toEqual({ slug: "c", topicDropped: true });
+    expect(ledger.topics({ repo: "Acme/WebApp" }).map((t) => t.slug)).toEqual(["a"]);
+    expect(ledger.unlink("acme/webapp#1")).toEqual({ slug: "a", topicDropped: true });
   });
 });

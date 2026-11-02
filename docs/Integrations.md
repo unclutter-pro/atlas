@@ -356,7 +356,7 @@ This means all emails in a thread share the same session key → same persistent
 
 ## GitHub
 
-The GitHub channel turns webhook events into **one persistent session per topic**. A topic is a piece of work: an issue, the PR that fixes it and the discussion around both. A deterministic router (`github route`, code in `app/triggers/github/`) decides per event which topic session gets it, so related events reach the same context and unrelated noise starts nothing.
+The GitHub channel turns webhook events into **one persistent session per topic**. A topic is a piece of work: an issue, the PR that fixes it and the discussion around both. A deterministic router (`app/triggers/github/route.ts`) decides per event which topic session gets it, so related events reach the same context and unrelated noise starts nothing.
 
 ```
 GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
@@ -364,7 +364,7 @@ GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
                     │
                     └─▸ trigger.sh github <envelope>
                           │
-                          └─▸ ~/triggers/github/filter.sh → github route
+                          └─▸ ~/triggers/github/filter.sh → bun github/route.ts
                                 │
                                 ├─▸ skip: duplicate delivery, own action, noise,
                                 │         green CI, login not involved
@@ -382,7 +382,7 @@ GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
                                       └─▸ No socket? → resume/start the topic session
                                                           │
                                                    gh issue/pr comment, gh pr review,
-                                                   commits + gh pr create, github link
+                                                   commits + gh pr create
                                 exit 1 → the ingress trigger never starts a session itself
 ```
 
@@ -405,7 +405,7 @@ The `gh` CLI must be authenticated as that login (e.g. `GH_TOKEN` in the contain
 
 | Trigger | Type | Purpose |
 |---------|------|---------|
-| `github` | webhook, channel `github` | Ingress. Its `filter.sh` runs `github route` and always exits non-zero, so it never starts a session of its own. |
+| `github` | webhook, channel `github` | Ingress. Its `filter.sh` runs `bun /atlas/app/triggers/github/route.ts` and always exits non-zero, so it never starts a session of its own. |
 | `github-worker` | manual, persistent, channel `github` | One session per topic slug. Prompt `{{payload}}`; the behaviour comes from `prompts/trigger-channel-github.md`. |
 
 Existing triggers with these names are kept, and so is a `~/triggers/github/filter.sh` without the managed marker.
@@ -439,18 +439,8 @@ Other rules:
 - Unassigning the login drops the ref from the ledger.
 - Closing a tracked issue or PR notifies its session once (`path: "closing"`), then drops the ref, and the topic once it has no refs left.
 - CI (`check_run`, `check_suite`, `workflow_run`) with a failing conclusion reaches a session only when the PR is already tracked and the run's head sha is the PR's current head (`path: "hot-ci"`). Superseded commits, green runs and untracked PRs are skipped, and CI never creates a topic.
-- A PR the worker opens is its own action and therefore not routed. The worker binds it to its topic with `github link <owner/repo#n>`.
 
 Each dispatched event also lands in the Atlas inbox (channel `github`, session key = slug), so it shows up in Activity.
-
-### CLI
-
-```bash
-github topics [--json]              # ledger: topics and their refs
-github link acme/webapp#43 [slug]   # bind a ref (default slug: this session's, $ATLAS_TRIGGER_SESSION_KEY)
-github unlink acme/webapp#43        # remove a ref; drops an emptied topic
-github route < envelope.json        # route one event (what filter.sh runs)
-```
 
 ### Ledger and logs
 
@@ -461,6 +451,8 @@ github route < envelope.json        # route one event (what filter.sh runs)
 | `topics` | slug, title, classifier notes |
 | `mappings` | `owner/repo#n` → slug |
 | `event_log` | every delivery with its routing path (idempotency by `X-GitHub-Delivery`) |
+
+Inspect it with `sqlite3 ~/.index/github/router.db 'SELECT * FROM mappings'`.
 
 Routing decisions are written to `/atlas/logs/github-router.log` (override with `ATLAS_GITHUB_ROUTER_LOG`). The trigger runner discards a filter's output, so this log is where skips and classifier errors show up.
 

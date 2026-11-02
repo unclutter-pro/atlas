@@ -10,7 +10,6 @@ Core application code. Copied into the container image at build time. Not modifi
 app/
 ├── bin/                        # CLI wrappers
 │   ├── email                  # Email CLI wrapper
-│   ├── github                 # GitHub channel CLI (route, topics, link, unlink)
 │   ├── reminder               # Reminder CLI wrapper
 │   ├── signal                 # Signal CLI wrapper
 │   ├── trigger                # Trigger management CLI wrapper

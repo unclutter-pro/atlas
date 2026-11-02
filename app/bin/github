@@ -1,2 +1,0 @@
-#!/bin/bash
-exec bun /atlas/app/triggers/github/cli.ts "$@"

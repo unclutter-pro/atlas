@@ -62,14 +62,6 @@ export function formatRef(repo: string, number: number): string {
   return `${repo.toLowerCase()}#${number}`;
 }
 
-/** Parses "owner/repo#n" (any case); null if it is not a ref. */
-export function parseRef(input: string): { repo: string; number: number; ref: string } | null {
-  const match = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(input.trim());
-  if (!match) return null;
-  const number = Number(match[2]);
-  return { repo: match[1]!, number, ref: formatRef(match[1]!, number) };
-}
-
 /**
  * Accepts the listener envelope `{body, headers, query, ...}` (body may be a
  * JSON string) and returns null for anything else.

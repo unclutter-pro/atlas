@@ -457,7 +457,7 @@ if [ -n "$_gh_login" ] && [ -f "$DB" ]; then
   _gh_filter="$WORKSPACE/triggers/github/filter.sh"
   _gh_marker="# managed by Atlas init.sh (github channel)"
   if [ ! -f "$_gh_filter" ] || grep -qF "$_gh_marker" "$_gh_filter"; then
-    printf '#!/bin/bash\n%s — local edits are overwritten.\n# Routes the event on stdin to a per-topic worker session; always exits non-zero.\nexec /atlas/app/bin/github route\n' "$_gh_marker" > "$_gh_filter"
+    printf '#!/bin/bash\n%s — local edits are overwritten.\n# Routes the event on stdin to a per-topic worker session; always exits non-zero.\nexec bun /atlas/app/triggers/github/route.ts\n' "$_gh_marker" > "$_gh_filter"
     chmod +x "$_gh_filter"
   else
     echo "  ⚠ Kept custom $_gh_filter — remove it to use the built-in router"

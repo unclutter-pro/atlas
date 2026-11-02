@@ -123,17 +123,6 @@ export class Ledger {
     })();
   }
 
-  /** Binds `ref` to `slug`, moving it away from any previous topic. */
-  link(ref: string, slug: string, title: string | null = null): { previous: string | null } {
-    return this.db.transaction(() => {
-      const previous = this.lookup(ref);
-      this.db.prepare("INSERT INTO mappings(ref, slug) VALUES (?, ?) ON CONFLICT(ref) DO UPDATE SET slug = excluded.slug").run(ref, slug);
-      this.upsertTopic(slug, title, null);
-      if (previous && previous !== slug) this.dropTopicIfEmpty(previous);
-      return { previous };
-    })();
-  }
-
   /** Removes `ref`; drops its topic when no ref is left. */
   unlink(ref: string): { slug: string | null; topicDropped: boolean } {
     return this.db.transaction(() => {
