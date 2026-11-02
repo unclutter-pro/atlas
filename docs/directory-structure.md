@@ -77,7 +77,7 @@ home/
 │   ├── .trigger-<name>.flock  # Per-trigger flock file (concurrency control)
 │   └── signal/, email/        # Channel-specific databases
 ├── memory/                     # Long-term memory (agent-organized; see docs/memory.md)
-│   ├── MEMORY.md              # Index — map of what exists and where
+│   ├── MEMORY.md              # Top-tier rules every session needs
 │   ├── journal/               # Daily journal entries (fixed layout)
 │   │   └── YYYY-MM-DD.md
 │   ├── entities/              # Services, platforms, people, companies

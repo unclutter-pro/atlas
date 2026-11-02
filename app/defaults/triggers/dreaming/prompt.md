@@ -73,7 +73,8 @@ Apply the same treatment to the reasoning trail: invalidate the *claim*, never t
 
 Bring active memory into agreement with itself. Goals and tasks are session-bound and clean themselves up — leave them alone. Look instead for what a future session would trip over:
 
-- **MEMORY.md** — still a real index? Under 200 lines, current, pointing at what actually exists? Move detail down into topic files and keep the map thin.
+- **MEMORY.md**: still only what every session needs? Move project status, dated events and per-topic links down into topic files. Add nothing unless its absence caused a real mistake.
+- **IDENTITY.md and SOUL.md**: identity and environment, and fundamental behaviour. Move tool, process or project rules that crept in to a fitting memory file.
 - **Contradictions** — two files making incompatible claims. Resolve them with the supersession pattern above.
 - **Broken links** — `[[wikilinks]]` that point nowhere. Fix or remove them. Add cross-references that are missing between things that clearly relate.
 - **Redundancy** — the same fact stated authoritatively in several places. Pick one home, link from the rest.
