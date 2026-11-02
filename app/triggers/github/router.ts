@@ -213,14 +213,15 @@ async function routeItem(deps: RouterDeps, ev: GitHubEvent, result: RouteResult)
     return { ...result, path: "closing", slug };
   }
 
-  if (ev.sender === me) return { ...result, path: "skip:self" };
-
+  // Unassigned, also by itself: the login is no longer responsible.
   if ((ev.type === "issues" || ev.type === "pull_request") && ev.action === "unassigned") {
     if ((ev.body.assignee?.login ?? "").toLowerCase() !== me) return { ...result, path: "skip:unassigned-other" };
     const { slug, topicDropped } = deps.ledger.unlink(ref);
     deps.log(`unassigned: ${ref} dropped${slug ? ` from '${slug}'` : " (was not tracked)"}${topicDropped ? ", topic dropped" : ""}`);
     return { ...result, path: "unassigned", slug };
   }
+
+  if (ev.sender === me) return { ...result, path: "skip:self" };
 
   // PR assignment means "responsible", not "start working": register only.
   const prAssignedToMe = ev.type === "pull_request" && ev.action === "assigned" && (ev.body.assignee?.login ?? "").toLowerCase() === me;

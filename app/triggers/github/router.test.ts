@@ -289,6 +289,13 @@ describe("intents", () => {
     expect(h.ledger.lookup("acme/webapp#42")).toBeNull();
     expect(h.dispatched).toHaveLength(0);
   });
+
+  test("unassigning itself drops the ref too", async () => {
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    const result = await routeEvent(envelope("pull_request", { action: "unassigned", assignee: user(ME), pull_request: pr(), sender: user(ME) }), h.deps);
+    expect(result.path).toBe("unassigned");
+    expect(h.ledger.hasTopic("fix-login")).toBe(false);
+  });
 });
 
 describe("closing", () => {
@@ -348,10 +355,33 @@ describe("CI", () => {
     expect(h.dispatched).toHaveLength(0);
   });
 
+  test("check_run takes its PRs from the check suite", async () => {
+    h = harness({ github: { prHeadSha: async () => "abc1234" } });
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    const result = await routeEvent(envelope("check_run", {
+      action: "completed",
+      check_run: { name: "lint", status: "completed", conclusion: "failure", head_sha: "abc1234", pull_requests: [], check_suite: { pull_requests: [{ number: 43, head: { sha: "abc1234" } }] } },
+    }), h.deps);
+    expect(result).toMatchObject({ path: "hot-ci", slug: "fix-login" });
+    expect(h.dispatched[0]!.payload._router.ci.name).toBe("lint");
+  });
+
   test("the payload's PR head is used when the live lookup fails", async () => {
     h = harness({ github: { prHeadSha: async () => { throw new Error("gh offline"); } } });
     h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
     expect((await routeEvent(run("timed_out"), h.deps)).path).toBe("hot-ci");
+  });
+});
+
+describe("payload", () => {
+  test("an oversized body is replaced by a summary that keeps _router", async () => {
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    await routeEvent(envelope("issue_comment", { action: "created", issue: issue({ body: "x".repeat(150_000) }), comment: { body: "see above" } }), h.deps);
+    const payload = h.dispatched[0]!.payload;
+    expect(JSON.stringify(payload).length).toBeLessThan(100_000);
+    expect(payload._router).toMatchObject({ slug: "login-bug", path: "hot" });
+    expect(payload.body).toBeUndefined();
+    expect(payload.summary).toMatchObject({ repo: REPO, number: 42, text: "see above" });
   });
 });
 

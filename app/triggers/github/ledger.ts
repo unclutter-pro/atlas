@@ -150,19 +150,18 @@ export class Ledger {
 
   /** Topics, most recently active first; `repo` keeps those with a ref in it. */
   topics(options: { repo?: string; limit?: number } = {}): Topic[] {
-    const rows = this.db
-      .prepare("SELECT slug, title, notes, updated_at FROM topics ORDER BY updated_at DESC, slug")
-      .all() as Omit<Topic, "refs">[];
-    const refsOf = this.db.prepare("SELECT ref FROM mappings WHERE slug = ? ORDER BY ref");
-    const prefix = options.repo ? `${options.repo.toLowerCase()}#` : null;
-    const result: Topic[] = [];
-    for (const row of rows) {
-      const refs = (refsOf.all(row.slug) as { ref: string }[]).map((r) => r.ref);
-      if (prefix && !refs.some((ref) => ref.startsWith(prefix))) continue;
-      result.push({ ...row, refs });
-      if (options.limit && result.length >= options.limit) break;
+    const filter = options.repo ? "WHERE slug IN (SELECT slug FROM mappings WHERE substr(ref, 1, ?) = ?)" : "";
+    const params: (string | number)[] = [];
+    if (options.repo) {
+      const prefix = `${options.repo.toLowerCase()}#`;
+      params.push(prefix.length, prefix);
     }
-    return result;
+    if (options.limit) params.push(options.limit);
+    const rows = this.db
+      .prepare(`SELECT slug, title, notes, updated_at FROM topics ${filter} ORDER BY updated_at DESC, slug ${options.limit ? "LIMIT ?" : ""}`)
+      .all(...params) as Omit<Topic, "refs">[];
+    const refsOf = this.db.prepare("SELECT ref FROM mappings WHERE slug = ? ORDER BY ref");
+    return rows.map((row) => ({ ...row, refs: (refsOf.all(row.slug) as { ref: string }[]).map((r) => r.ref) }));
   }
 
   private upsertTopic(slug: string, title: string | null, notes: string | null): void {
