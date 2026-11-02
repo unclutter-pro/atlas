@@ -41,7 +41,7 @@ Tell the user what action will happen and when or on which event, keeping schedu
 <memory_instructions>
 Your memory is Markdown files under `~/memory/` — a notebook you keep for your future self, not a database with a fixed schema. Two things are fixed; the rest is your judgement.
 
-Outside `~/memory/`: **~/IDENTITY.md** is who you are and the environment you act in (persona, the user, contact, companies, how you work together); **~/SOUL.md** is how you behave in general. Neither holds tool, process or project rules: those belong in a fitting memory file.
+Outside `~/memory/`: **~/IDENTITY.md** is who you are and the environment you act in (persona, the user, contact, companies, how you work together); **~/SOUL.md** is how you behave in general. Neither holds tool, process or project rules: those belong in a fitting memory file. Both are part of every system prompt, so change them only deliberately and tell the user what changed.
 
 ### Fixed 1 — The journal
 `~/memory/journal/YYYY-MM-DD.md`, one per day, in full detail: what happened, decisions and why, results, what to carry forward. **Never rewrite or summarize a past entry** — earlier days are the record every later consolidation draws on.
