@@ -434,6 +434,46 @@ else
   echo "  Email not configured — skipping email-poller setup"
 fi
 
+# ── Phase 9c: GitHub channel (if github.login is configured) ──
+# Ingress trigger `github` (webhook) whose filter.sh runs the event router, and
+# the persistent worker trigger the router fires with one session per topic.
+# Existing triggers and a filter.sh without the managed marker are left alone.
+echo "[$(date)] Phase 9c: GitHub channel setup"
+_gh_cfg=$(bun -e "import { resolveConfig } from '/atlas/app/lib/config'; const g = resolveConfig().github; console.log((g.login || '').trim() + ' ' + (g.worker_trigger || 'github-worker'))" 2>/dev/null || true)
+_gh_login="${_gh_cfg%% *}"
+_gh_worker="${_gh_cfg#* }"
+if [ -n "$_gh_login" ] && [ -f "$DB" ]; then
+  if ! [[ "$_gh_worker" =~ ^[a-z0-9_-]+$ ]]; then
+    echo "  ⚠ github.worker_trigger '$_gh_worker' is not a valid trigger name — using github-worker"
+    _gh_worker="github-worker"
+  fi
+  echo "  GitHub configured (login=$_gh_login) — provisioning triggers 'github' and '$_gh_worker'"
+  mkdir -p "$WORKSPACE/triggers/github" "$WORKSPACE/triggers/$_gh_worker"
+  _gh_relay_channel="github-$(python3 -c 'import secrets; print(secrets.token_hex(6))')"
+  sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, webhook_channel, prompt, session_mode) VALUES ('github', 'webhook', 'GitHub webhook ingress (routes events to $_gh_worker)', 'github', '$_gh_relay_channel', '', 'ephemeral');" 2>/dev/null || echo "  ⚠ github trigger insert failed (non-fatal)"
+  # Manual, not webhook: the worker must not be reachable at /api/webhook/<name>.
+  sqlite3 "$DB" "INSERT OR IGNORE INTO triggers (name, type, description, channel, prompt, session_mode) VALUES ('$_gh_worker', 'manual', 'GitHub topic sessions (one per topic, fired by the github trigger)', 'github', '{{payload}}', 'persistent');" 2>/dev/null || echo "  ⚠ $_gh_worker trigger insert failed (non-fatal)"
+
+  _gh_filter="$WORKSPACE/triggers/github/filter.sh"
+  _gh_marker="# managed by Atlas init.sh (github channel)"
+  if [ ! -f "$_gh_filter" ] || grep -qF "$_gh_marker" "$_gh_filter"; then
+    printf '#!/bin/bash\n%s — local edits are overwritten.\n# Routes the event on stdin to a per-topic worker session; always exits non-zero.\nexec /atlas/app/bin/github route\n' "$_gh_marker" > "$_gh_filter"
+    chmod +x "$_gh_filter"
+  else
+    echo "  ⚠ Kept custom $_gh_filter — remove it to use the built-in router"
+  fi
+
+  _gh_row=$(sqlite3 "$DB" "SELECT channel || '|' || COALESCE(webhook_secret, '') FROM triggers WHERE name = 'github';" 2>/dev/null || true)
+  if [ "${_gh_row%%|*}" != "github" ]; then
+    echo "  ⚠ trigger 'github' has channel '${_gh_row%%|*}', not 'github' — the direct webhook route will not forward GitHub headers"
+  fi
+  if [ -z "${_gh_row#*|}" ]; then
+    echo "  Note: trigger 'github' has no webhook secret. Fine for the relay; the direct route /api/webhook/github needs GitHub's secret: trigger update --name=github --secret=<secret>"
+  fi
+else
+  echo "  GitHub not configured (github.login empty) — skipping"
+fi
+
 # ── Phase 10: Start Services ──
 echo "[$(date)] Phase 10: Starting services"
 supervisorctl start web-ui || true
