@@ -45,3 +45,26 @@ test("missing, disabled and unauthenticated triggers never fire", async () => {
   expect(active.fired).toHaveLength(0);
   expect(disabled.fired).toHaveLength(0);
 });
+
+test("github channel triggers get the {body, headers} envelope; others keep the bare body", async () => {
+  const fired: { name: string; payload: string }[] = [];
+  const app = new Hono();
+  app.post("/api/webhook/:name", createWebhookHandler({
+    getTrigger: (name) => ({ name, enabled: 1, webhook_secret: "secret", channel: name === "github" ? "github" : "internal" }),
+    fireTrigger: (name, payload) => { fired.push({ name, payload }); },
+  }));
+  const body = JSON.stringify({ action: "opened", issue: { number: 42 } });
+  const headers = {
+    "content-type": "application/json",
+    "x-hub-signature-256": `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`,
+    "x-github-event": "issues",
+    "x-github-delivery": "d-1",
+  };
+  for (const name of ["github", "deploy-hook"]) {
+    expect((await app.request(`/api/webhook/${name}`, { method: "POST", headers, body })).status).toBe(200);
+  }
+  const envelope = JSON.parse(fired[0]!.payload);
+  expect(envelope.body).toEqual({ action: "opened", issue: { number: 42 } });
+  expect(envelope.headers).toEqual({ "x-github-event": "issues", "x-github-delivery": "d-1" });
+  expect(JSON.parse(fired[1]!.payload)).toEqual({ action: "opened", issue: { number: 42 } });
+});
