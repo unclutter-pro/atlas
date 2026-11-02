@@ -122,7 +122,24 @@ describe("events", () => {
   test("default slug and ref spelling", () => {
     const ev = extractEvent(envelope("issues", { action: "opened", issue: issue() }));
     expect(ev.ref).toBe("acme/webapp#42");
-    expect(defaultSlug(ev)).toBe("webapp-issue-42-login-button-broken");
+    expect(defaultSlug(ev)).toBe("acme-webapp-issue-42-login-button-broken");
+  });
+
+  test("default slug keeps the full ref identity through truncation", () => {
+    const title = "Login button broken on the settings page after the last release of the app";
+    const one = defaultSlug({ repo: "org-one/webapp", kind: "issue", number: 1, title });
+    const two = defaultSlug({ repo: "org-two/webapp", kind: "issue", number: 1, title });
+    expect(one.startsWith("org-one-webapp-issue-1-")).toBe(true);
+    expect(two.startsWith("org-two-webapp-issue-1-")).toBe(true);
+    expect(one.length).toBeLessThanOrEqual(60);
+    // Lossy names ("my.app" vs "my-app") and very long ones get a hash of the ref.
+    const dotted = defaultSlug({ repo: "acme/my.app", kind: "pr", number: 7, title });
+    const dashed = defaultSlug({ repo: "acme/my-app", kind: "pr", number: 7, title });
+    expect(dotted).not.toBe(dashed);
+    const long = (owner: string) => defaultSlug({ repo: `${owner}/a-very-long-repository-name-for-testing-limits`, kind: "pr", number: 123456, title });
+    expect(long("org-one")).not.toBe(long("org-two"));
+    expect(long("org-one").length).toBeLessThanOrEqual(60);
+    expect(defaultSlug({ repo: "acme/webapp", kind: "pr", number: 3, title: "" })).toBe("acme-webapp-pr-3");
   });
 });
 
@@ -253,7 +270,7 @@ describe("hot and cold path", () => {
     test(`${name} falls back to the default slug and logs why`, async () => {
       h = harness({ answer });
       const result = await routeEvent(envelope("issues", { action: "opened", issue: issue({ body: "@my-bot" }) }), h.deps);
-      expect(result).toMatchObject({ path: "cold", slug: "webapp-issue-42-login-button-broken" });
+      expect(result).toMatchObject({ path: "cold", slug: "acme-webapp-issue-42-login-button-broken" });
       expect(h.logs.some((l) => l.startsWith("ERROR cold:") && l.includes(reason))).toBe(true);
       expect(h.requests).toHaveLength(1);
     });
@@ -263,7 +280,7 @@ describe("hot and cold path", () => {
     h = harness({ answer: '{"slug":"other-topic","title":"x","is_new":true}' });
     h.ledger.bind("other/repo#1", "other-topic", "Other");
     const result = await routeEvent(envelope("issues", { action: "opened", issue: issue({ body: "@my-bot" }) }), h.deps);
-    expect(result.slug).toBe("webapp-issue-42-login-button-broken");
+    expect(result.slug).toBe("acme-webapp-issue-42-login-button-broken");
   });
 
   test("a PR that closes a tracked issue joins its topic without a model call", async () => {
@@ -351,7 +368,7 @@ describe("intents", () => {
 
   test("a PR assigned to the login is registered without a session", async () => {
     const result = await routeEvent(envelope("pull_request", { action: "assigned", assignee: user(ME), pull_request: pr({ assignees: [user(ME)] }) }), h.deps);
-    expect(result).toMatchObject({ path: "register", slug: "webapp-pr-43-fix-login-button" });
+    expect(result).toMatchObject({ path: "register", slug: "acme-webapp-pr-43-fix-login-button" });
     expect(h.dispatched).toHaveLength(0);
     expect(h.requests).toHaveLength(0);
     const again = await routeEvent(envelope("pull_request", { action: "assigned", assignee: user(ME), pull_request: pr({ assignees: [user(ME)] }) }), h.deps);

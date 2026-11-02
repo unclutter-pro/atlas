@@ -188,10 +188,24 @@ export function slugify(text: string, max = 60): string {
   return slug.slice(0, max).replace(/-+$/g, "") || "topic";
 }
 
-/** `<repo>-<issue|pr>-<n>-<title-slug>`, the slug when nothing better is known. */
+const SLUG_MAX = 60;
+const PREFIX_MAX = 48;
+
+/**
+ * `<owner>-<repo>-<issue|pr>-<n>-<title-slug>`, the slug when nothing better is
+ * known. The prefix identifies the ref and is never truncated; where slugifying
+ * it is lossy (`my.app` vs `my-app`) or too long, a hash of the ref keeps it
+ * unique. Only the title part is cut to fit.
+ */
 export function defaultSlug(ev: Pick<GitHubEvent, "repo" | "kind" | "number" | "title">): string {
-  const repo = ev.repo.split("/").pop() ?? "repo";
-  return slugify(`${repo}-${ev.kind}-${ev.number}-${ev.title}`);
+  const id = `${ev.repo.toLowerCase()}-${ev.kind}-${ev.number}`;
+  let prefix = slugify(id, Infinity);
+  if (prefix !== id.replace("/", "-") || prefix.length > PREFIX_MAX) {
+    const hash = new Bun.CryptoHasher("sha256").update(`${ev.repo.toLowerCase()}#${ev.number}`).digest("hex").slice(0, 8);
+    prefix = `${prefix.slice(0, PREFIX_MAX - 9).replace(/-+$/, "")}-${hash}`;
+  }
+  const title = slugify(ev.title, Infinity).slice(0, SLUG_MAX - prefix.length - 1).replace(/-+$/, "");
+  return title && title !== "topic" ? `${prefix}-${title}` : prefix;
 }
 
 export interface CiRun {
