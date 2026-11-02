@@ -3,6 +3,7 @@
  * possible, which topic session (if any) gets the event:
  *
  *   skip  duplicate, noise, own action, green CI, not involved
+ *   link  own PR opened/edited/reopened, untracked, references a tracked ref → bound, no dispatch
  *   hot   ref already in the ledger → its topic
  *   cold  involved + unseen ref → keyword-reference join, else classifier, else default slug
  *
@@ -54,7 +55,7 @@ export interface RouterDeps {
 }
 
 export type RoutePath =
-  | "hot" | "cold" | "hot-ci" | "closing" | "register" | "unassigned" | "closed-untracked"
+  | "hot" | "cold" | "hot-ci" | "closing" | "register" | "autolink" | "unassigned" | "closed-untracked"
   | `skip:${string}`;
 
 export interface RouterInfo {
@@ -75,6 +76,9 @@ export interface RouteResult {
   /** Worker payloads handed to dispatch(), in order. */
   dispatched: { slug: string; payload: string }[];
 }
+
+/** Own PR actions that may bind an untracked PR to the topic it references. */
+const AUTOLINK_ACTIONS = new Set(["opened", "edited", "reopened"]);
 
 /** Argument size limit is 128 KiB per argv string on Linux; stay well below. */
 const MAX_PAYLOAD_CHARS = 100_000;
@@ -235,7 +239,18 @@ async function routeItem(deps: RouterDeps, ev: GitHubEvent, result: RouteResult)
     return { ...result, path: "unassigned", slug };
   }
 
-  if (ev.sender === me) return { ...result, path: "skip:self" };
+  if (ev.sender === me) {
+    // A PR the worker opened: bind it to the topic it references, silently.
+    if (ev.type === "pull_request" && AUTOLINK_ACTIONS.has(ev.action) && !deps.ledger.lookup(ref)) {
+      const joined = await referenceJoin(deps, ev);
+      if (joined) {
+        const slug = deps.ledger.bind(ref, joined.slug, ev.title);
+        deps.log(`autolink: own PR ${ref} → '${slug}' (via=${joined.via}), no session woken`);
+        return { ...result, path: "autolink", slug };
+      }
+    }
+    return { ...result, path: "skip:self" };
+  }
 
   // PR assignment means "responsible", not "start working": register only.
   const prAssignedToMe = ev.type === "pull_request" && ev.action === "assigned" && (ev.body.assignee?.login ?? "").toLowerCase() === me;

@@ -368,6 +368,7 @@ GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
                                 │
                                 ├─▸ skip: duplicate delivery, own action, noise,
                                 │         green CI, login not involved
+                                ├─▸ LINK: own PR, untracked, references a tracked ref → bind, no wake
                                 ├─▸ HOT:  ref in ledger → its topic (no model call)
                                 ├─▸ COLD: involved + unseen ref
                                 │     a. names a tracked ref (Closes/Refs/Part of #n) → that topic
@@ -438,6 +439,7 @@ Both routes hand the router the same `{body, headers}` envelope.
 Other rules:
 
 - A PR assigned to the login is registered in the ledger but starts no session. The next real event on it does.
+- A PR the login opens, edits or reopens is its own action and wakes nothing. If the PR is untracked and references a tracked ref (see reference joins), it is bound to that topic silently, so later events on it reach the session that opened it. The worker prompt asks for `Closes #N` in the PR description for that reason.
 - Unassigning the login drops the ref from the ledger.
 - Closing a tracked issue or PR notifies its session once (`path: "closing"`), then drops the ref, and the topic once it has no refs left.
 - CI (`check_run`, `check_suite`, `workflow_run`) with a failing conclusion reaches a session only when the PR is already tracked and the run's head sha is the PR's current head (`path: "hot-ci"`). Superseded commits, green runs and untracked PRs are skipped, and CI never creates a topic.

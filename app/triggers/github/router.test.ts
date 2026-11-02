@@ -146,6 +146,40 @@ describe("skip rules", () => {
     expect(h.dispatched).toHaveLength(0);
   });
 
+  for (const action of ["opened", "edited", "reopened"]) {
+    test(`an own PR ${action} that references a tracked issue is bound silently`, async () => {
+      h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+      const result = await routeEvent(envelope("pull_request", { action, pull_request: pr({ body: "Closes #42", user: user(ME) }), sender: user(ME) }), h.deps);
+      expect(result).toMatchObject({ path: "autolink", slug: "login-bug" });
+      expect(h.ledger.lookup("acme/webapp#43")).toBe("login-bug");
+      expect(h.dispatched).toHaveLength(0);
+      expect(h.inbox).toHaveLength(0);
+      expect(h.requests).toHaveLength(0);
+    });
+  }
+
+  test("an own PR without a tracked reference stays untracked", async () => {
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    const result = await routeEvent(envelope("pull_request", { action: "opened", pull_request: pr({ body: "Touches #42", user: user(ME) }), sender: user(ME) }), h.deps);
+    expect(result.path).toBe("skip:self");
+    expect(h.ledger.lookup("acme/webapp#43")).toBeNull();
+  });
+
+  test("an own edit adding a closing keyword does not re-bind a tracked PR", async () => {
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    const result = await routeEvent(envelope("pull_request", { action: "edited", pull_request: pr({ body: "Closes #42", user: user(ME) }), sender: user(ME) }), h.deps);
+    expect(result.path).toBe("skip:self");
+    expect(h.ledger.lookup("acme/webapp#43")).toBe("fix-login");
+  });
+
+  test("own actions other than opening a PR never auto-link", async () => {
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    const result = await routeEvent(envelope("pull_request", { action: "synchronize", pull_request: pr({ body: "Closes #42", user: user(ME) }), sender: user(ME) }), h.deps);
+    expect(result.path).toBe("skip:self");
+    expect(h.ledger.lookup("acme/webapp#43")).toBeNull();
+  });
+
   test("repositories outside the allowlist are skipped", async () => {
     h = harness({ repos: ["other/*"] });
     const result = await routeEvent(envelope("issues", { action: "opened", issue: issue({ body: "@my-bot help" }) }), h.deps);

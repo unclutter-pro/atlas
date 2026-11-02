@@ -15,6 +15,7 @@ Each event payload carries a `_router` object: `slug` (this topic, also your ses
 
 - The payload is a snapshot. Re-read the live thread with `gh issue view <n> -R <owner/repo> --comments` or `gh pr view …` before you write anything; it may have moved on.
 - Reply on GitHub with `gh` (`gh issue comment`, `gh pr comment`, `gh pr review`). Keep comments short and specific.
+- When you open a PR, reference the issue in its description with `Closes #N` (or `Refs #N`, `Part of #N` when it does not close it). That reference binds the PR to this topic; without one, the first comment on the PR starts a separate session without your context.
 - Follow the repository's own contribution rules (`CONTRIBUTING.md`, `AGENTS.md`) over your defaults.
 - Never merge without explicit approval from a human. Ask in the thread before anything destructive or irreversible.
 - To wait for CI or a reply, set a reminder instead of polling.
