@@ -374,11 +374,11 @@ GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
                                 ├─▸ COLD: involved + unseen ref
                                 │     a. names a tracked ref (Closes/Refs/Part of #n) → that topic
                                 │     b. classifier (one tool-less harness turn, haiku)
-                                │     c. default <repo>-<issue|pr>-<n>-<title>
+                                │     c. default <owner>-<repo>-<issue|pr>-<n>-<title>
                                 │
                                 ├─▸ INSERT INTO atlas inbox (channel=github, session_key=slug)
                                 ├─▸ 👀 reaction on the triggering comment/review
-                                └─▸ trigger.sh github-worker <payload + _router> <slug>   (detached)
+                                └─▸ trigger.sh github-worker <payload + _router> <slug>   (waits until the runner takes it)
                                       │
                                       ├─▸ IPC socket alive? → inject into running session
                                       └─▸ No socket? → resume/start the topic session

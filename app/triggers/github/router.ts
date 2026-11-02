@@ -50,7 +50,7 @@ export interface RouterDeps {
   ledger: Ledger;
   github: GitHubApi;
   backend: ConversationBackend;
-  /** Fires the worker trigger for `slug` (detached); throws if it cannot start. */
+  /** Fires the worker trigger for `slug`; resolves once the runner has taken the event, throws otherwise. */
   dispatch(payload: string, slug: string): void | Promise<void>;
   /** Surfaces a dispatched event in the Atlas inbox. Optional. */
   inbox?(entry: InboxEntry): void;
