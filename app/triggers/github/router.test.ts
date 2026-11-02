@@ -70,6 +70,7 @@ function harness(options: { answer?: string | Error | "hang"; github?: Partial<G
     backend,
     github: {
       closingIssues: async () => [],
+      reviewComments: async () => [],
       prHeadSha: async () => null,
       addReaction: async (id) => { h.reactions.push(id); },
       ...options.github,
@@ -446,6 +447,66 @@ describe("CI", () => {
     h = harness({ github: { prHeadSha: async () => { throw new Error("gh offline"); } } });
     h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
     expect((await routeEvent(run("timed_out"), h.deps)).path).toBe("hot-ci");
+  });
+});
+
+describe("reviews", () => {
+  const review = (extra: Record<string, unknown> = {}) => ({ id: 900, node_id: "R1", state: "commented", body: "", ...extra });
+  const submitted = (extra: Record<string, unknown> = {}) => envelope("pull_request_review", { action: "submitted", pull_request: pr(), review: review(extra) });
+  const inline = (extra: Record<string, unknown> = {}) => envelope("pull_request_review_comment", {
+    action: "created", pull_request: pr(), comment: { id: 1, node_id: "RC1", body: "nit", pull_request_review_id: 900, ...extra },
+  });
+
+  test("a review with inline comments wakes the session once", async () => {
+    h = harness({ github: { reviewComments: async () => [{ body: "nit", inReplyTo: false }, { body: "typo", inReplyTo: false }] } });
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    expect((await routeEvent(inline(), h.deps)).path).toBe("skip:review-comment");
+    expect((await routeEvent(inline({ id: 2 }), h.deps)).path).toBe("skip:review-comment");
+    expect((await routeEvent(submitted({ state: "changes_requested", body: "See inline" }), h.deps)).path).toBe("hot");
+    expect((await routeEvent(submitted(), h.deps)).path).toBe("hot"); // a single standalone inline comment
+    expect(h.dispatched.map((d) => d.payload.event)).toEqual(["pull_request_review", "pull_request_review"]);
+    expect(h.reactions).toEqual(["R1", "R1"]);
+  });
+
+  test("a thread reply is kept and its body-less review wrapper is skipped", async () => {
+    h = harness({ github: { reviewComments: async () => [{ body: "done", inReplyTo: true }] } });
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    expect((await routeEvent(inline({ in_reply_to_id: 1, body: "done" }), h.deps)).path).toBe("hot");
+    expect((await routeEvent(submitted(), h.deps)).path).toBe("skip:review-replies");
+    expect(h.dispatched).toHaveLength(1);
+    expect(h.dispatched[0]!.payload.event).toBe("pull_request_review_comment");
+  });
+
+  test("a body-less review is delivered when its comments cannot be read", async () => {
+    h = harness({ github: { reviewComments: async () => { throw new Error("gh: 502"); } } });
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    expect((await routeEvent(submitted(), h.deps)).path).toBe("hot");
+    expect(h.logs.some((l) => l.includes("gh: 502"))).toBe(true);
+  });
+
+  test("a mention in an inline comment of an unseen PR still reaches the login", async () => {
+    h = harness({ answer: '{"slug":"fix-login","title":"Fix","is_new":true}', github: { reviewComments: async () => [{ body: "@my-bot is this right?", inReplyTo: false }] } });
+    expect((await routeEvent(inline({ body: "@my-bot is this right?" }), h.deps)).path).toBe("skip:review-comment");
+    expect((await routeEvent(submitted(), h.deps))).toMatchObject({ path: "cold", slug: "fix-login" });
+    expect(h.dispatched).toHaveLength(1);
+  });
+
+  test("a reply mentioning the login on an unseen PR starts a topic", async () => {
+    h = harness({ answer: '{"slug":"fix-login","title":"Fix","is_new":true}', github: { reviewComments: async () => [{ body: "@my-bot ok?", inReplyTo: true }] } });
+    expect((await routeEvent(inline({ in_reply_to_id: 1, body: "@my-bot ok?" }), h.deps)).path).toBe("cold");
+    expect((await routeEvent(submitted(), h.deps)).path).toBe("skip:review-replies");
+    expect(h.dispatched).toHaveLength(1);
+  });
+
+  test("comment and review edits are skipped; issue and PR edits are routed", async () => {
+    h.ledger.bind("acme/webapp#42", "login-bug", "Login");
+    h.ledger.bind("acme/webapp#43", "fix-login", "Fix");
+    expect((await routeEvent(envelope("issue_comment", { action: "edited", issue: issue(), comment: { body: "x" } }), h.deps)).path).toBe("skip:edited");
+    expect((await routeEvent(inline({ in_reply_to_id: 1 }), h.deps)).path).toBe("hot");
+    expect((await routeEvent(envelope("pull_request_review_comment", { action: "edited", pull_request: pr(), comment: { body: "x", in_reply_to_id: 1 } }), h.deps)).path).toBe("skip:edited");
+    expect((await routeEvent(envelope("pull_request_review", { action: "edited", pull_request: pr(), review: review({ body: "x" }) }), h.deps)).path).toBe("skip:edited");
+    expect((await routeEvent(envelope("issues", { action: "edited", issue: issue() }), h.deps)).path).toBe("hot");
+    expect((await routeEvent(envelope("pull_request", { action: "edited", pull_request: pr() }), h.deps)).path).toBe("hot");
   });
 });
 

@@ -2,7 +2,8 @@
  * GitHub event router. Per delivery it decides, without a model call where
  * possible, which topic session (if any) gets the event:
  *
- *   skip  duplicate, noise, own action, green CI, not involved
+ *   skip  duplicate, noise, own action, green CI, not involved, comment/review
+ *         edits, inline comments of a review (the review event covers them)
  *   link  own PR opened/edited/reopened, untracked, references a tracked ref → bound, no dispatch
  *   hot   ref already in the ledger → its topic
  *   cold  involved + unseen ref → keyword-reference join, else classifier, else default slug
@@ -11,7 +12,7 @@
  */
 import {
   ACTIONABLE_EVENTS, CI_EVENTS, CI_FAILURE_CONCLUSIONS, NOISE_ACTIONS,
-  closingRefsInText, defaultSlug, extractCi, extractEvent, intentFor, involvement, itemText, looseRefsInText,
+  closingRefsInText, defaultSlug, extractCi, extractEvent, intentFor, involvement, itemText, looseRefsInText, mentions,
   reactionTarget, repoAllowed,
   type Envelope, type GitHubEvent, type Intent,
 } from "./events.ts";
@@ -32,6 +33,8 @@ export interface GitHubApi {
   closingIssues(repo: string, number: number): Promise<string[]>;
   /** Current head sha of a PR. */
   prHeadSha(repo: string, number: number): Promise<string | null>;
+  /** Inline comments of a submitted review (first 100). */
+  reviewComments(repo: string, number: number, reviewId: number): Promise<{ body: string; inReplyTo: boolean }[]>;
   /** Adds an 👀 reaction to a comment or review node. */
   addReaction(nodeId: string): Promise<void>;
 }
@@ -76,6 +79,9 @@ export interface RouteResult {
   /** Worker payloads handed to dispatch(), in order. */
   dispatched: { slug: string; payload: string }[];
 }
+
+/** Comment and review edits are not new asks; issue and PR edits still route. */
+const EDIT_SKIPPED_EVENTS = new Set(["issue_comment", "pull_request_review_comment", "pull_request_review"]);
 
 /** Own PR actions that may bind an untracked PR to the topic it references. */
 const AUTOLINK_ACTIONS = new Set(["opened", "edited", "reopened"]);
@@ -212,12 +218,38 @@ async function routeCi(deps: RouterDeps, ev: GitHubEvent, result: RouteResult): 
     : { ...result, path: "skip:ci-untracked-or-superseded" };
 }
 
+/** A "Comment" review without a summary: a single inline comment or a reply wrapper. */
+function isBareCommentReview(ev: GitHubEvent): boolean {
+  return (ev.body.review?.state ?? "").toLowerCase() === "commented" && !(ev.body.review?.body ?? "").trim();
+}
+
+/** Lazily fetches a review's inline comments once; null when unavailable. */
+function reviewCommentsOnce(deps: RouterDeps, ev: GitHubEvent) {
+  let cached: Promise<{ body: string; inReplyTo: boolean }[] | null> | null = null;
+  return () => {
+    const reviewId = ev.body.review?.id;
+    if (ev.type !== "pull_request_review" || typeof reviewId !== "number" || ev.number === null) return Promise.resolve(null);
+    cached ??= deps.github.reviewComments(ev.repo, ev.number, reviewId).catch((err) => {
+      deps.log(`review comments lookup failed for ${ev.ref} review ${reviewId}: ${(err as Error).message}`);
+      return null;
+    });
+    return cached;
+  };
+}
+
 async function routeItem(deps: RouterDeps, ev: GitHubEvent, result: RouteResult): Promise<RouteResult> {
   const me = deps.config.login;
   const ref = ev.ref!;
   result.ref = ref;
 
   if (NOISE_ACTIONS.has(ev.action)) return { ...result, path: `skip:noise-${ev.action}` };
+  if (ev.action === "edited" && EDIT_SKIPPED_EVENTS.has(ev.type)) return { ...result, path: "skip:edited" };
+  // One wake per review: the pull_request_review event covers its inline
+  // comments. Thread replies keep their own review-comment event; GitHub also
+  // wraps each reply in a body-less review, which is skipped further down.
+  if (ev.type === "pull_request_review_comment" && ev.action === "created" && !ev.body.comment?.in_reply_to_id) {
+    return { ...result, path: "skip:review-comment" };
+  }
 
   // Closed: the session hears it once, then the ref leaves the ledger.
   if ((ev.type === "issues" || ev.type === "pull_request") && ev.action === "closed") {
@@ -252,6 +284,13 @@ async function routeItem(deps: RouterDeps, ev: GitHubEvent, result: RouteResult)
     return { ...result, path: "skip:self" };
   }
 
+  const comments = reviewCommentsOnce(deps, ev);
+  if (ev.type === "pull_request_review" && ev.action === "submitted" && isBareCommentReview(ev)) {
+    // Lookup failed or mixed comments: deliver; a possible double beats a loss.
+    const list = await comments();
+    if (list?.length && list.every((c) => c.inReplyTo)) return { ...result, path: "skip:review-replies" };
+  }
+
   // PR assignment means "responsible", not "start working": register only.
   const prAssignedToMe = ev.type === "pull_request" && ev.action === "assigned" && (ev.body.assignee?.login ?? "").toLowerCase() === me;
 
@@ -262,7 +301,8 @@ async function routeItem(deps: RouterDeps, ev: GitHubEvent, result: RouteResult)
     path = "hot";
     deps.ledger.touch(slug);
   } else {
-    const reason = involvement(ev, me);
+    let reason = involvement(ev, me);
+    if (!reason && ev.type === "pull_request_review" && (await comments())?.some((c) => mentions(c.body, me))) reason = "mention";
     if (!reason) return { ...result, path: "skip:not-involved" };
     if (ev.type === "pull_request" && (reason === "assigned" || reason === "assignee")) {
       const target = (await referenceJoin(deps, ev))?.slug ?? defaultSlug(ev);

@@ -14,6 +14,7 @@ Each event payload carries a `_router` object: `slug` (this topic, also your ses
 ### How to work
 
 - The payload is a snapshot. Re-read the live thread with `gh issue view <n> -R <owner/repo> --comments` or `gh pr view …` before you write anything; it may have moved on.
+- A `pull_request_review` event stands for the whole review; its inline comments are not sent separately. Read them with `gh api repos/{owner}/{repo}/pulls/{n}/reviews/{review_id}/comments` (`review_id` is `review.id` in the payload). A reply in a review thread arrives as its own `pull_request_review_comment` event.
 - Reply on GitHub with `gh` (`gh issue comment`, `gh pr comment`, `gh pr review`). Keep comments short and specific.
 - When you open a PR, reference the issue in its description with `Closes #N` (or `Refs #N`, `Part of #N` when it does not close it). That reference binds the PR to this topic; without one, the first comment on the PR starts a separate session without your context.
 - Follow the repository's own contribution rules (`CONTRIBUTING.md`, `AGENTS.md`) over your defaults.

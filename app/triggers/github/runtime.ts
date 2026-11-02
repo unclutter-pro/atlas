@@ -61,6 +61,11 @@ export const ghApi: GitHubApi = {
     const out = (await gh(["api", `repos/${repo}/pulls/${number}`, "--jq", ".head.sha"])).trim();
     return out || null;
   },
+  async reviewComments(repo, number, reviewId) {
+    const out = await gh(["api", `repos/${repo}/pulls/${number}/reviews/${reviewId}/comments?per_page=100`]);
+    const list = JSON.parse(out);
+    return Array.isArray(list) ? list.map((c: any) => ({ body: c?.body ?? "", inReplyTo: !!c?.in_reply_to_id })) : [];
+  },
   async addReaction(nodeId) {
     await gh(["api", "graphql", "-f", `query=${REACTION_MUTATION}`, "-f", `id=${nodeId}`]);
   },

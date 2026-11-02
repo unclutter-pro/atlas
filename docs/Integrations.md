@@ -367,7 +367,8 @@ GitHub webhook ──▸ POST /api/webhook/github  (HMAC verified)
                           └─▸ ~/triggers/github/filter.sh → bun github/route.ts
                                 │
                                 ├─▸ skip: duplicate delivery, own action, noise,
-                                │         green CI, login not involved
+                                │         comment/review edits, a review's inline
+                                │         comments, green CI, login not involved
                                 ├─▸ LINK: own PR, untracked, references a tracked ref → bind, no wake
                                 ├─▸ HOT:  ref in ledger → its topic (no model call)
                                 ├─▸ COLD: involved + unseen ref
@@ -440,6 +441,8 @@ Other rules:
 
 - A PR assigned to the login is registered in the ledger but starts no session. The next real event on it does.
 - A PR the login opens, edits or reopens is its own action and wakes nothing. If the PR is untracked and references a tracked ref (see reference joins), it is bound to that topic silently, so later events on it reach the session that opened it. The worker prompt asks for `Closes #N` in the PR description for that reason.
+- **One wake per review.** A `pull_request_review` `submitted` event stands for the whole review, so the `pull_request_review_comment` `created` events of its inline comments are skipped. Thread replies (`in_reply_to_id` set) are kept. GitHub wraps each reply in a body-less "commented" review; when all comments of such a review are replies, that review event is skipped (one `gh api` lookup; if it fails the review is delivered). A single standalone inline comment also comes as a body-less review and is delivered. On an untracked PR, an @mention in an inline comment counts as involvement of the review event.
+- `edited` on comments and reviews is skipped; `edited` on issues and PRs is routed.
 - Unassigning the login drops the ref from the ledger.
 - Closing a tracked issue or PR notifies its session once (`path: "closing"`), then drops the ref, and the topic once it has no refs left.
 - CI (`check_run`, `check_suite`, `workflow_run`) with a failing conclusion reaches a session only when the PR is already tracked and the run's head sha is the PR's current head (`path: "hot-ci"`). Superseded commits, green runs and untracked PRs are skipped, and CI never creates a topic.
