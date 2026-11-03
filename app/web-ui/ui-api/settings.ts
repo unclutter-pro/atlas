@@ -10,6 +10,7 @@
  */
 
 import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import yaml from "js-yaml";
 import { getConfigSources, getEnvVarName, redactConfig, resolveConfig, type ConfigSource } from "../../lib/config";
 import { AuthLoginError, type AuthStatus, type HarnessAuth, type PendingLogin } from "../../lib/harness/auth";
@@ -181,6 +182,7 @@ const INTEGRATION_KEYS: Record<IntegrationKey, string[]> = {
   email: ["email.imap_host", "email.imap_port", "email.smtp_host", "email.smtp_port", "email.username", "email.folder", "email.whitelist", "email.mark_read"],
   whatsapp: [],
   telegram: [],
+  talk: [],
   web: ["web_ui.bind", "web_ui.port"],
 };
 
@@ -189,6 +191,7 @@ const ENABLED_BY: Record<IntegrationKey, string> = {
   email: "email.imap_host in config.yml (poller provisioned at container start)",
   whatsapp: "A paired device in ~/.local/share/whatsapp/auth",
   telegram: "telegram.bot_token in config.yml or TELEGRAM_BOT_TOKEN",
+  talk: "talk.url, talk.username and an app-password file; listener provisioned at container start",
   web: "Always on",
 };
 
@@ -225,6 +228,14 @@ function integrations(): IntegrationsResponse {
       const fromFile = getPath(raw, "telegram.bot_token");
       const set = !!fromFile || !!process.env.TELEGRAM_BOT_TOKEN;
       settings.push({ key: "telegram.bot_token", value: set ? "set" : null, source: fromFile ? "file" : process.env.TELEGRAM_BOT_TOKEN ? "env" : "default", secret: true });
+    }
+    if (h.key === "talk") {
+      for (const [key, env] of [["url", "TALK_URL"], ["username", "TALK_USERNAME"]]) {
+        settings.push({ key: `talk.${key}`, value: process.env[env!] || raw.talk?.[key!] || null, source: process.env[env!] ? "env" : raw.talk?.[key!] ? "file" : "default" });
+      }
+      const pw = process.env.TALK_PASSWORD_FILE || (typeof raw.talk?.password_file === "string" ? raw.talk.password_file : "") || join(home(), "secrets/talk-app-password");
+      const expanded = pw.startsWith("~/") ? join(home(), pw.slice(2)) : pw;
+      settings.push({ key: "talk.password_file", value: process.env.TALK_APP_PASSWORD || existsSync(expanded) ? "set" : null, source: process.env.TALK_APP_PASSWORD || process.env.TALK_PASSWORD_FILE ? "env" : "file", secret: true });
     }
     return { ...h, enabledBy: ENABLED_BY[h.key], settings, ...channelActivity(h.key) };
   });

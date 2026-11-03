@@ -1,0 +1,2 @@
+#!/bin/bash
+exec bun /atlas/app/integrations/talk/cli.ts "$@"

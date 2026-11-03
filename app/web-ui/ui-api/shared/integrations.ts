@@ -33,7 +33,7 @@ export interface ProgramStatus {
   state: string;
 }
 
-export type IntegrationKey = "signal" | "email" | "whatsapp" | "telegram" | "web";
+export type IntegrationKey = "signal" | "email" | "whatsapp" | "telegram" | "talk" | "web";
 
 export interface IntegrationHealth {
   key: IntegrationKey;
@@ -181,6 +181,23 @@ export function getIntegrationHealth(): IntegrationHealth[] {
 
   const whatsappAuth = join(home(), ".local/share/whatsapp/auth/creds.json");
   const telegramToken = raw.telegram?.bot_token || process.env.TELEGRAM_BOT_TOKEN;
+  const talkUrl = process.env.TALK_URL || raw.talk?.url;
+  const talkUser = process.env.TALK_USERNAME || raw.talk?.username;
+  const talk = build("talk", "Nextcloud Talk", talkUrl && talkUser ? "config talk.url + talk.username" : null, ["talk-listener"]);
+  if (talk.configured && talk.state === "running") {
+    try {
+      const health = JSON.parse(readFileSync(join(home(), ".index/talk/status.json"), "utf8"));
+      if (typeof health.updatedAt !== "number" || Date.now() - health.updatedAt > 120_000 || health.state !== "running") {
+        talk.state = "degraded";
+        talk.detail = health.state === "auth_failed" ? "Nextcloud rejected the account credentials" : "Listener is reconnecting or its heartbeat is stale";
+      } else {
+        talk.detail = "Connected via Talk long polling";
+      }
+    } catch {
+      talk.state = "degraded";
+      talk.detail = "Listener started; waiting for Nextcloud connection";
+    }
+  }
 
   const whatsapp = build(
     "whatsapp",
@@ -208,6 +225,7 @@ export function getIntegrationHealth(): IntegrationHealth[] {
       telegramToken ? "config telegram.bot_token" : installed.has("telegram-daemon") ? "supervisor.d" : null,
       ["telegram-daemon"],
     ),
+    talk,
     {
       key: "web",
       label: "Web",

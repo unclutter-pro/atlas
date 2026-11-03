@@ -1,8 +1,8 @@
-# Nextcloud Talk conversation router draft
+# Nextcloud Talk conversation router design
 
 Atlas should appear in Talk as a colleague with its own Nextcloud account. People can mention it, invite it to a room, answer it in a thread, or receive a direct message from it. A central router keeps those conversations separate. Shared project knowledge comes from memory and explicit task references.
 
-This is the replacement design for [PR 273](https://github.com/unclutter-pro/atlas/pull/273), not an implemented connector. The chosen identity is a dedicated, non-admin Nextcloud user. The bot-only transport from PR 273 does not meet the requirement to start ordinary direct conversations with users.
+This is the replacement design for [PR 273](https://github.com/unclutter-pro/atlas/pull/273). The implementation and its current scope are documented in [Nextcloud Talk](nextcloud-talk.md). The chosen identity is a dedicated, non-admin Nextcloud user. The bot-only transport from PR 273 does not meet the requirement to start ordinary direct conversations with users. The first implementation uses long polling; HPB signaling and transfer of already executing tasks remain follow-ups. Independent handoffs create new work with its own task ownership.
 
 The design follows the existing [GitHub router](../app/triggers/github/router.ts): receive centrally, filter cheaply, consult persistent mappings, classify only ambiguous new work, and dispatch to the responsible conversation. The entrance has no permanent model conversation containing all room traffic. GitHub remains unchanged in the first implementation.
 
@@ -203,4 +203,4 @@ The original PR's message rendering, formatting, fixtures and relevant tests can
 11. Membership removal, revoked credentials, unavailable history and unsupported capabilities produce observable states with actionable errors.
 12. Live tests exercise the actual runner, not only a trigger stub, on the deployed Nextcloud/Talk version. Cover short replies arriving while work is running and while an outbound send is still being recorded.
 
-The implementation PR is ready only when these tests cover the full receive, route, work, send and reply path. This design draft does not claim that those behaviours are already implemented.
+These criteria describe the target behavior. See the implementation documentation and PR validation notes for the tested version, supported scope and remaining limitations.

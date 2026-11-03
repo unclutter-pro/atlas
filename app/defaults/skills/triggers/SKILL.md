@@ -232,6 +232,7 @@ Read only the setup guide for the requested integration:
 - [Telegram](references/telegram-setup.md): bot token and polling daemon.
 - [Email](references/email-setup.md): IMAP/SMTP configuration and provisioning checks.
 - [GitHub](references/github-setup.md): login, webhook and per-topic worker sessions.
+- Nextcloud Talk: use the `talk` skill for a dedicated user account, native threads, proactive DMs and questions that resume their owning session.
 
 For ordinary email operations, use the `email` skill. For a one-shot follow-up or waiting on a reply/CI, use `reminders`; use cron triggers for durable recurring schedules.
 

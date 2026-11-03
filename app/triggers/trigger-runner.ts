@@ -2,7 +2,8 @@
 /**
  * Trigger Runner — replaces the old claude-atlas shell wrapper
  *
- * Usage: bun run trigger-runner.ts <trigger-name> [payload] [session-key]
+ * Usage: bun run trigger-runner.ts <trigger-name> [payload] [session-key] [--event-id <id>]
+ *        bun run trigger-runner.ts --receipt <trigger-name> <session-key> <event-id>
  *
  * Session key determines WHICH session to resume for persistent triggers:
  *   - Email: thread ID       → trigger-runner.ts email-handler '{"body":"..."}' 'thread-4821'
@@ -21,6 +22,7 @@
  */
 
 import { createHarnessBackend } from "./harness/registry.ts";
+import { talkAddressSkipReason, talkContinuationSkipReason } from "./talk/continuation-guard.ts";
 import { createSessionStore } from "../lib/harness/stores.ts";
 import { clearAuthFailure, recordAuthFailure } from "../lib/harness/auth.ts";
 import { describeError } from "../lib/harness/errors.ts";
@@ -55,6 +57,16 @@ import {
   type SocketMessage,
 } from "../lib/trigger-socket.ts";
 import { createWebUiNotifier, type ChatNotifyKind, type WebUiNotifier } from "../lib/web-ui-notify.ts";
+import {
+  acceptTriggerReceipt,
+  claimTriggerDeliveryOwner,
+  completeTriggerReceipt,
+  getTriggerReceipt,
+  listPendingTriggerReceipts,
+  releaseTriggerDeliveryOwner,
+  triggerReceiptMatchesInput,
+  type TriggerReceipt,
+} from "../lib/trigger-receipts.ts";
 import {
   createBackgroundTaskTracker,
   saveBackgroundTask,
@@ -155,6 +167,7 @@ export function startSocketServer(
   pushFn: (text: string) => void,
   controlFn: (control: SocketControl, message: string) => Promise<void> | void,
   logger?: { log: (msg: string) => void },
+  deliverFn?: (message: SocketMessage) => Promise<SocketAck> | SocketAck,
 ): Server {
   // Clean up stale socket file
   if (existsSync(socketPath)) {
@@ -165,10 +178,13 @@ export function startSocketServer(
 
   const server = createServer((conn) => {
     let buffer = "";
+    let handled = false;
     conn.on("data", (chunk) => {
+      if (handled) return;
       buffer += chunk.toString();
       const newlineIdx = buffer.indexOf("\n");
       if (newlineIdx === -1) return;
+      handled = true;
 
       const line = buffer.slice(0, newlineIdx);
       buffer = buffer.slice(newlineIdx + 1);
@@ -176,18 +192,26 @@ export function startSocketServer(
       (async () => {
         try {
           const msg = JSON.parse(line) as SocketMessage;
-          if (msg.control === "interrupt" || msg.control === "retire") {
+          if (!msg || typeof msg.message !== "string" || typeof msg.channel !== "string"
+            || typeof msg.sessionKey !== "string") throw new Error("Invalid socket message");
+          let ack: SocketAck = { ok: true };
+          if (msg.eventId !== undefined) {
+            if (msg.control || typeof msg.eventId !== "string" || !msg.eventId.trim()) {
+              throw new Error("Invalid delivery event ID");
+            }
+            if (!deliverFn) throw new Error("This runner does not support durable delivery");
+            ack = await deliverFn(msg);
+          } else if (msg.control === "interrupt" || msg.control === "retire") {
             await controlFn(msg.control, msg.message);
             logger?.log(
               `Socket: ${msg.control} control from ${msg.channel}/${msg.sessionKey}`,
             );
           } else {
-            pushFn(msg.message);
+            await pushFn(msg.message);
             logger?.log(
               `Socket: injected message from ${msg.channel}/${msg.sessionKey}`,
             );
           }
-          const ack: SocketAck = { ok: true };
           conn.write(JSON.stringify(ack) + "\n");
         } catch (err) {
           const ack: SocketAck = { ok: false, error: String(err) };
@@ -1182,6 +1206,21 @@ export async function main(): Promise<void> {
   // with the web-ui and supercronic (sync-crontab's CRON_TZ) on "today".
   applyProcessTimeZone(HOME);
 
+  const args = process.argv.slice(2);
+  // Receipt inspection remains available while execution is paused.
+  if (args[0] === "--receipt") {
+    const [, trigger, sessionKey, eventId] = args;
+    if (!trigger || !sessionKey || !eventId) throw new Error("Usage: trigger-runner --receipt <trigger> <session-key> <event-id>");
+    if (!existsSync(DB_PATH)) {
+      console.log("null");
+      return;
+    }
+    const receiptDb = openDb();
+    try { console.log(JSON.stringify(getTriggerReceipt(receiptDb, trigger, sessionKey, eventId))); }
+    finally { receiptDb.close(); }
+    return;
+  }
+
   // --- Pause guard: skip execution if Atlas is paused ---
   if (existsSync(join(HOME, ".atlas-paused"))) {
     console.log(
@@ -1189,8 +1228,6 @@ export async function main(): Promise<void> {
     );
     process.exit(0);
   }
-
-  const args = process.argv.slice(2);
 
   // --- Inject mode: --inject <trigger> <session-key> "<message>" [--channel <channel>] [--retire] ---
   // Hands a message to the live runner of (trigger, key) without starting a
@@ -1243,6 +1280,11 @@ export async function main(): Promise<void> {
   }
 
   const [triggerName, payload = "", sessionKeyArg] = args;
+  const eventIdIndex = args.indexOf("--event-id", 3);
+  const eventId = eventIdIndex >= 0 ? args[eventIdIndex + 1] : undefined;
+  if (eventIdIndex >= 0 && (!eventId?.trim() || !sessionKeyArg)) {
+    throw new Error("Durable delivery requires a session key and nonempty --event-id");
+  }
 
   if (!triggerName) {
     console.error(
@@ -1288,6 +1330,7 @@ export async function main(): Promise<void> {
 
   const channel = config.channel || "internal";
   const sessionMode = config.session_mode || "ephemeral";
+  if (eventId && sessionMode !== "persistent") throw new Error("Durable delivery requires a persistent trigger");
 
   // Before the synthetic key, which writes a trigger_runs row per event.
   const shouldProceed = await runMiddlewareFilter(triggerName, payload);
@@ -1354,10 +1397,45 @@ export async function main(): Promise<void> {
     "{{trigger_name}}": triggerName,
   });
 
+  // Persist before IPC or process ownership. A caller may now reconcile this
+  // accepted input even if either process dies before the socket handoff.
+  let durableMessage: string | undefined;
+  let deliveryEventId = eventId;
+  if (eventId) {
+    const prior = getTriggerReceipt(db, triggerName, sessionKey, eventId);
+    // Keep the originally rendered prompt across configuration changes.
+    if (prior && !triggerReceiptMatchesInput(prior, payload, prompt)) {
+      throw new Error(`Delivery event ID already belongs to different payload: ${eventId}`);
+    }
+    if (prior?.state === "completed") {
+      const pending = listPendingTriggerReceipts(db, triggerName, sessionKey)[0];
+      if (!pending) {
+        log.log(`Delivery already completed: ${eventId}`);
+        return;
+      }
+      // A restart may use the initial invocation even though a later input
+      // was left pending. Recover that input without restoring pruned content.
+      durableMessage = pending.message;
+      deliveryEventId = pending.eventId;
+    } else {
+      durableMessage = acceptTriggerReceipt(db, {
+        triggerName, sessionKey, eventId, channel, message: prior?.message ?? prompt,
+        ...(prior?.payloadHash === null ? {} : { payload }),
+      }).message;
+    }
+  }
+
   // --- Update trigger stats ---
   db.prepare(
     "UPDATE triggers SET last_run = datetime('now'), run_count = run_count + 1 WHERE name = ?",
   ).run(triggerName);
+
+  // A newly opened runner can accept durable input before the backend has
+  // announced or persisted its native session. Do not wait for that mapping.
+  if (eventId && await trySocketInject(getSocketPath(triggerName, sessionKey), durableMessage!, channel, sessionKey, undefined, deliveryEventId)) {
+    log.log(`Durable delivery accepted by the running session: ${eventId}`);
+    return;
+  }
 
   // --- Persistent session: try IPC injection first ---
   let existingSession: string | null = null;
@@ -1394,7 +1472,7 @@ export async function main(): Promise<void> {
     if (existingSession) {
       const customSocketPath = getSocketPath(triggerName, sessionKey);
       const idleSeconds = getSessionIdleSeconds(existingSession);
-      const isStopCommand = payload.trim().toLowerCase() === "/stop";
+      const isStopCommand = !eventId && payload.trim().toLowerCase() === "/stop";
 
       if (
         idleSeconds >= STALE_SESSION_THRESHOLD_S &&
@@ -1407,7 +1485,7 @@ export async function main(): Promise<void> {
         staleRecovery = true;
       } else {
         // Session might be alive — try socket injection
-        const injectMsg = buildInjectMessage(
+        const injectMsg = durableMessage ?? buildInjectMessage(
           channel,
           triggerName,
           sessionKey,
@@ -1421,6 +1499,7 @@ export async function main(): Promise<void> {
           channel,
           sessionKey,
           isStopCommand ? "interrupt" : undefined,
+          deliveryEventId,
         );
         if (socketInjected) {
           log.log(
@@ -1434,7 +1513,7 @@ export async function main(): Promise<void> {
   }
 
   // --- Acquire flock-style dedup lock ---
-  // We use a simple lockfile approach: write our PID, check if process is alive
+  // SQLite serializes ownership; the PID file remains available to observers.
   const flockFile = getLockPath(triggerName, sessionKey);
 
   // Acquire lock: check existing PID, wait up to 60s
@@ -1456,8 +1535,16 @@ export async function main(): Promise<void> {
         continue;
       }
     }
-    // Write our PID
-    writeFileSync(flockFile, String(process.pid));
+    if (!claimTriggerDeliveryOwner(db, triggerName, sessionKey)) {
+      await Bun.sleep(500);
+      continue;
+    }
+    try {
+      writeFileSync(flockFile, String(process.pid));
+    } catch (error) {
+      releaseTriggerDeliveryOwner(db, triggerName, sessionKey);
+      throw error;
+    }
     lockAcquired = true;
     break;
   }
@@ -1465,8 +1552,8 @@ export async function main(): Promise<void> {
   if (!lockAcquired) {
     // Lock held — try injecting via our custom socket (session is running)
     const socketPath = getSocketPath(triggerName, sessionKey);
-    const isStopCommandLock = payload.trim().toLowerCase() === "/stop";
-    const injectMsg = buildInjectMessage(
+    const isStopCommandLock = !eventId && payload.trim().toLowerCase() === "/stop";
+    const injectMsg = durableMessage ?? buildInjectMessage(
       channel,
       triggerName,
       sessionKey,
@@ -1479,6 +1566,7 @@ export async function main(): Promise<void> {
       channel,
       sessionKey,
       isStopCommandLock ? "interrupt" : undefined,
+      deliveryEventId,
     );
     if (socketInjected) {
       log.log(
@@ -1488,7 +1576,7 @@ export async function main(): Promise<void> {
     }
     // Socket not available — cannot inject, exit with warning
     log.log(
-      `WARNING: Lock held but socket unavailable for ${triggerName} (key=${sessionKey}) — message may be lost`,
+      `WARNING: Lock held but socket unavailable for ${triggerName} (key=${sessionKey})${eventId ? " — delivery remains pending" : " — message may be lost"}`,
     );
     process.exit(1);
   }
@@ -1507,15 +1595,15 @@ export async function main(): Promise<void> {
       } catch {}
       return;
     }
-    try {
-      if (readLockPid(flockFile) === process.pid) unlinkSync(flockFile);
-    } catch {}
-    // Socket cleanup is best-effort (may already be cleaned up by runQuery)
-    if (existsSync(triggerSocketPath)) {
+    // Remove observable paths before releasing SQLite ownership, so the next
+    // runner cannot create its socket while this process is still cleaning up.
+    if (readLockPid(flockFile) === process.pid) {
       try {
         unlinkSync(triggerSocketPath);
       } catch {}
+      try { unlinkSync(flockFile); } catch {}
     }
+    try { releaseTriggerDeliveryOwner(db, triggerName, sessionKey); } catch {}
   };
   /** Give (trigger, key) to the next runner now; this one finishes its farewell. */
   const handOver = () => {
@@ -1565,8 +1653,8 @@ export async function main(): Promise<void> {
 
   // Re-check custom socket after acquiring lock
   if (sessionMode === "persistent" && existingSession) {
-    const isStopCommandPostLock = payload.trim().toLowerCase() === "/stop";
-    const injectMsg = buildInjectMessage(
+    const isStopCommandPostLock = !eventId && payload.trim().toLowerCase() === "/stop";
+    const injectMsg = durableMessage ?? buildInjectMessage(
       channel,
       triggerName,
       sessionKey,
@@ -1579,6 +1667,7 @@ export async function main(): Promise<void> {
       channel,
       sessionKey,
       isStopCommandPostLock ? "interrupt" : undefined,
+      deliveryEventId,
     );
     if (customInjected) {
       log.log(
@@ -1665,15 +1754,19 @@ export async function main(): Promise<void> {
 
   // If recovering from a stale session, prepend a system notice to the prompt
   // so the session knows it was idle-terminated and should continue.
+  let recoveryNotice = "";
   if (staleRecovery) {
-    prompt = `<system-notice>This session was terminated due to inactivity. The previous session state has been preserved. Please continue where you left off and process the new message below.</system-notice>\n\n${prompt}`;
+    recoveryNotice = "<system-notice>This session was terminated due to inactivity. The previous session state has been preserved. Please continue where you left off and process the new message below.</system-notice>\n\n";
+    prompt = `${recoveryNotice}${prompt}`;
   }
 
   // A previous process may have died with background tasks still live.
   if (sessionMode === "persistent") {
     const interrupted = listBackgroundTasks(db, triggerName, sessionKey);
     if (interrupted.length > 0) {
-      prompt = `${buildInterruptedTasksNotice(interrupted, existingSession)}\n\n${prompt}`;
+      const notice = `${buildInterruptedTasksNotice(interrupted, existingSession)}\n\n`;
+      recoveryNotice = `${notice}${recoveryNotice}`;
+      prompt = `${notice}${prompt}`;
       clearBackgroundTasks(db, triggerName, sessionKey);
     }
   }
@@ -1717,6 +1810,27 @@ export async function main(): Promise<void> {
   };
 
   const runQuery = async (resume?: SessionRef) => {
+    // Recover acknowledged input independently of the invoking payload. Each
+    // durable event gets its own turn, so receipt completion cannot accidentally
+    // acknowledge queued messages that the model has not seen.
+    const recovered = listPendingTriggerReceipts(db, triggerName, sessionKey);
+    const shouldRunReceipt = (receipt: TriggerReceipt): boolean => {
+      const input = { ...receipt, payload: receipt.payload ?? receipt.message };
+      const reason = talkAddressSkipReason(input, HOME) ?? talkContinuationSkipReason(db, input);
+      if (!reason) return true;
+      completeTriggerReceipt(db, triggerName, sessionKey, receipt.eventId, capturedSessionId ?? existingSession, `skipped: ${reason}`);
+      log.log(`Skipped durable delivery ${receipt.eventId}: ${reason}`);
+      return false;
+    };
+    if (eventId) while (recovered.length && !shouldRunReceipt(recovered[0])) recovered.shift();
+    let activeReceipt: TriggerReceipt | null = eventId ? recovered.shift() ?? null : null;
+    if (eventId && !activeReceipt) return;
+    const receiptQueue = recovered;
+    const queuedReceiptIds = new Set([
+      ...receiptQueue.map((receipt) => receipt.eventId),
+      ...(activeReceipt ? [activeReceipt.eventId] : []),
+    ]);
+    let activeInterrupted = false;
     // Mid-turn steering queue. Messages that arrive during an active turn
     // are queued here instead of starting a turn. The backend asks for them
     // at every tool boundary (nextToolContext) and adds them to the NEXT
@@ -1761,7 +1875,7 @@ export async function main(): Promise<void> {
 
     // The initial prompt is the first message; flash typing for turn 1
     const conversation: Conversation = backend.openConversation({
-      prompt, systemPrompt, model, mcpServers, cwd: HOME,
+      prompt: activeReceipt ? `${recoveryNotice}${activeReceipt.message}` : prompt, systemPrompt, model, mcpServers, cwd: HOME,
       turns: "multi", idleTimeoutMs: IDLE_TIMEOUT_MS,
       ...(resume ? { resume } : {}),
       streamText: wantsStreaming, nextToolContext,
@@ -1769,6 +1883,34 @@ export async function main(): Promise<void> {
     inTurn = true;
     beginTurn();
     sendTypingOnce();
+
+    const refreshReceipts = () => {
+      for (const receipt of listPendingTriggerReceipts(db, triggerName, sessionKey)) {
+        if (queuedReceiptIds.has(receipt.eventId)) continue;
+        queuedReceiptIds.add(receipt.eventId);
+        receiptQueue.push(receipt);
+      }
+    };
+    const pushNextReceipt = () => {
+      if (inTurn || handedOver) return;
+      refreshReceipts();
+      while (receiptQueue.length && !shouldRunReceipt(receiptQueue[0])) receiptQueue.shift();
+      const next = receiptQueue[0];
+      if (!next) return;
+      if (!conversation.push(next.message)) return;
+      receiptQueue.shift();
+      activeReceipt = next;
+      activeInterrupted = false;
+      inTurn = true;
+      beginTurn();
+      sendTypingOnce();
+    };
+    // The sender may die after persisting a receipt but before reaching our
+    // socket. Polling also covers that gap while an existing runner is idle.
+    const receiptTimer = setInterval(() => {
+      try { pushNextReceipt(); }
+      catch (error) { log.log(`Receipt recovery failed: ${error}`); }
+    }, 1000);
 
     const tracker = createBackgroundTaskTracker({ stallMs: BACKGROUND_STALL_MS, checkinMs: BACKGROUND_CHECKIN_MS });
     const pushCheckIn = (message: string) => {
@@ -1807,7 +1949,7 @@ export async function main(): Promise<void> {
             inTurn = true;
             beginTurn();
           } else {
-            log.log(`Dropped message — conversation channel already closed for session ${sessionKey}`);
+            throw new Error(`Conversation channel already closed for session ${sessionKey}`);
           }
         }
         // Each new injected message gets a typing flash.
@@ -1816,6 +1958,9 @@ export async function main(): Promise<void> {
       async (control, message) => {
         if (control === "retire") {
           if (handedOver) return;
+          if (listPendingTriggerReceipts(db, triggerName, sessionKey).length > 0) {
+            throw new Error("Cannot retire a runner with incomplete durable deliveries");
+          }
           // Hand (trigger, key) over at once so the next message starts a fresh
           // session, then finish this one: the running turn, then the farewell.
           handOver();
@@ -1836,6 +1981,7 @@ export async function main(): Promise<void> {
         }
         if (control === "interrupt") {
           try {
+            activeInterrupted = true;
             await conversation.interrupt();
             log.log("Received /stop — query interrupted");
             // The backend may not finish the turn after an interrupt; the
@@ -1856,6 +2002,16 @@ export async function main(): Promise<void> {
         }
       },
       log,
+      (message) => {
+        if (message.sessionKey !== sessionKey || message.channel !== channel) {
+          throw new Error("Delivery does not match this runner's channel and session");
+        }
+        const receipt = acceptTriggerReceipt(db, {
+          triggerName, sessionKey, channel, eventId: message.eventId!, message: message.message,
+        });
+        pushNextReceipt();
+        return { ok: true, eventId: receipt.eventId, state: receipt.state };
+      },
     );
 
     const timeoutHandle = triggerTimeout
@@ -1879,6 +2035,19 @@ export async function main(): Promise<void> {
           notify("turn_end", { isError });
           if (event.result.text) log.log(`Turn result: ${event.result.text}`);
 
+          if (activeReceipt) {
+            if (event.result.outcome === "completed" && !event.result.error && !activeInterrupted) {
+              completeTriggerReceipt(db, triggerName, sessionKey, activeReceipt.eventId, capturedSessionId);
+              activeReceipt = null;
+            } else {
+              // Keep the input accepted for the dispatcher's next attempt.
+              // Continuing here could process later events ahead of a failed one.
+              log.log("Durable delivery did not complete — leaving its receipt pending for retry");
+              conversation.stop();
+              continue;
+            }
+          }
+
           // The process keeps the credential it started with, so every further
           // message would fail the same way. End it; the next message starts a
           // runner that uses the current login.
@@ -1897,14 +2066,14 @@ export async function main(): Promise<void> {
             log.log(
               `End-of-turn flush: ${leftover.length} queued message(s) → new turn`,
             );
-            for (const text of leftover) {
-              if (!conversation.push(text)) {
-                log.log(`Dropped queued message — conversation channel already closed for session ${sessionKey}`);
-              }
+            if (conversation.push(leftover.join("\n\n---\n\n"))) {
+              inTurn = true;
+              beginTurn();
+            } else {
+              log.log(`Dropped queued message — conversation channel already closed for session ${sessionKey}`);
             }
-            inTurn = true;
-            beginTurn();
           }
+          pushNextReceipt();
           if (handedOver && !inTurn) {
             if (farewellRunning) {
               log.log("Farewell done — exiting");
@@ -1985,6 +2154,7 @@ export async function main(): Promise<void> {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       if (retireTimeout) clearTimeout(retireTimeout);
       clearInterval(checkInTimer);
+      clearInterval(receiptTimer);
       conversation.stop();
       closeSocket();
     }
