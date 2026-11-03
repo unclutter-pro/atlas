@@ -22,3 +22,5 @@ Repository or organization Settings > Webhooks, content type `application/json`,
 - Relay: the `github` trigger's relay URL from `trigger list`, without a secret.
 
 Routing decisions are logged to `/atlas/logs/github-router.log`; the topic ledger is `~/.index/github/router.db`. Details: docs/Integrations.md, section GitHub.
+
+**Trust.** Comments, reviews, issues and PRs from anyone who is not an OWNER, MEMBER or COLLABORATOR of the repository (GitHub's own `author_association`) still reach the worker, but their title/body text arrives wrapped as `<untrusted-content author="..." association="...">`; the worker treats it as information, not instructions. No extra configuration is needed — this is based purely on GitHub's own classification of the commenter, not on any allowlist.

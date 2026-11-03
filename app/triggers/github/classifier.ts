@@ -11,6 +11,7 @@ import { ClaudeCodeBackend } from "../harness/claude/backend.ts";
 import type { QueryFactory } from "../harness/claude/conversation.ts";
 import { slugify, type GitHubEvent } from "./events.ts";
 import type { Topic } from "./ledger.ts";
+import { markIfUntrusted } from "./trust.ts";
 
 export interface Classification {
   slug: string;
@@ -29,18 +30,22 @@ Answer with exactly one compact JSON object and nothing else.`;
 
 const EXCERPT_CHARS = 1500;
 
-export function buildClassifierPrompt(ev: GitHubEvent, topics: Topic[], fallbackSlug: string): string {
+export function buildClassifierPrompt(ev: GitHubEvent, topics: Topic[], fallbackSlug: string, me: string): string {
   const ledger = topics.length
     ? topics.map((t) => JSON.stringify({ slug: t.slug, title: t.title, notes: t.notes ?? "", refs: t.refs })).join("\n")
     : "(none)";
-  const excerpt = ev.text.length > EXCERPT_CHARS ? `${ev.text.slice(0, EXCERPT_CHARS)}…` : ev.text;
+  const rawExcerpt = ev.text.length > EXCERPT_CHARS ? `${ev.text.slice(0, EXCERPT_CHARS)}…` : ev.text;
+  // Judge title and excerpt by their own author; an issue opened by an
+  // outsider stays marked untrusted even if a maintainer later commented.
+  const title = markIfUntrusted(ev.title, ev.author, ev.titleAssociation, me);
+  const excerpt = markIfUntrusted(rawExcerpt, ev.textAuthor, ev.textAssociation, me);
   return `A GitHub event needs a topic. A topic groups related work in ${ev.repo}, for example an issue and the PR that fixes it, and each topic has its own long-running agent session.
 
 Existing topics in this repository (one JSON object per line):
 ${ledger}
 
 Event:
-${JSON.stringify({ ref: `${ev.repo}#${ev.number}`, kind: ev.kind, type: ev.type, action: ev.action, title: ev.title, author: ev.author, text: excerpt }, null, 2)}
+${JSON.stringify({ ref: `${ev.repo}#${ev.number}`, kind: ev.kind, type: ev.type, action: ev.action, title, author: ev.author, text: excerpt }, null, 2)}
 
 Before reusing an existing topic, check that the event and the topic really belong together: they reference each other, or they name the same bug or feature. Working in the same area (both about charts, both about CI) is not enough. When in doubt, create a new topic: a wrong merge puts unrelated work into one session, while a split only costs some context.
 
@@ -118,6 +123,8 @@ export interface ClassifyOptions {
   topics: Topic[];
   fallbackSlug: string;
   exists: (slug: string) => boolean;
+  /** Lower-case GitHub login Atlas acts as, to tell its own text from everyone else's. */
+  me: string;
 }
 
 export async function classify(ev: GitHubEvent, options: ClassifyOptions): Promise<Classification> {
@@ -125,7 +132,7 @@ export async function classify(ev: GitHubEvent, options: ClassifyOptions): Promi
     cwd: tmpdir(),
     model: options.model,
     systemPrompt: SYSTEM_PROMPT,
-    prompt: buildClassifierPrompt(ev, options.topics, options.fallbackSlug),
+    prompt: buildClassifierPrompt(ev, options.topics, options.fallbackSlug, options.me),
     mcpServers: {},
     turns: "single",
     ephemeral: true,
