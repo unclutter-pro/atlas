@@ -105,13 +105,31 @@ The proposed `talk dm --user <nextcloud-user-id> "<message>"` tool performs the 
 
 1. Resolve the stable user ID from a configured contact or an unambiguous directory result. Do not send to a display-name guess.
 2. Create or reuse the direct room through `POST /ocs/v2.php/apps/spreed/api/v4/room` with `roomType=1` and `invite=<user-id>`, subject to server policy.
-3. Register the room with the receive transport before sending. Record an outbound intent with origin conversation, task, recipient and a client reference.
-4. Send through the user chat API and store the returned message ID. If an answer is needed, create a pending request with its reply anchor.
+3. Register the room with the receive transport before sending. Record an outbound intent with origin conversation, task, recipient and a client reference. If an answer is needed, persist the pending request before sending so a fast reply cannot arrive before the request exists.
+4. Send through the user chat API and bind the returned message ID to the pending request. Reconcile replies received while the send outcome was still being recorded.
 5. Route the answer through the same central entrance. The direct conversation owns the private exchange; a structured answer event goes to the originating task's owner. A private transcript is not automatically copied back to a group.
 
 For example, a deployment task asks Max privately whether to use staging or production. Max replies to that message. The router resolves the request, supplies the decision to the deployment worker and lets it continue. If two pending questions exist and Max merely writes "yes", the agent asks which question he means.
 
 Delivery never depends on the originating process staying alive. Reminder and worker IDs are durable references. Quiet hours, notification limits and batching apply to proactive updates; urgent explicit requests can use the configured exception. A successful API send is not proof that the user's device displayed a notification or that the user read it.
+
+## Waiting for replies through reminders
+
+Extend the existing [reminder mechanism](../app/triggers/manage-reminders.ts), which already supports `--when-reply-to=<email-thread-id>`, optional sender matching and a timeout. It captures the originating trigger and session key so a matching email can resume the waiting session. Its current reply detection is email-specific and checked by the periodic reminder pass; Talk support needs an additional event type, not an unchanged invocation of that flag.
+
+The responsibilities are distinct. The Talk router resolves which pending question an incoming message answers. The reminder subsystem durably schedules the continuation of the originating task. Memory supplies background knowledge but never substitutes for either association.
+
+Add a `conversation_reply` reminder type keyed by a stable request ID. The pending request records the source conversation, originating trigger/session key, task ID, instance/account, room/thread, expected user's stable ID, sent message anchor, optional deadline and continuation instructions. Do not match merely on the DM room: several tasks can ask the same person questions there.
+
+An agent-facing `talk ask` operation should create the request, outbound intent and reply wait as one recoverable workflow. The request ledger is authoritative; reminder registration is idempotent by request ID and can be rebuilt after a crash. This avoids requiring the model to remember a separate reminder command after sending. A failed send does not leave an apparently successful question waiting indefinitely.
+
+Once an answer is correlated, record its message ID and enqueue the reminder continuation immediately through the durable delivery path. Claiming a request and recording that continuation must be atomic, or use a transactional outbox. A periodic recovery pass repairs interrupted delivery and handles timeouts; normal Talk answers need not wait for the next cron tick. The reminder and ordinary DM routing must not independently execute the originating task twice.
+
+The runner injects into the owning session if it is active, otherwise resumes it. Extend `hasPendingContinuation` to recognize a valid pending conversation reply for that same trigger/session key, allowing the agent to stop running while its task waits. If ownership has moved, resolve the recorded handoff rather than silently waking an unrelated fresh session.
+
+A timeout means "no matching answer yet", never approval. It wakes the task to decide whether to ask again or continue differently. Keep the question's reply anchor after timeout so a late answer can still reach the correct task as a separate event. Cancellation or task completion suppresses automatic execution; late replies can still be acknowledged in the conversation.
+
+Ordinary chat messages use the normal conversation bindings and need no reminder. Reply waits are for work that must resume when a particular answer arrives.
 
 ## Memory and context limits
 
@@ -180,7 +198,7 @@ The original PR's message rendering, formatting, fixtures and relevant tests can
 2. A direct chat initiated by either Max or the agent is discovered and usable without room-by-room bot setup. Test discovery with and without the high-performance backend.
 3. Known threads and explicit replies route without a classifier call. Repeated delivery of one event produces one durable runner receipt.
 4. A new native thread continuing a task reaches the same worker. Independent work gets a new worker with the opening message and persisted handoff.
-5. A proactive question survives a runner restart. Its quoted answer reaches the originating task; an ambiguous unquoted answer does not approve arbitrary work.
+5. A proactive question and its reply reminder survive a runner restart. A fast reply cannot outrun request registration. Its quoted answer resumes the originating task once; an ambiguous unquoted answer does not approve arbitrary work. Pending reply waits satisfy the Stop hook for that task's session. Test timeout/answer races, late replies, cancellation and two questions to the same user from different tasks.
 6. Crashes before/after inbox commit, cursor update, runner receipt and model turn completion neither strand events nor silently acknowledge unprocessed work.
 7. A successful remote send followed by a client timeout is reconciled before resend. Own echoes do not produce loops, and parallel sends with the same title remain distinct.
 8. A busy room cannot exhaust the worker limit. Passive traffic does not continuously wake full workers, and inline inputs obey the token budget.
