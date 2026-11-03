@@ -16,7 +16,7 @@ A backend adapter maps its native hook mechanism onto these scripts. For Claude 
 | PreCompact (auto / manual) | `lifecycle/pre-compact.sh auto` / `manual` |
 | PostCompact | `lifecycle/post-compact.sh` |
 | Stop | `harness/claude/hooks/stop.sh` → `lifecycle/stop.sh`; exit 2 becomes `{"decision":"block","reason":...}`. Validator sessions: `validator-stop-check.ts` → `lifecycle/validator-gate.ts` |
-| PreToolUse (Bash) | `rtk hook claude`, `harness/claude/hooks/remind-use-reminders.sh` → `lifecycle/command-advice.sh`; exit 0 becomes `additionalContext`, exit 2 becomes `permissionDecision:"deny"` |
+| PreToolUse (Bash) | `rtk hook claude`, `harness/claude/hooks/remind-use-reminders.sh` → `lifecycle/command-advice.sh`; exit 0 becomes `additionalContext`, exit 2 becomes `permissionDecision:"deny"`. Then `harness/claude/hooks/gh-reference-guard.sh` → `lifecycle/gh-reference-guard.ts`; exit 2 becomes `permissionDecision:"deny"` |
 | SubagentStop | prompt-type review (below) |
 
 Context scripts are registered directly because Claude Code's contract for them is the same (stdout becomes context). Stop and PreToolUse need the small protocol wrappers in `harness/claude/hooks/`.
@@ -114,6 +114,28 @@ In a chat session (`channel` is `signal`, `whatsapp`, `telegram` or `web`) a for
 
 The last three arguments are optional for backward compatibility; omitting them keeps the old advisory-only behavior.
 
+## gh-reference-guard.ts
+
+Runs before the agent executes a shell command: `gh-reference-guard.ts "<command>" "<cwd>"`. Blocks `gh` commands that would post a reference to a private GitHub repo into a public one — a link, `owner/repo#N` mention, or pasted body text naming a private repo leaks its existence and contents to anyone who can read the public repo, even though the private repo itself stays locked down. Agents keep forgetting this when cross-referencing work across repos, so it's enforced here instead of relying on memory.
+
+Fast path: if the command doesn't contain `gh` as a word, it exits 0 immediately with no parsing and no network calls.
+
+For commands that do call `gh`, it only looks at write-ish invocations: `gh issue create|comment|edit`, `gh pr create|comment|edit|review|merge`, `gh release create|edit`, and `gh api` calls that write (`-X`/`--method` of `POST`/`PUT`/`PATCH`, or any of `-f`/`-F`/`--field`/`--raw-field`/`--input` with no explicit method, which makes `gh api` default to `POST`). A `gh api graphql` call counts as relevant only if the command text contains the word `mutation`; its target repo is never knowable from the call itself, so it's always treated as possibly public.
+
+The target repo is resolved from (in order) `-R`/`--repo`, a `github.com/...` URL positional argument, the `repos/OWNER/REPO` path for `gh api`, or — if none of those are present — the `origin` remote of the effective cwd (honoring a leading `cd DIR &&`). If no target can be resolved, it's treated as possibly public rather than skipped.
+
+It then scans the whole command string — including heredoc bodies and quoted arguments — plus the contents of any file given via `--body-file`/`--notes-file`/`-F field=@file`/`--input file` (`-F -` and other stdin forms aren't readable here and are skipped), for `owner/repo#N` mentions and `github.com/owner/repo` links to repos *other than* the target. A bare `#123` is same-repo and always fine. A handful of non-repo `github.com` paths (`orgs`, `settings`, `apps`, `marketplace`, `sponsors`, `features`, `topics`, `login`) are ignored.
+
+Each referenced repo's visibility is checked with `gh api repos/OWNER/REPO --jq .private` (gh is already authenticated in the container); a 404 or inaccessible repo is treated as not public, since an anonymous reader couldn't see it either. Results are cached in `~/.cache/atlas/gh-visibility.json` for ~6 hours to avoid a lookup on every matching command; a corrupt cache file is treated as empty. Lookups run in parallel.
+
+If the target repo resolves to private (or not-found/inaccessible), the command is always allowed — nothing can leak from a non-public repo. Otherwise, if any referenced repo is private or inaccessible, it blocks (exit 2) with the offending references and tells the agent to drop them or describe them generically instead of pasting a private repo's link, number, or name into public-facing text.
+
+Prefixing the command with `GH_REF_GUARD_OK=1 ` skips the check entirely, for the rare case where the guard misidentifies a public repo as private.
+
+If a visibility lookup fails for a reason other than 404 (network error, `gh` not authenticated, unexpected output), or anything else inside the guard throws, it fails open (exit 0, silent on stdout, details on stderr) rather than blocking a legitimate command.
+
+Tests inject the visibility lookup and file reader directly for unit coverage; the `GH_REF_GUARD_FIXTURE` environment variable (pointing at a JSON file of `owner/repo` → `"private"|"public"|"not-found"|"error"`) lets the CLI and the Claude wrapper be tested end to end without any network access.
+
 ## SubagentStop (prompt-type hook)
 
 Claude Code only: configured in `settings.json` as a prompt-type hook. Fires in the trigger session when a subagent finishes. Asks the trigger session to evaluate whether the subagent's result is complete and acceptable, or needs rework.
@@ -132,10 +154,12 @@ Lifecycle policy, `app/triggers/lifecycle/`:
 - `validator-gate.ts` — Validator JSON-verdict gate
 - `command-advice.sh` — Advice against polling; blocks foreground blocking waits in chat sessions
 - `strip-quoted.ts` — Strips quoted strings and heredoc bodies before `command-advice.sh` matches
+- `gh-reference-guard.ts` — Blocks `gh` commands that would post a reference to a private repo into a public one
 
 Claude Code adapter, `app/triggers/harness/claude/`:
 
 - `hooks/stop.sh` — Stop hook: runs `lifecycle/stop.sh`, translates exit 2 into Claude's block decision
 - `hooks/validator-stop-check.ts` — Stop hook for the validator: final message and prior corrections from the transcript → `validator-gate.ts`
 - `hooks/remind-use-reminders.sh` — PreToolUse (Bash) hook: `lifecycle/command-advice.sh`, translating exit 0 into `additionalContext` and exit 2 into `permissionDecision:"deny"`
+- `hooks/gh-reference-guard.sh` — PreToolUse (Bash) hook: `lifecycle/gh-reference-guard.ts`, translating exit 2 into `permissionDecision:"deny"`
 - `settings.ts` — Writes `~/.claude/settings.json` with the hook registrations, permissions and plugins
