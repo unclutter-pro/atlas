@@ -43,8 +43,14 @@ export interface GitHubEvent {
   ref: string | null;
   kind: RefKind;
   title: string;
+  /** author_association of the issue/PR that carries `title` (upper-case, "" if absent). */
+  titleAssociation: string;
   /** Body of the comment, review, issue or PR that caused the event. */
   text: string;
+  /** Lower-case login of whoever wrote `text` (the comment/review author, or the item author when `text` is the item's own body). */
+  textAuthor: string;
+  /** Their author_association (upper-case, "" if absent). */
+  textAssociation: string;
   /** Lower-case login of the issue/PR author. */
   author: string;
   /** Lower-case login of whoever caused the event. */
@@ -56,6 +62,11 @@ export interface GitHubEvent {
 
 const lower = (value: unknown) => (typeof value === "string" ? value.toLowerCase() : "");
 const login = (user: any) => lower(user?.login);
+/** GitHub's author_association, upper-cased ("" when the object carries none). */
+const association = (obj: any) => {
+  const value = obj?.author_association;
+  return typeof value === "string" ? value.toUpperCase() : "";
+};
 
 /** Lower-case "owner/repo#n", the one spelling the ledger uses. */
 export function formatRef(repo: string, number: number): string {
@@ -102,9 +113,21 @@ export function extractEvent(envelope: Envelope): GitHubEvent {
   const kind: RefKind = pr || issue?.pull_request ? "pr" : "issue";
 
   let text = "";
-  if (type === "issue_comment" || type === "pull_request_review_comment") text = body.comment?.body ?? "";
-  else if (type === "pull_request_review") text = body.review?.body ?? "";
-  else text = item.body ?? "";
+  let textAuthor = "";
+  let textAssociation = "";
+  if (type === "issue_comment" || type === "pull_request_review_comment") {
+    text = body.comment?.body ?? "";
+    textAuthor = login(body.comment?.user);
+    textAssociation = association(body.comment);
+  } else if (type === "pull_request_review") {
+    text = body.review?.body ?? "";
+    textAuthor = login(body.review?.user);
+    textAssociation = association(body.review);
+  } else {
+    text = item.body ?? "";
+    textAuthor = login(item.user);
+    textAssociation = association(item);
+  }
 
   return {
     type,
@@ -115,7 +138,10 @@ export function extractEvent(envelope: Envelope): GitHubEvent {
     ref: repo && number !== null ? formatRef(repo, number) : null,
     kind,
     title: item.title ?? "",
+    titleAssociation: association(item),
     text: text ?? "",
+    textAuthor,
+    textAssociation,
     author: login(item.user),
     sender: login(body.sender),
     item,

@@ -18,6 +18,7 @@ import {
 } from "./events.ts";
 import { classify, type ConversationBackend } from "./classifier.ts";
 import type { Ledger } from "./ledger.ts";
+import { authorOf, markIfUntrusted } from "./trust.ts";
 
 export interface RouterConfig {
   /** Lower-case GitHub login Atlas acts as. */
@@ -69,6 +70,8 @@ export interface RouterInfo {
   path: "hot" | "cold" | "hot-ci" | "closing";
   intent: Intent;
   ci?: { name: string; conclusion: string; head_sha: string; url: string };
+  /** Present only when the payload carries at least one <untrusted-content> field. */
+  trust?: { untrusted_authors: string[] };
 }
 
 export interface RouteResult {
@@ -89,39 +92,80 @@ const AUTOLINK_ACTIONS = new Set(["opened", "edited", "reopened"]);
 /** Argument size limit is 128 KiB per argv string on Linux; stay well below. */
 const MAX_PAYLOAD_CHARS = 100_000;
 
-/** Webhook body without the bulky org/repo/installation objects. */
-function compactBody(body: any): any {
+/**
+ * Marks `obj[field]` (for each `field`) as untrusted when `obj`'s own
+ * author_association says so, and records the login in `untrusted`. Returns
+ * `obj` unchanged when nothing needed marking.
+ */
+function markObject(obj: any, fields: string[], me: string, untrusted: Set<string>): any {
+  if (!obj) return obj;
+  const { login, association } = authorOf(obj);
+  let changed = false;
+  const next = { ...obj };
+  for (const field of fields) {
+    if (typeof obj[field] !== "string" || !obj[field]) continue;
+    const marked = markIfUntrusted(obj[field], login, association, me);
+    if (marked !== obj[field]) {
+      next[field] = marked;
+      changed = true;
+      untrusted.add(login || "unknown");
+    }
+  }
+  return changed ? next : obj;
+}
+
+/**
+ * Webhook body without the bulky org/repo/installation objects. Title/body of
+ * the issue or PR, and the body of the comment or review, are wrapped as
+ * `<untrusted-content>` when their own author is not trusted (see trust.ts);
+ * each is judged by its own author, not by whoever triggered the event.
+ */
+function compactBody(body: any, me: string): { body: any; untrustedAuthors: string[] } {
   const { repository, organization, installation, enterprise, sender, ...rest } = body;
-  return {
+  const next: any = {
     ...rest,
     ...(repository ? { repository: { full_name: repository.full_name, html_url: repository.html_url, default_branch: repository.default_branch, private: repository.private } } : {}),
     ...(sender ? { sender: { login: sender.login, type: sender.type } } : {}),
   };
+  const untrusted = new Set<string>();
+  if (next.issue) next.issue = markObject(next.issue, ["title", "body"], me, untrusted);
+  if (next.pull_request) next.pull_request = markObject(next.pull_request, ["title", "body"], me, untrusted);
+  if (next.comment) next.comment = markObject(next.comment, ["body"], me, untrusted);
+  if (next.review) next.review = markObject(next.review, ["body"], me, untrusted);
+  return { body: next, untrustedAuthors: [...untrusted].sort() };
 }
 
-export function buildPayload(ev: GitHubEvent, router: RouterInfo): string {
-  const payload = JSON.stringify({ _router: router, event: ev.type, delivery: ev.delivery, body: compactBody(ev.body) });
+export function buildPayload(ev: GitHubEvent, router: RouterInfo, me: string): string {
+  const { body, untrustedAuthors } = compactBody(ev.body, me);
+  const withTrust = untrustedAuthors.length ? { ...router, trust: { untrusted_authors: untrustedAuthors } } : router;
+  const payload = JSON.stringify({ _router: withTrust, event: ev.type, delivery: ev.delivery, body });
   if (payload.length <= MAX_PAYLOAD_CHARS) return payload;
   return JSON.stringify({
-    _router: router, event: ev.type, delivery: ev.delivery,
+    _router: withTrust, event: ev.type, delivery: ev.delivery,
     truncated: "The webhook body was too large to pass on; read the current state with gh.",
-    summary: { repo: ev.repo, number: ev.number, title: ev.title, sender: ev.sender, text: ev.text.slice(0, 4000) },
+    summary: {
+      repo: ev.repo, number: ev.number, sender: ev.sender,
+      title: markIfUntrusted(ev.title, ev.author, ev.titleAssociation, me),
+      text: markIfUntrusted(ev.text.slice(0, 4000), ev.textAuthor, ev.textAssociation, me),
+    },
   });
 }
 
-function inboxContent(ev: GitHubEvent, router: RouterInfo): string {
-  const head = `${ev.repo}#${ev.number ?? "?"} ${ev.type}${ev.action ? `/${ev.action}` : ""} (${router.intent}): ${ev.title}`;
+function inboxContent(ev: GitHubEvent, router: RouterInfo, me: string): string {
+  const title = markIfUntrusted(ev.title, ev.author, ev.titleAssociation, me);
+  const head = `${ev.repo}#${ev.number ?? "?"} ${ev.type}${ev.action ? `/${ev.action}` : ""} (${router.intent}): ${title}`;
   const text = ev.text.trim();
-  return text && router.path !== "hot-ci" ? `${head}\n\n${text.slice(0, 1000)}` : head;
+  if (!text || router.path === "hot-ci") return head;
+  return `${head}\n\n${markIfUntrusted(text.slice(0, 1000), ev.textAuthor, ev.textAssociation, me)}`;
 }
 
 async function deliver(deps: RouterDeps, ev: GitHubEvent, router: RouterInfo, result: RouteResult): Promise<void> {
-  const payload = buildPayload(ev, router);
+  const payload = buildPayload(ev, router, deps.config.login);
   await deps.dispatch(payload, router.slug);
   result.dispatched.push({ slug: router.slug, payload });
   if (deps.inbox) {
     try {
-      deps.inbox({ sender: ev.sender || "github", content: inboxContent(ev, router), sessionKey: router.slug });
+      deps.inbox({ sender: ev.sender || "github", content: inboxContent(ev, router, deps.config.login), sessionKey: router.slug });
     } catch (err) {
       deps.log(`inbox: could not record ${router.ref}: ${(err as Error).message}`);
     }
@@ -174,6 +218,7 @@ async function resolveColdSlug(deps: RouterDeps, ev: GitHubEvent): Promise<{ slu
       topics,
       fallbackSlug: fallback,
       exists: (slug) => deps.ledger.hasTopic(slug),
+      me: deps.config.login,
     });
     return { slug: answer.slug, title: answer.title, notes: answer.notes, via: answer.is_new ? "classifier:new" : "classifier:join" };
   } catch (err) {
@@ -208,7 +253,9 @@ async function routeCi(deps: RouterDeps, ev: GitHubEvent, result: RouteResult): 
       slug, ref: pull.ref, event_type: ev.type, action: ev.action, path: "hot-ci", intent: "engage",
       ci: { name: run.name, conclusion: run.conclusion, head_sha: run.headSha, url: run.url },
     };
-    await deliver(deps, { ...ev, number: pull.number, ref: pull.ref, title: `CI ${run.name}: ${run.conclusion}` }, router, result);
+    // The CI title is generated here, not foreign text; attribute it to the
+    // bot itself so it is never wrapped as untrusted content.
+    await deliver(deps, { ...ev, number: pull.number, ref: pull.ref, title: `CI ${run.name}: ${run.conclusion}`, author: deps.config.login }, router, result);
     deps.ledger.touch(slug);
     deps.log(`hot-ci: ${pull.ref} '${run.name}' ${run.conclusion} → '${slug}'`);
   }
