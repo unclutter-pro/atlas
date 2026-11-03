@@ -222,6 +222,12 @@ case "${1:-help}" in
       exit 0
     fi
 
+    # Talk answers route directly to the owning session. Only successfully sent,
+    # unresolved task questions excuse stopping; unrelated ready work still blocks.
+    if bun "$TRIGGERS_DIR/../integrations/talk/cli.ts" can-pause >/dev/null 2>&1; then
+      exit 0
+    fi
+
     # Build block message
     parts=""
     if [ "$local_goals" -gt 0 ]; then
@@ -235,7 +241,7 @@ case "${1:-help}" in
       fi
     fi
 
-    echo "You have ${parts}. Complete or close them before exiting. Use \`task list\` and \`task goal list\` to review, then \`task close <id>\` / \`task goal close <id> --reason=...\` to finish up. To defer instead, set a continuation reminder that resumes THIS session — \`reminder add\` with \`--when-reply-to=<thread>\` / \`--when-script-ok=<cmd>\` / \`--at=<future-time>\` (optionally \`--recurring=<interval>\` for ongoing monitoring; NOT \`--new-session\`, which routes elsewhere). A pending continuation reminder lets the session stop without false-closing unfinished work."
+    echo "You have ${parts}. Complete or close them before exiting. Use \`task list\` and \`task goal list\` to review, then \`task close <id>\` / \`task goal close <id> --reason=...\` to finish up. For a needed Talk answer, send a task-bound question with \`talk dm --user=<uid> --task=<id> --message=...\`; its reply resumes this session automatically. Otherwise defer with a continuation reminder that resumes THIS session — \`reminder add\` with \`--when-reply-to=<email-thread>\` / \`--when-script-ok=<cmd>\` / \`--at=<future-time>\` (optionally \`--recurring=<interval>\`; NOT \`--new-session\`). Waiting work remains open."
     exit 2
     ;;
 

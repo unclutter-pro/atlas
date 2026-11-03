@@ -26,11 +26,15 @@ export type SocketMessage = {
   channel: string;
   sessionKey: string;
   control?: SocketControl;
+  /** Stable input ID. A positive ack requires a persisted runner receipt. */
+  eventId?: string;
 };
 
 export type SocketAck = {
   ok: boolean;
   error?: string;
+  eventId?: string;
+  state?: "accepted" | "completed";
 };
 
 function keyHash(triggerName: string, sessionKey: string): string {
@@ -103,14 +107,31 @@ export async function trySocketInject(
   channel: string,
   sessionKey: string,
   control?: SocketControl,
+  eventId?: string,
 ): Promise<boolean> {
-  if (!existsSync(socketPath)) return false;
+  const payload: SocketMessage = control
+    ? { message: control === "retire" ? message : "", channel, sessionKey, control }
+    : { message, channel, sessionKey, ...(eventId ? { eventId } : {}) };
+  if (control && eventId) throw new Error("Control messages cannot carry delivery event IDs");
+  const ack = await sendSocketMessage(socketPath, payload);
+  // An old runner's generic ok does not prove durable acceptance.
+  return ack?.ok === true && (!eventId || (ack.eventId === eventId
+    && (ack.state === "accepted" || ack.state === "completed")));
+}
 
-  return new Promise<boolean>((resolve) => {
+/** Returns the protocol ack, or null when delivery could not be confirmed. */
+export async function sendSocketMessage(socketPath: string, payload: SocketMessage): Promise<SocketAck | null> {
+  if (!existsSync(socketPath)) return null;
+
+  return new Promise<SocketAck | null>((resolve) => {
+    let settled = false;
+    const finish = (ack: SocketAck | null) => {
+      if (settled) return;
+      settled = true;
+      client.destroy();
+      resolve(ack);
+    };
     const client = createConnection(socketPath, () => {
-      const payload: SocketMessage = control
-        ? { message: control === "retire" ? message : "", channel, sessionKey, control }
-        : { message, channel, sessionKey };
       client.write(JSON.stringify(payload) + "\n");
     });
 
@@ -121,16 +142,14 @@ export async function trySocketInject(
       if (newlineIdx === -1) return;
       try {
         const ack = JSON.parse(buffer.slice(0, newlineIdx)) as SocketAck;
-        resolve(ack.ok === true);
+        finish(ack);
       } catch {
-        resolve(false);
+        finish(null);
       }
     });
 
-    client.on("error", () => resolve(false));
-    client.setTimeout(5000, () => {
-      client.destroy();
-      resolve(false);
-    });
+    client.on("error", () => finish(null));
+    client.on("end", () => finish(null));
+    client.setTimeout(5000, () => finish(null));
   });
 }

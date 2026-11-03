@@ -16,6 +16,7 @@ RUN bun install --frozen-lockfile
 # harness/ for session storage and backend selection)
 COPY app/triggers/trigger-runner.ts app/triggers/background-tasks.ts ./triggers/
 COPY app/triggers/harness/ ./triggers/harness/
+COPY app/triggers/talk/continuation-guard.ts ./triggers/talk/
 COPY app/lib/harness.ts ./lib/
 COPY app/lib/harness/ ./lib/harness/
 COPY app/lib/config.ts ./lib/
@@ -23,6 +24,7 @@ COPY app/lib/db.ts ./lib/
 COPY app/lib/timezone.ts ./lib/
 COPY app/lib/zoned-time.ts ./lib/
 COPY app/lib/trigger-socket.ts ./lib/
+COPY app/lib/trigger-receipts.ts ./lib/
 COPY app/lib/web-ui-notify.ts ./lib/
 
 # Compile to native binary (auto-detect architecture)
@@ -184,6 +186,7 @@ RUN mkdir -p /atlas/app /atlas/logs \
 
 # Copy application code (root-owned — agent should not modify system code)
 COPY app/ /atlas/app/
+COPY docs/nextcloud-talk.md /atlas/docs/nextcloud-talk.md
 
 # Install default skills and agents as system-level policy (SDK reads /etc/claude-code/.claude/...)
 COPY app/defaults/skills/ /etc/claude-code/.claude/skills/

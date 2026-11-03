@@ -26,6 +26,7 @@ jobs:
         working-directory: app/lib
       - run: bun test
         working-directory: app/triggers
+      - run: bun test app/integrations/talk
       - run: bun test
         working-directory: app/web-ui
 

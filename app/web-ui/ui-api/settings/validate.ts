@@ -31,8 +31,17 @@ export interface ValidationResult {
 type Kind = "string" | "number" | "boolean" | "string[]" | "object";
 
 // Top-level sections read by something other than lib/config.
-const EXTRA_SECTIONS = ["team", "telegram", "whatsapp"];
-const EXTRA_KEYS: Record<string, Kind> = { "email.idle_timeout": "number" };
+const EXTRA_SECTIONS = ["team", "telegram", "whatsapp", "talk"];
+const EXTRA_KEYS: Record<string, Kind> = {
+  "email.idle_timeout": "number",
+  "talk.url": "string", "talk.username": "string", "talk.password_file": "string",
+  "talk.rooms": "string[]", "talk.whitelist": "string[]", "talk.mention_aliases": "string[]",
+  "talk.worker_trigger": "string", "talk.max_connections": "number",
+  "talk.request_timeout_seconds": "number", "talk.poll_timeout_seconds": "number",
+  "talk.discovery_interval_seconds": "number", "talk.backoff_seconds": "number",
+  "talk.max_backoff_seconds": "number", "talk.initial_history_limit": "number",
+  "talk.allow_insecure_http": "boolean",
+};
 
 /** Top-level keys in DEFAULTS that are scalars (e.g. `timezone: ""`), not `section: { key: value }` mappings. */
 const TOP_LEVEL_SCALAR_KEYS = new Set(["timezone"]);

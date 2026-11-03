@@ -434,6 +434,13 @@ else
   echo "  Email not configured — skipping email-poller setup"
 fi
 
+# ── Nextcloud Talk user-account listener ──
+# Setup only writes the worker trigger and supervisord program; network I/O runs
+# in the supervised listener. Missing/revoked credentials are visible in health.
+if ! bun /atlas/app/integrations/talk/cli.ts setup; then
+  echo "  ⚠ Talk setup failed; inspect talk configuration and credentials"
+fi
+
 # ── Phase 9c: GitHub channel (if github.login is configured) ──
 # Ingress trigger `github` (webhook) whose filter.sh runs the event router, and
 # the persistent worker trigger the router fires with one session per topic.
@@ -476,6 +483,10 @@ fi
 
 # ── Phase 10: Start Services ──
 echo "[$(date)] Phase 10: Starting services"
+# Include files created by this init process were not present when supervisord
+# read its configuration. Register only the managed Talk program here.
+supervisorctl reread >/dev/null 2>&1 || true
+supervisorctl update talk-listener || true
 supervisorctl start web-ui || true
 
 # Check pause state before starting cron
@@ -495,8 +506,10 @@ if [ -f "$DB" ]; then
   INTERRUPTED="${INTERRUPTED:-[]}"
 
   echo "$INTERRUPTED" | python3 -c "
-import json, sys, subprocess, os
+import json, sys, subprocess, os, sqlite3
 rows = json.loads(sys.stdin.read())
+connection = sqlite3.connect(os.path.join(os.environ['HOME'], '.index', 'atlas.db'))
+has_receipts = connection.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=\'trigger_delivery_receipts\'').fetchone()
 for row in rows:
     rid = row['id']
     name = row['trigger_name']
@@ -504,6 +517,17 @@ for row in rows:
     mode = row['session_mode']
     sid = row.get('session_id') or ''
     payload = row.get('payload') or ''
+
+    channel = connection.execute('SELECT channel FROM triggers WHERE name=?', (name,)).fetchone()
+    pending_talk = has_receipts and connection.execute(
+        'SELECT 1 FROM trigger_delivery_receipts WHERE trigger_name=? AND session_key=? AND state=\'accepted\' AND event_id LIKE \'talk:%\' LIMIT 1',
+        (name, key)
+    ).fetchone()
+    if (channel and channel[0] == 'talk') or pending_talk:
+        # Its listener first revalidates account/room access, then resumes the
+        # persisted event ID. A generic recovery prompt would bypass that check.
+        print(f'  Deferring Talk delivery recovery to its listener: {name} (key={key})')
+        continue
 
     if mode == 'persistent' and sid:
         # Re-fire with recovery payload — trigger.sh will --resume the session

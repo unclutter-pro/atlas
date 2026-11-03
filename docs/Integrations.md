@@ -465,6 +465,10 @@ Routing decisions are written to `/atlas/logs/github-router.log` (override with 
 
 Not included yet: a cap on concurrently running worker sessions. A busy organization can start many topic sessions at once.
 
+## Nextcloud Talk
+
+Talk uses a dedicated Nextcloud user, a durable central router and persistent conversation workers. It supports proactive direct messages and task questions whose answers resume their owning session. See [setup, commands and limitations](nextcloud-talk.md), and the [original design](nextcloud-talk-design.md) for the rationale behind the replacement of PR 273.
+
 ## Reply Flow
 
 Trigger sessions reply directly via CLI tools — no intermediate delivery layer:

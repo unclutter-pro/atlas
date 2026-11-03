@@ -18,6 +18,7 @@
   },
   "include": [
     "**/*.ts",
+    "../integrations/talk/**/*.ts",
     "../lib/config.ts",
     "../lib/db.ts",
     "../lib/atlas-db.ts"

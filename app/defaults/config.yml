@@ -97,6 +97,19 @@ github:
   router_model: haiku # Classifier for unseen issues/PRs (a model name or a models.<key>)
   router_timeout_seconds: 60 # Hard timeout of one classifier call; on timeout a default topic is used
 
+# Nextcloud Talk: a dedicated normal user with an app password.
+# Container startup provisions the listener and persistent conversation worker.
+# See docs/nextcloud-talk.md for routing, permissions and recovery.
+talk:
+  url: "" # Nextcloud base URL, e.g. https://cloud.example.org
+  username: "" # Agent's Nextcloud user ID
+  password_file: "/home/agent/secrets/talk-app-password"
+  rooms: [] # Empty = all conversations the account belongs to
+  whitelist: [] # Empty = all Talk users in those rooms; otherwise exact user IDs
+  mention_aliases: [] # Additional plain-text @names for group activation
+  worker_trigger: "talk-worker"
+  max_connections: 4 # Bounded transport connections; workers also limited to four
+
 # Usage reporting — send session metrics to external endpoints after each session.
 # Used by hosting platforms for billing based on work hours.
 usage_reporting:
