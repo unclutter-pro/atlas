@@ -33,7 +33,7 @@ describe("configureClaude", () => {
     expect(commands(s, "SessionStart")).toEqual([`${LIFECYCLE_DIR}/session-start.sh`, `${LIFECYCLE_DIR}/task-session.sh start`]);
     expect(commands(s, "PreCompact")).toEqual([`${LIFECYCLE_DIR}/pre-compact.sh auto`, `${LIFECYCLE_DIR}/pre-compact.sh manual`]);
     expect(commands(s, "Stop")).toEqual([`${HOOKS_DIR}/stop.sh`]);
-    expect(commands(s, "PreToolUse")).toEqual(["rtk hook claude", `${HOOKS_DIR}/remind-use-reminders.sh`]);
+    expect(commands(s, "PreToolUse")).toEqual(["rtk hook claude", `${HOOKS_DIR}/remind-use-reminders.sh`, `${HOOKS_DIR}/gh-reference-guard.sh`]);
     expect(s.hooks.SubagentStop[0].hooks[0]).toMatchObject({ type: "prompt" });
     expect(s.permissions.deny).toContain(`Write(${home}/.claude/settings.json)`);
     expect(s.enabledPlugins["x@m"]).toBe(true);

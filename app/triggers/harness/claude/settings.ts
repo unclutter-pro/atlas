@@ -99,6 +99,8 @@ export function claudeSettings(home: string, paths: HookPaths = {}): Record<stri
             // Atlas' command advice (lifecycle/command-advice.sh): nudge toward
             // the reminder CLI when a command polls/sleeps. Advisory only.
             { type: "command", command: `${hooksDir}/remind-use-reminders.sh` },
+            // Blocks gh commands that would post a reference to a private repo into a public one.
+            { type: "command", command: `${hooksDir}/gh-reference-guard.sh` },
           ],
         },
       ],
