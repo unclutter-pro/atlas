@@ -29,13 +29,16 @@ function session(id: string, ...lines: string[]): string {
   return file;
 }
 
-async function run(...args: string[]): Promise<{ code: number; out: string; err: string }> {
+async function runEnv(env: Record<string, string>, ...args: string[]): Promise<{ code: number; out: string; err: string }> {
   const proc = Bun.spawn(["bun", join(import.meta.dir, "sessions.ts"), ...args], {
-    env: { ...process.env, HOME: home, ATLAS_HARNESS_BACKEND: "claude-code" }, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, HOME: home, ATLAS_HARNESS_BACKEND: "claude-code", CLAUDE_CODE_SESSION_ID: "", ...env },
+    stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   return { code, out, err };
 }
+
+const run = (...args: string[]) => runEnv({}, ...args);
 
 function seed() {
   session("main-1",
@@ -68,6 +71,17 @@ describe("sessions CLI", () => {
     expect(rows[0]).toMatch(/^main \| main-1 \| 2 turns \| .* \| Edit\(1\) \| Please update the invoice template for ACME \| main-1$/);
     expect(rows[1]).toMatch(/^sub \| agent-a1 \| 2 turns \| .* \| WebFetch\(1\) \| Research the ACME billing address \| main-1\/agent-a1$/);
     expect(out).not.toContain("dream-1");
+  });
+
+  test("--list excludes the invoking session itself even with no trigger_sessions/session_metrics row for it", async () => {
+    seed();
+    // main-1 has no DB row at all (unlike dream-1, seeded with a session_metrics row), mirroring a
+    // session still in flight: its metrics are only written on session end, so --exclude-trigger
+    // can't catch it by name. CLAUDE_CODE_SESSION_ID must exclude it directly.
+    const { code, out } = await runEnv({ CLAUDE_CODE_SESSION_ID: "main-1" }, "--hours", "24", "--list");
+    expect(code).toBe(0);
+    expect(out).not.toContain("main-1");
+    expect(out).toContain("dream-1");
   });
 
   test("--session reads a session, a nested agent, or a legacy transcript path", async () => {

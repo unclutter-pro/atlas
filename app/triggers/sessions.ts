@@ -331,7 +331,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
 
-  const summaries = (await recentSessions(store, args.hours, excludedSessionIds(args.excludeTriggers, home)))
+  const excluded = excludedSessionIds(args.excludeTriggers, home);
+  // A still-running session has no row in trigger_sessions/session_metrics yet (those are
+  // written on session end), so trigger-name exclusion can't catch it — even when its own
+  // trigger name is in --exclude-trigger. Exclude the invoking session directly: every Claude
+  // Code session gets this env var, so a postmortem/dreaming run never analyzes itself.
+  const selfId = process.env.CLAUDE_CODE_SESSION_ID;
+  if (selfId) excluded.add(selfId);
+
+  const summaries = (await recentSessions(store, args.hours, excluded))
     .filter((s) => s.turnCount > 0);
   if (!summaries.length) {
     console.log(`No sessions with content in the last ${args.hours} hours.`);
